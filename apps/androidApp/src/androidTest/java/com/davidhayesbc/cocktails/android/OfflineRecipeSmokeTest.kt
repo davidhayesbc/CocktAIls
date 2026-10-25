@@ -7,6 +7,7 @@ import android.os.Build
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -17,6 +18,9 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.text.AnnotatedString
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.davidhayesbc.cocktails.android.product.OpenFoodFactsLocalCache
@@ -105,11 +109,17 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Showing a result saved on this phone."))
             composeRule.onNodeWithText("Showing a result saved on this phone.").assertIsDisplayed()
             composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Ingredient name"))
-            composeRule.onNodeWithTag("ingredient-name").assertTextEquals("My Manual Gin")
+            composeRule.onNodeWithTag("ingredient-name").assert(
+                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("My Manual Gin")),
+            )
             composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasTestTag("ingredient-brand"))
-            composeRule.onNodeWithTag("ingredient-brand").assertTextEquals("")
+            composeRule.onNodeWithTag("ingredient-brand").assert(
+                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")),
+            )
             composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasTestTag("ingredient-product-name"))
-            composeRule.onNodeWithTag("ingredient-product-name").assertTextEquals("")
+            composeRule.onNodeWithTag("ingredient-product-name").assert(
+                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")),
+            )
 
             val databaseName = "off-lookup-export-${System.currentTimeMillis()}.db"
             val driver = AndroidSqliteDriver(CocktailsDatabase.Schema, context, databaseName)
