@@ -63,6 +63,7 @@ jobs:
 
   emulator-smoke:
     name: Android offline launch and persistence smoke test
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -88,6 +89,24 @@ jobs:
             "$RUNNER_TEMP/cocktails-android-user" \
             "$RUNNER_TEMP/cocktails-avd"
           chmod 700 "$HOME/.android" "$RUNNER_TEMP/cocktails-android-user"
+
+      - name: Grant the runner user temporary KVM access
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -c /dev/kvm ]]; then
+            echo '/dev/kvm is unavailable on this runner; hardware-accelerated emulator smoke cannot run.'
+            exit 1
+          fi
+          if ! command -v getfacl >/dev/null || ! command -v setfacl >/dev/null; then
+            echo 'ACL tools are unavailable; refusing to widen /dev/kvm permissions as a fallback.'
+            exit 1
+          fi
+          kvm_acl_backup="$RUNNER_TEMP/cocktails-kvm.acl"
+          getfacl -p /dev/kvm > "$kvm_acl_backup"
+          echo "COCKTAILS_KVM_ACL_BACKUP=$kvm_acl_backup" >> "$GITHUB_ENV"
+          sudo -n setfacl --modify "u:$(id -un):rw" /dev/kvm
+          echo 'Temporary runner-user access granted to /dev/kvm.'
 
       - name: Install Android emulator packages
         shell: bash
@@ -123,8 +142,7 @@ jobs:
             exit 1
           fi
 
-          # The hosted runner uses software rendering. Keep the virtual display
-          # modest so Android's first-boot SystemServer work is less CPU-bound.
+          # Keep the virtual display modest to reduce software-rendering load.
           avd_config="$ANDROID_AVD_HOME/cocktails-ci.avd/config.ini"
           cat >> "$avd_config" <<'EOF'
           hw.lcd.width=720
@@ -135,6 +153,14 @@ jobs:
           EOF
 
           adb="$ANDROID_HOME/platform-tools/adb"
+          emulator="$ANDROID_HOME/emulator/emulator"
+          kvm_check_log="$RUNNER_TEMP/cocktails-kvm-check.log"
+          if ! timeout 15 "$emulator" -accel-check > "$kvm_check_log" 2>&1; then
+            echo 'Android emulator hardware acceleration check failed.'
+            cat "$kvm_check_log" || true
+            exit 1
+          fi
+          cat "$kvm_check_log"
           adb_bootstrap_log="$RUNNER_TEMP/cocktails-adb-bootstrap.log"
           if ! timeout 30 "$adb" start-server > "$adb_bootstrap_log" 2>&1; then
             echo 'adb server failed to start within 30 seconds.'
@@ -145,8 +171,8 @@ jobs:
 
           emulator_log="$RUNNER_TEMP/cocktails-emulator.log"
           emulator_pid_file="$RUNNER_TEMP/cocktails-emulator.pid"
-          nohup "$ANDROID_HOME/emulator/emulator" -avd cocktails-ci -no-window -no-audio -no-boot-anim \
-            -gpu swiftshader_indirect -accel off -no-snapshot -no-metrics \
+          nohup "$emulator" -avd cocktails-ci -no-window -no-audio -no-boot-anim \
+            -gpu swiftshader_indirect -accel on -no-snapshot -no-metrics \
             > "$emulator_log" 2>&1 < /dev/null &
           emulator_pid="$!"
           echo "$emulator_pid" > "$emulator_pid_file"
@@ -169,8 +195,7 @@ jobs:
             sleep 5
           done
 
-          # Cold boot on software emulation can take several minutes. Keep the
-          # wait bounded but allow the system-server startup seen on CI runners.
+          # Keep cold boot bounded while allowing Android system services to start.
           boot_deadline=$((SECONDS + 600))
           until [[ "$(timeout 10 "$adb" -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == "1" ]]; do
             if ! kill -0 "$emulator_pid" 2>/dev/null; then
@@ -218,6 +243,8 @@ jobs:
           tail -n 300 "$RUNNER_TEMP/cocktails-avdmanager.log"
           echo '--- adb bootstrap log (last 100 lines) ---'
           tail -n 100 "$RUNNER_TEMP/cocktails-adb-bootstrap.log"
+          echo '--- KVM acceleration check ---'
+          cat "$RUNNER_TEMP/cocktails-kvm-check.log"
           echo '--- permission prompt screenshots ---'
           for screenshot in /sdcard/Android/data/com.davidhayesbc.cocktails/cache/camera-permission-*.png; do
             [[ -f "$screenshot" ]] || continue
@@ -235,6 +262,7 @@ jobs:
             ${{ runner.temp }}/cocktails-logcat.log
             ${{ runner.temp }}/cocktails-avdmanager.log
             ${{ runner.temp }}/cocktails-adb-bootstrap.log
+            ${{ runner.temp }}/cocktails-kvm-check.log
             ${{ runner.temp }}/camera-permission-*.png
             apps/androidApp/build/outputs/androidTest-results/connected/**/*.xml
             apps/androidApp/build/reports/androidTests/connected/**
@@ -259,3 +287,12 @@ jobs:
             fi
           fi
           timeout 10 "$adb" kill-server
+
+      - name: Restore original KVM ACL
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [[ -n "${COCKTAILS_KVM_ACL_BACKUP:-}" && -f "$COCKTAILS_KVM_ACL_BACKUP" ]]; then
+            sudo -n setfacl --restore="$COCKTAILS_KVM_ACL_BACKUP"
+          fi
