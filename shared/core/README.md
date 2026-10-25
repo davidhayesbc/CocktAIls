@@ -1,6 +1,8 @@
 # Shared core
 
-Kotlin Multiplatform module shared by Android and iOS. The current implementation includes UUIDv7 IDs, base household/location/ingredient/inventory models, the SQLDelight schema, a local repository, and spirit unlock ranking. Keep UI and platform APIs out of common code.
+Kotlin Multiplatform module shared by Android and iOS. The current implementation includes UUIDv7 IDs, household/location/ingredient/inventory and recipe models, the SQLDelight schema and v1-to-v2 migration, a local repository, and spirit unlock ranking. Keep UI and platform APIs out of common code.
+
+The first debug build used a UUIDv7 formatter that emitted malformed variant groups. The v1-to-v2 migration deliberately preserves existing text IDs and all foreign-key relationships as opaque identifiers; it does not rewrite them. New IDs use canonical UUIDv7 formatting. Import and sync code must accept opaque legacy IDs.
 
 Initial package areas:
 

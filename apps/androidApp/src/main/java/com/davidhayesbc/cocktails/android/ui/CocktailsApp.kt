@@ -40,12 +40,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.davidhayesbc.cocktails.core.data.LocalCocktailRepository
 import com.davidhayesbc.cocktails.core.model.HomeLocation
+import com.davidhayesbc.cocktails.core.model.CocktailFamilyId
 import com.davidhayesbc.cocktails.core.model.InventoryLevel
 import com.davidhayesbc.cocktails.core.model.PantryEntry
 import com.davidhayesbc.cocktails.core.model.RecipeDetail
 import com.davidhayesbc.cocktails.core.model.RecipeStyle
 import com.davidhayesbc.cocktails.core.model.TastingNote
 import com.davidhayesbc.cocktails.core.model.ShopSuggestion
+import com.davidhayesbc.cocktails.core.model.MemberProfile
+import com.davidhayesbc.cocktails.core.model.RecipeCard
 
 private enum class Page(val label: String) {
     MAKE("Make"),
@@ -57,17 +60,23 @@ private enum class Page(val label: String) {
 @Composable
 fun CocktailsApp(repository: LocalCocktailRepository) {
     var locations by remember(repository) { mutableStateOf(repository.locations()) }
+    var members by remember(repository) { mutableStateOf(repository.members()) }
     var selectedLocationId by remember(repository) {
-        mutableStateOf(locations.firstOrNull()?.id.orEmpty())
+        mutableStateOf(repository.preferredHomeId()?.takeIf { preferred -> locations.any { it.id == preferred } } ?: locations.firstOrNull()?.id.orEmpty())
+    }
+    var selectedMemberId by remember(repository) {
+        mutableStateOf(repository.preferredMemberId()?.takeIf { preferred -> members.any { it.id == preferred } } ?: members.firstOrNull()?.id.orEmpty())
     }
     var selectedPage by remember { mutableStateOf(Page.MAKE) }
     var showShop by remember { mutableStateOf(false) }
     var showAddIngredient by remember { mutableStateOf(false) }
     var showAddRecipe by remember { mutableStateOf(false) }
     var showAddLocation by remember { mutableStateOf(false) }
+    var showAddMember by remember { mutableStateOf(false) }
     var selectedRecipe by remember { mutableStateOf<RecipeDetail?>(null) }
     var showAddNote by remember { mutableStateOf(false) }
     var recipes by remember { mutableStateOf(repository.recipes()) }
+    var recipeFamilies by remember { mutableStateOf(repository.recipeFamilies()) }
     var pantry by remember { mutableStateOf(emptyList<PantryEntry>()) }
 
     LaunchedEffect(selectedLocationId) {
@@ -76,6 +85,16 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
 
     fun refreshPantry() {
         pantry = if (selectedLocationId.isEmpty()) emptyList() else repository.pantry(selectedLocationId)
+    }
+
+    fun selectHome(locationId: String) {
+        selectedLocationId = locationId
+        repository.setPreferredHomeId(locationId)
+    }
+
+    fun selectMember(memberId: String) {
+        selectedMemberId = memberId
+        repository.setPreferredMemberId(memberId)
     }
 
     Scaffold(
@@ -107,7 +126,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 modifier = Modifier.padding(contentPadding),
                 locations = locations,
                 selectedLocationId = selectedLocationId,
-                onLocationSelected = { selectedLocationId = it },
+                onLocationSelected = ::selectHome,
                 pantry = pantry,
                 onAddIngredients = {
                     selectedPage = Page.MY_BAR
@@ -122,7 +141,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 locations = locations,
                 selectedLocationId = selectedLocationId,
                 pantry = pantry,
-                onLocationSelected = { selectedLocationId = it },
+                onLocationSelected = ::selectHome,
                 onAddIngredient = { showAddIngredient = true },
                 onAddLocation = { showAddLocation = true },
                 onLevelSelected = { entry, level ->
@@ -152,7 +171,9 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             else -> PlaceholderScreen(
                 modifier = Modifier.padding(contentPadding),
                 title = "More",
-                message = "Household sharing, import/export, and assistant settings are planned for upcoming slices.",
+                message = "Manage who's using this bar.",
+                actionLabel = "Members · ${members.firstOrNull { it.id == selectedMemberId }?.name ?: "Choose a member"}",
+                onAction = { showAddMember = true },
             )
         }
     }
@@ -179,16 +200,19 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     if (showAddRecipe) {
         AddRecipeDialog(
             onDismiss = { showAddRecipe = false },
-            onSave = { title, ingredientText, instructions, style ->
+            families = recipeFamilies,
+            onSave = { title, ingredientText, instructions, style, familyId ->
                 val saved = repository.addRecipe(
                     title = title,
                     ingredientNames = ingredientText.lines(),
                     instructions = instructions,
                     style = style,
+                    existingFamilyId = familyId?.let(::CocktailFamilyId),
                     nowMillis = System.currentTimeMillis(),
                 )
                 if (saved) {
                     recipes = repository.recipes()
+                    recipeFamilies = repository.recipeFamilies()
                     showAddRecipe = false
                 }
             },
@@ -201,8 +225,23 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             onSave = { name ->
                 repository.addLocation(name, System.currentTimeMillis())?.let { location ->
                     locations = repository.locations()
-                    selectedLocationId = location.id
+                    selectHome(location.id)
                     showAddLocation = false
+                }
+            },
+        )
+    }
+
+    if (showAddMember) {
+        AddMemberDialog(
+            members = members,
+            selectedMemberId = selectedMemberId,
+            onSelectMember = ::selectMember,
+            onDismiss = { showAddMember = false },
+            onAdd = { name ->
+                repository.addMember(name, System.currentTimeMillis())?.let { member ->
+                    members = repository.members()
+                    selectMember(member.id)
                 }
             },
         )
@@ -214,6 +253,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             onSave = { rating, note ->
                 repository.addTastingNote(
                     variantId = selectedRecipe!!.id,
+                    memberId = selectedMemberId,
                     rating = rating,
                     note = note,
                     locationId = selectedLocationId.ifEmpty { null },
@@ -482,28 +522,30 @@ private fun ShopScreen(
     onBack: () -> Unit,
 ) {
     val restock = pantry.filter { it.level == InventoryLevel.LOW || it.level == InventoryLevel.OUT || it.level == InventoryLevel.HALF }
-    Column(
+    LazyColumn(
         modifier = modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        TextButton(onClick = onBack) { Text("‹  Back") }
-        Text("At the shop", style = MaterialTheme.typography.headlineMedium)
-        Text("Shopping for ${location?.name ?: "a home"}", style = MaterialTheme.typography.titleMedium)
-        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
-            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Spirits that unlock the most drinks", style = MaterialTheme.typography.titleMedium)
-                if (recommendations.isEmpty()) {
-                    Text("Add recipes and mark their spirit ingredients to see what would unlock new families.", style = MaterialTheme.typography.bodyMedium)
-                } else recommendations.forEachIndexed { index, item ->
-                    Text("${index + 1}. ${item.spiritName} · ${item.newlyMakeableFamilies} new drink families", style = MaterialTheme.typography.bodyLarge)
+        item { TextButton(onClick = onBack) { Text("‹  Back") } }
+        item { Text("At the shop", style = MaterialTheme.typography.headlineMedium) }
+        item { Text("Shopping for ${location?.name ?: "a home"}", style = MaterialTheme.typography.titleMedium) }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Spirits that unlock the most drinks", style = MaterialTheme.typography.titleMedium)
+                    if (recommendations.isEmpty()) {
+                        Text("Add recipes and mark their spirit ingredients to see what would unlock new families.", style = MaterialTheme.typography.bodyMedium)
+                    } else recommendations.forEachIndexed { index, item ->
+                        Text("${index + 1}. ${item.spiritName} · ${item.newlyMakeableFamilies} new drink families", style = MaterialTheme.typography.bodyLarge)
+                    }
                 }
             }
         }
-        Text("RESTOCK SOON", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        item { Text("RESTOCK SOON", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary) }
         if (restock.isEmpty()) {
-            Text("Nothing marked low or out.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            item { Text("Nothing marked low or out.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         } else {
-            restock.forEach { entry ->
+            items(restock) { entry ->
                 Text("${entry.level.label} · ${entry.name}", style = MaterialTheme.typography.bodyLarge)
             }
         }
@@ -593,24 +635,26 @@ private fun RecipeDetailScreen(
     onBack: () -> Unit,
     onAddNote: () -> Unit,
 ) {
-    Column(modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        TextButton(onClick = onBack) { Text("‹  Recipes") }
-        Text(recipe.title, style = MaterialTheme.typography.headlineMedium)
-        Text("${recipe.style.label} · ${recipe.servings.toInt()} serving", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-        Text("INGREDIENTS", style = MaterialTheme.typography.labelLarge)
-        recipe.ingredients.forEach { line ->
+    LazyColumn(modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { TextButton(onClick = onBack) { Text("‹  Recipes") } }
+        item { Text(recipe.title, style = MaterialTheme.typography.headlineMedium) }
+        item { Text("${recipe.style.label} · ${recipe.servings.toInt()} serving", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary) }
+        item { Text("INGREDIENTS", style = MaterialTheme.typography.labelLarge) }
+        items(recipe.ingredients) { line ->
             Text("• ${line.name}${if (line.optional) " (optional)" else ""}", style = MaterialTheme.typography.bodyLarge)
         }
         if (recipe.instructions.isNotBlank()) {
-            Text("METHOD", style = MaterialTheme.typography.labelLarge)
-            Text(recipe.instructions, style = MaterialTheme.typography.bodyLarge)
+            item { Text("METHOD", style = MaterialTheme.typography.labelLarge) }
+            item { Text(recipe.instructions, style = MaterialTheme.typography.bodyLarge) }
         }
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-            Text("Tasting notes", style = MaterialTheme.typography.titleLarge)
-            TextButton(onClick = onAddNote) { Text("＋ Add note") }
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                Text("Tasting notes", style = MaterialTheme.typography.titleLarge)
+                TextButton(onClick = onAddNote) { Text("＋ Add note") }
+            }
         }
-        if (notes.isEmpty()) Text("No notes yet. Add how it tasted for next time.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        else notes.forEach { note ->
+        if (notes.isEmpty()) item { Text("No notes yet. Add how it tasted for next time.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        else items(notes, key = { it.id }) { note ->
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                 Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("${note.memberName}${note.rating?.let { " · $it/5" } ?: ""}", style = MaterialTheme.typography.titleSmall)
@@ -622,12 +666,18 @@ private fun RecipeDetailScreen(
 }
 
 @Composable
-private fun AddRecipeDialog(onDismiss: () -> Unit, onSave: (String, String, String, RecipeStyle) -> Unit) {
+private fun AddRecipeDialog(
+    onDismiss: () -> Unit,
+    families: List<RecipeCard>,
+    onSave: (String, String, String, RecipeStyle, String?) -> Unit,
+) {
     var title by remember { mutableStateOf("") }
     var ingredients by remember { mutableStateOf("") }
     var instructions by remember { mutableStateOf("") }
     var style by remember { mutableStateOf(RecipeStyle.OTHER) }
     var styleMenu by remember { mutableStateOf(false) }
+    var familyId by remember { mutableStateOf<String?>(null) }
+    var familyMenu by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Add a recipe") },
@@ -636,6 +686,19 @@ private fun AddRecipeDialog(onDismiss: () -> Unit, onSave: (String, String, Stri
                 OutlinedTextField(title, { title = it }, label = { Text("Drink name") }, singleLine = true)
                 OutlinedTextField(ingredients, { ingredients = it }, label = { Text("Ingredients · one per line") }, minLines = 3)
                 OutlinedTextField(instructions, { instructions = it }, label = { Text("Method (optional)") }, minLines = 2)
+                TextButton(onClick = { familyMenu = true }) {
+                    val familyName = families.firstOrNull { it.familyId.value == familyId }?.name
+                    Text(if (familyName == null) "New cocktail family" else "Version of $familyName  ▾")
+                }
+                DropdownMenu(expanded = familyMenu, onDismissRequest = { familyMenu = false }) {
+                    DropdownMenuItem(text = { Text("New family (keep separate)") }, onClick = { familyId = null; familyMenu = false })
+                    families.forEach { family ->
+                        DropdownMenuItem(
+                            text = { Text("Add as a version of ${family.name}") },
+                            onClick = { familyId = family.familyId.value; familyMenu = false },
+                        )
+                    }
+                }
                 TextButton(onClick = { styleMenu = true }) { Text("Style: ${style.label} ▾") }
                 DropdownMenu(expanded = styleMenu, onDismissRequest = { styleMenu = false }) {
                     RecipeStyle.entries.forEach { option ->
@@ -644,7 +707,7 @@ private fun AddRecipeDialog(onDismiss: () -> Unit, onSave: (String, String, Stri
                 }
             }
         },
-        confirmButton = { Button(onClick = { onSave(title, ingredients, instructions, style) }, enabled = title.isNotBlank() && ingredients.lines().any { it.isNotBlank() }) { Text("Save") } },
+        confirmButton = { Button(onClick = { onSave(title, ingredients, instructions, style, familyId) }, enabled = title.isNotBlank() && ingredients.lines().any { it.isNotBlank() }) { Text("Save") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
@@ -673,14 +736,55 @@ private fun AddNoteDialog(onDismiss: () -> Unit, onSave: (Int?, String) -> Unit)
 }
 
 @Composable
-private fun PlaceholderScreen(modifier: Modifier, title: String, message: String) {
+private fun PlaceholderScreen(
+    modifier: Modifier,
+    title: String,
+    message: String,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
     Column(
         modifier = modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(title, style = MaterialTheme.typography.headlineMedium)
         Text(message, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (actionLabel != null && onAction != null) OutlinedButton(onClick = onAction) { Text(actionLabel) }
     }
+}
+
+@Composable
+private fun AddMemberDialog(
+    members: List<MemberProfile>,
+    selectedMemberId: String,
+    onSelectMember: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onAdd: (String) -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    var expanded by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Household members") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Tasting notes will be saved under the selected member.")
+                OutlinedButton(onClick = { expanded = true }) {
+                    Text("Using ${members.firstOrNull { it.id == selectedMemberId }?.name ?: "member"}  ▾")
+                }
+                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    members.forEach { member ->
+                        DropdownMenuItem(text = { Text(member.name) }, onClick = { onSelectMember(member.id); expanded = false })
+                    }
+                }
+                OutlinedTextField(name, { name = it }, label = { Text("Add another member") }, singleLine = true)
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onAdd(name); name = "" }, enabled = name.isNotBlank()) { Text("Add member") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+    )
 }
 
 private val InventoryLevel.label: String

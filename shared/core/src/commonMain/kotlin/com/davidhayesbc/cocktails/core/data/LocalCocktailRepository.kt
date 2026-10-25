@@ -16,6 +16,7 @@ import com.davidhayesbc.cocktails.core.model.CocktailFamily
 import com.davidhayesbc.cocktails.core.model.RecipeIngredient
 import com.davidhayesbc.cocktails.core.model.RecipeVariant
 import com.davidhayesbc.cocktails.core.model.ShopSuggestion
+import com.davidhayesbc.cocktails.core.model.MemberProfile
 import com.davidhayesbc.cocktails.core.matching.rankSpiritUnlocks
 import com.davidhayesbc.cocktails.core.model.newUuidV7
 
@@ -32,11 +33,39 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             queries.insertHousehold(householdId, "Our Bar", nowMillis)
             queries.insertMember(memberId, householdId, "You", nowMillis)
             queries.insertLocation(locationId, householdId, "Home", nowMillis)
+            queries.setPreferredHome(locationId)
+            queries.setPreferredMember(memberId)
         }
     }
 
     fun locations(): List<HomeLocation> =
         queries.selectLocations().executeAsList().map { HomeLocation(it.id, it.name) }
+
+    fun preferredHomeId(): String? = queries.selectPreferredHome().executeAsOneOrNull()
+
+    fun setPreferredHomeId(locationId: String) {
+        queries.setPreferredHome(locationId)
+    }
+
+    fun members(): List<MemberProfile> {
+        val householdId = queries.selectFirstHousehold().executeAsOne().id
+        return queries.selectMembers(householdId).executeAsList().map { MemberProfile(it.id, it.display_name) }
+    }
+
+    fun addMember(name: String, nowMillis: Long): MemberProfile? {
+        val cleaned = name.trim()
+        if (cleaned.isEmpty()) return null
+        val householdId = queries.selectFirstHousehold().executeAsOne().id
+        val member = MemberProfile(newUuidV7(nowMillis), cleaned)
+        queries.insertMember(member.id, householdId, member.name, nowMillis)
+        return member
+    }
+
+    fun preferredMemberId(): String? = queries.selectPreferredMember().executeAsOneOrNull()
+
+    fun setPreferredMemberId(memberId: String) {
+        queries.setPreferredMember(memberId)
+    }
 
     fun addLocation(name: String, nowMillis: Long): HomeLocation? {
         val cleaned = name.trim()
@@ -73,13 +102,14 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         ingredientNames: List<String>,
         instructions: String,
         style: RecipeStyle,
+        existingFamilyId: CocktailFamilyId? = null,
         nowMillis: Long,
     ): Boolean {
         val cleanTitle = title.trim()
         val cleanIngredients = ingredientNames.map(String::trim).filter(String::isNotEmpty).distinctBy { it.lowercase() }
         if (cleanTitle.isEmpty() || cleanIngredients.isEmpty()) return false
         database.transaction {
-            val familyId = queries.findFamilyByName(cleanTitle).executeAsOneOrNull()
+            val familyId = existingFamilyId?.value
                 ?: newUuidV7(nowMillis).also { queries.insertRecipeFamily(it, cleanTitle, nowMillis) }
             val variantId = newUuidV7(nowMillis)
             queries.insertRecipeVariant(variantId, familyId, cleanTitle, instructions.trim(), "", 1.0, style.name, nowMillis)
@@ -103,14 +133,13 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
 
     fun addTastingNote(
         variantId: RecipeVariantId,
+        memberId: String,
         rating: Int?,
         note: String,
         locationId: String?,
         nowMillis: Long,
     ) {
         database.transaction {
-            val householdId = queries.selectFirstHousehold().executeAsOne().id
-            val memberId = queries.selectFirstMember(householdId).executeAsOne().id
             queries.insertTastingNote(newUuidV7(nowMillis), variantId.value, memberId, locationId, rating?.toLong(), note.trim(), nowMillis)
         }
     }
@@ -172,16 +201,17 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         database.transaction {
             val householdId = queries.selectFirstHousehold().executeAsOne().id
             val memberId = queries.selectFirstMember(householdId).executeAsOne().id
-            queries.insertIngredientIgnore(
-                id = newUuidV7(nowMillis),
-                canonical_name = cleanedName,
-                category = cleanedCategory,
-                created_at = nowMillis,
-            )
-            val ingredientId = queries
-                .selectIngredientsByName(cleanedName)
-                .executeAsOne()
-            queries.updateIngredientCategory(cleanedCategory, ingredientId)
+            val exactId = queries.selectIngredientByNameAndCategory(cleanedName, cleanedCategory).executeAsOneOrNull()
+            val ingredientId = exactId ?: run {
+                val existingId = queries.selectIngredientsByName(cleanedName).executeAsOneOrNull()
+                if (existingId != null && queries.countIngredientsByName(cleanedName).executeAsOne() == 1L) {
+                    queries.updateIngredientCategory(cleanedCategory, existingId)
+                    existingId
+                } else {
+                    queries.insertIngredientIgnore(newUuidV7(nowMillis), cleanedName, cleanedCategory, nowMillis)
+                    queries.selectIngredientByNameAndCategory(cleanedName, cleanedCategory).executeAsOne()
+                }
+            }
             writeInventory(locationId, ingredientId, level, memberId, nowMillis)
         }
         return true

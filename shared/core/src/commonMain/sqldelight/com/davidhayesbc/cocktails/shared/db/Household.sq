@@ -11,6 +11,11 @@ CREATE TABLE household_location (
     created_at INTEGER NOT NULL
 );
 
+CREATE TABLE local_preference (
+    preference_key TEXT NOT NULL PRIMARY KEY,
+    preference_value TEXT NOT NULL
+);
+
 CREATE TABLE record_revision (
     id TEXT NOT NULL PRIMARY KEY,
     record_id TEXT NOT NULL,
@@ -69,8 +74,8 @@ CREATE TABLE inventory_item (
     UNIQUE(location_id, ingredient_id)
 );
 
-CREATE UNIQUE INDEX ingredient_name
-ON ingredient(canonical_name COLLATE NOCASE);
+CREATE UNIQUE INDEX ingredient_name_category
+ON ingredient(canonical_name COLLATE NOCASE, category COLLATE NOCASE);
 
 CREATE TABLE cocktail_family (
     id TEXT NOT NULL PRIMARY KEY,
@@ -153,8 +158,23 @@ SELECT id, name, created_at FROM household ORDER BY created_at LIMIT 1;
 selectFirstMember:
 SELECT id, household_id, display_name FROM household_member WHERE household_id = ? LIMIT 1;
 
+selectMembers:
+SELECT id, display_name FROM household_member WHERE household_id = ? ORDER BY created_at, display_name COLLATE NOCASE;
+
 selectLocations:
 SELECT id, name FROM household_location ORDER BY name COLLATE NOCASE;
+
+selectPreferredHome:
+SELECT preference_value FROM local_preference WHERE preference_key = 'selected_home';
+
+setPreferredHome:
+INSERT OR REPLACE INTO local_preference(preference_key, preference_value) VALUES ('selected_home', ?);
+
+selectPreferredMember:
+SELECT preference_value FROM local_preference WHERE preference_key = 'selected_member';
+
+setPreferredMember:
+INSERT OR REPLACE INTO local_preference(preference_key, preference_value) VALUES ('selected_member', ?);
 
 insertIngredientIgnore:
 INSERT OR IGNORE INTO ingredient(id, canonical_name, category, created_at) VALUES (?, ?, ?, ?);
@@ -200,7 +220,15 @@ INSERT INTO recipe_ingredient(id, variant_id, ingredient_id, amount_value, amoun
 VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 
 selectIngredientsByName:
-SELECT id FROM ingredient WHERE canonical_name = ? COLLATE NOCASE LIMIT 1;
+SELECT id FROM ingredient WHERE canonical_name = ? COLLATE NOCASE
+ORDER BY CASE WHEN category = 'Spirit' COLLATE NOCASE THEN 0 ELSE 1 END
+LIMIT 1;
+
+selectIngredientByNameAndCategory:
+SELECT id FROM ingredient WHERE canonical_name = ? COLLATE NOCASE AND category = ? COLLATE NOCASE;
+
+countIngredientsByName:
+SELECT COUNT(*) FROM ingredient WHERE canonical_name = ? COLLATE NOCASE;
 
 updateIngredientCategory:
 UPDATE ingredient SET category = ? WHERE id = ?;

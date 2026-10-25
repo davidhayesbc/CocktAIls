@@ -18,8 +18,8 @@ android {
         applicationId = "com.davidhayesbc.cocktails"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = providers.environmentVariable("GITHUB_RUN_NUMBER").orNull?.toIntOrNull() ?: 1
+        versionName = providers.environmentVariable("COCKTAILS_VERSION_NAME").orNull ?: "0.1.0"
     }
 }
 

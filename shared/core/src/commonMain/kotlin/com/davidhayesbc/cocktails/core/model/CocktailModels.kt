@@ -59,6 +59,8 @@ data class HomeLocation(
     val name: String,
 )
 
+data class MemberProfile(val id: String, val name: String)
+
 data class RecipeCard(
     val familyId: CocktailFamilyId,
     val name: String,

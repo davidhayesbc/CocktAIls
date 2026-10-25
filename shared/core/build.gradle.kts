@@ -19,6 +19,13 @@ kotlin {
         iosMain.dependencies {
             implementation("app.cash.sqldelight:native-driver:${libs.versions.sqldelight.get()}")
         }
+        commonTest.dependencies {
+            implementation(kotlin("test"))
+        }
+        androidUnitTest.dependencies {
+            implementation(kotlin("test"))
+            implementation("app.cash.sqldelight:sqlite-driver:${libs.versions.sqldelight.get()}")
+        }
     }
 }
 
@@ -35,6 +42,7 @@ sqldelight {
     databases {
         create("CocktailsDatabase") {
             packageName.set("com.davidhayesbc.cocktails.shared.db")
+            schemaOutputDirectory.set(file("src/commonMain/sqldelight/databases"))
         }
     }
 }

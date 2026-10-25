@@ -1,0 +1,85 @@
+CREATE TABLE local_preference (
+    preference_key TEXT NOT NULL PRIMARY KEY,
+    preference_value TEXT NOT NULL
+);
+
+CREATE TABLE record_revision (
+    id TEXT NOT NULL PRIMARY KEY,
+    record_id TEXT NOT NULL,
+    record_type TEXT NOT NULL,
+    author_member_id TEXT NOT NULL REFERENCES household_member(id),
+    device_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE revision_parent (
+    revision_id TEXT NOT NULL REFERENCES record_revision(id),
+    parent_revision_id TEXT NOT NULL,
+    PRIMARY KEY(revision_id, parent_revision_id)
+);
+
+CREATE TABLE tombstone (
+    record_id TEXT NOT NULL PRIMARY KEY,
+    record_type TEXT NOT NULL,
+    revision_id TEXT NOT NULL REFERENCES record_revision(id),
+    deleted_at INTEGER NOT NULL
+);
+
+CREATE TABLE ingredient_product (
+    id TEXT NOT NULL PRIMARY KEY,
+    ingredient_id TEXT NOT NULL REFERENCES ingredient(id),
+    brand TEXT,
+    product_name TEXT NOT NULL,
+    barcode TEXT,
+    created_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX ingredient_product_barcode ON ingredient_product(barcode) WHERE barcode IS NOT NULL;
+
+CREATE TABLE cocktail_alias (
+    family_id TEXT NOT NULL REFERENCES cocktail_family(id),
+    alias TEXT NOT NULL,
+    PRIMARY KEY(family_id, alias)
+);
+
+ALTER TABLE recipe_variant ADD COLUMN instructions TEXT NOT NULL DEFAULT '';
+ALTER TABLE recipe_variant ADD COLUMN preparation TEXT NOT NULL DEFAULT '';
+ALTER TABLE recipe_variant ADD COLUMN servings REAL NOT NULL DEFAULT 1;
+ALTER TABLE recipe_variant ADD COLUMN style TEXT NOT NULL DEFAULT 'OTHER';
+ALTER TABLE recipe_variant ADD COLUMN revision_id TEXT REFERENCES record_revision(id);
+
+CREATE TABLE recipe_source (
+    id TEXT NOT NULL PRIMARY KEY,
+    variant_id TEXT NOT NULL REFERENCES recipe_variant(id),
+    source_name TEXT NOT NULL,
+    source_record_id TEXT,
+    source_url TEXT,
+    license_name TEXT,
+    attribution TEXT,
+    modifications TEXT,
+    imported_at INTEGER NOT NULL
+);
+
+ALTER TABLE recipe_ingredient ADD COLUMN preparation TEXT;
+
+CREATE TABLE tasting_note (
+    id TEXT NOT NULL PRIMARY KEY,
+    variant_id TEXT NOT NULL REFERENCES recipe_variant(id),
+    member_id TEXT NOT NULL REFERENCES household_member(id),
+    location_id TEXT REFERENCES household_location(id),
+    rating INTEGER CHECK (rating BETWEEN 1 AND 5),
+    note TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    revision_id TEXT REFERENCES record_revision(id)
+);
+
+CREATE TABLE favorite (
+    member_id TEXT NOT NULL REFERENCES household_member(id),
+    family_id TEXT NOT NULL REFERENCES cocktail_family(id),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(member_id, family_id)
+);
+
+INSERT OR REPLACE INTO local_preference(preference_key, preference_value)
+SELECT 'selected_home', id FROM household_location ORDER BY created_at LIMIT 1;
