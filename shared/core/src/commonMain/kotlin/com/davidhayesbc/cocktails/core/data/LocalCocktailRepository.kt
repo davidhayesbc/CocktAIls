@@ -9,6 +9,7 @@ import com.davidhayesbc.cocktails.core.model.CocktailFamilyId
 import com.davidhayesbc.cocktails.core.model.RecipeCard
 import com.davidhayesbc.cocktails.core.model.RecipeDetail
 import com.davidhayesbc.cocktails.core.model.RecipeLine
+import com.davidhayesbc.cocktails.core.model.RecipeIngredientDraft
 import com.davidhayesbc.cocktails.core.model.RecipeStyle
 import com.davidhayesbc.cocktails.core.model.RecipeVariantId
 import com.davidhayesbc.cocktails.core.model.TastingNote
@@ -125,10 +126,33 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         style: RecipeStyle,
         existingFamilyId: CocktailFamilyId? = null,
         nowMillis: Long,
+    ): Boolean = addRecipeLines(
+        title = title,
+        ingredientLines = ingredientNames.map(::RecipeIngredientDraft),
+        instructions = instructions,
+        style = style,
+        existingFamilyId = existingFamilyId,
+        servings = 1.0,
+        nowMillis = nowMillis,
+    )
+
+    fun addRecipeLines(
+        title: String,
+        ingredientLines: List<RecipeIngredientDraft>,
+        instructions: String,
+        style: RecipeStyle,
+        existingFamilyId: CocktailFamilyId? = null,
+        servings: Double = 1.0,
+        nowMillis: Long,
     ): Boolean {
         val cleanTitle = title.trim()
-        val cleanIngredients = ingredientNames.map(String::trim).filter(String::isNotEmpty).distinctBy { it.lowercase() }
-        if (cleanTitle.isEmpty() || cleanIngredients.isEmpty()) return false
+        val cleanLines = ingredientLines.map { line ->
+            line.copy(name = line.name.trim(), unit = line.unit?.trim()?.takeIf(String::isNotEmpty), preparation = line.preparation?.trim()?.takeIf(String::isNotEmpty))
+        }.filter { it.name.isNotEmpty() }
+        if (cleanTitle.isEmpty() || cleanLines.isEmpty() || !servings.isFinite() || servings <= 0.0 ||
+            cleanLines.any { it.amount != null && (!it.amount.isFinite() || it.amount <= 0.0) }
+        ) return false
+        val cleanIngredients = cleanLines.map(RecipeIngredientDraft::name).distinctBy { it.lowercase() }
         database.transaction {
             val householdId = queries.selectFirstHousehold().executeAsOne().id
             val memberId = preferredMemberId() ?: queries.selectFirstMember(householdId).executeAsOne().id
@@ -137,22 +161,32 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                 writeRevision(it, "COCKTAIL_FAMILY", memberId, nowMillis, jsonObject("name" to jsonString(cleanTitle)))
             }
             val variantId = newUuidV7(nowMillis)
-            queries.insertRecipeVariant(variantId, familyId, cleanTitle, instructions.trim(), "", 1.0, style.name, nowMillis)
+            queries.insertRecipeVariant(variantId, familyId, cleanTitle, instructions.trim(), "", servings, style.name, nowMillis)
             cleanIngredients.forEachIndexed { index, name ->
                 queries.insertIngredientIgnore(newUuidV7(nowMillis + index + 1), name, "Other", nowMillis)
-                val ingredientId = queries.selectIngredientsByName(name).executeAsOne()
+            }
+            val ingredientIds = cleanIngredients.associate { name -> name.lowercase() to queries.selectIngredientsByName(name).executeAsOne() }
+            cleanLines.forEachIndexed { index, line ->
                 queries.insertRecipeIngredient(
                     id = newUuidV7(nowMillis + index + 100),
                     variant_id = variantId,
-                    ingredient_id = ingredientId,
-                    amount_value = null,
-                    amount_unit = null,
-                    preparation = null,
-                    optional = 0L,
+                    ingredient_id = ingredientIds.getValue(line.name.lowercase()),
+                    amount_value = line.amount,
+                    amount_unit = line.unit,
+                    preparation = line.preparation,
+                    optional = if (line.optional) 1L else 0L,
                     sort_order = index.toLong(),
                 )
             }
-            val ingredientPayload = "[${cleanIngredients.joinToString(",") { jsonString(it) }}]"
+            val ingredientPayload = "[${cleanLines.joinToString(",") { line ->
+                jsonObject(
+                    "name" to jsonString(line.name),
+                    "amount" to (line.amount?.toString() ?: "null"),
+                    "unit" to (line.unit?.let(::jsonString) ?: "null"),
+                    "preparation" to (line.preparation?.let(::jsonString) ?: "null"),
+                    "optional" to line.optional.toString(),
+                )
+            }}]"
             val revisionId = writeRevision(
                 variantId,
                 "RECIPE_VARIANT",
@@ -163,6 +197,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                     "title" to jsonString(cleanTitle),
                     "instructions" to jsonString(instructions.trim()),
                     "style" to jsonString(style.name),
+                    "servings" to servings.toString(),
                     "ingredients" to ingredientPayload,
                 ),
             )

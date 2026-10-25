@@ -86,6 +86,14 @@ data class RecipeLine(
     val optional: Boolean,
 )
 
+data class RecipeIngredientDraft(
+    val name: String,
+    val amount: Double? = null,
+    val unit: String? = null,
+    val preparation: String? = null,
+    val optional: Boolean = false,
+)
+
 data class ShopSuggestion(val spiritName: String, val newlyMakeableFamilies: Int)
 
 data class TastingNote(

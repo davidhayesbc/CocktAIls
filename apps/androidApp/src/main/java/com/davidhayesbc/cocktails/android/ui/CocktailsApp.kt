@@ -61,9 +61,11 @@ import com.davidhayesbc.cocktails.core.model.InventoryLevel
 import com.davidhayesbc.cocktails.core.model.PantryEntry
 import com.davidhayesbc.cocktails.core.model.RecipeDetail
 import com.davidhayesbc.cocktails.core.model.RecipeStyle
+import com.davidhayesbc.cocktails.core.model.RecipeIngredientDraft
 import com.davidhayesbc.cocktails.core.matching.RecipeAvailabilityFilter
 import com.davidhayesbc.cocktails.core.matching.countMissingRequiredIngredients
 import com.davidhayesbc.cocktails.core.matching.matchesMissingCount
+import com.davidhayesbc.cocktails.core.matching.scaleRecipeAmount
 import com.davidhayesbc.cocktails.core.model.TastingNote
 import com.davidhayesbc.cocktails.core.model.ShopSuggestion
 import com.davidhayesbc.cocktails.core.model.MemberProfile
@@ -311,13 +313,14 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         AddRecipeDialog(
             onDismiss = { showAddRecipe = false },
             families = recipeFamilies,
-            onSave = { title, ingredientText, instructions, style, familyId ->
-                val saved = repository.addRecipe(
+            onSave = { title, ingredientLines, instructions, servings, style, familyId ->
+                val saved = repository.addRecipeLines(
                     title = title,
-                    ingredientNames = ingredientText.lines(),
+                    ingredientLines = ingredientLines,
                     instructions = instructions,
                     style = style,
                     existingFamilyId = familyId?.let(::CocktailFamilyId),
+                    servings = servings,
                     nowMillis = System.currentTimeMillis(),
                 )
                 if (saved) {
@@ -325,6 +328,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     recipeFamilies = repository.recipeFamilies()
                     showAddRecipe = false
                 }
+                saved
             },
         )
     }
@@ -785,13 +789,25 @@ private fun RecipeDetailScreen(
     onArchive: () -> Unit,
 ) {
     var confirmArchive by remember(recipe.id) { mutableStateOf(false) }
+    var targetServings by remember(recipe.id) { mutableStateOf(recipe.servings.coerceAtLeast(0.5)) }
     LazyColumn(modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { TextButton(onClick = onBack) { Text("‹  Recipes") } }
         item { Text(recipe.title, style = MaterialTheme.typography.headlineMedium) }
-        item { Text("${recipe.style.label} · ${recipe.servings.toInt()} serving", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary) }
+        item { Text(recipe.style.label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary) }
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Servings", style = MaterialTheme.typography.titleMedium)
+                TextButton(onClick = { targetServings = (targetServings - 0.5).coerceAtLeast(0.5) }) { Text("−") }
+                Text(formatRecipeQuantity(targetServings), style = MaterialTheme.typography.titleMedium)
+                TextButton(onClick = { targetServings = (targetServings + 0.5).coerceAtMost(24.0) }) { Text("+") }
+            }
+        }
         item { Text("INGREDIENTS", style = MaterialTheme.typography.labelLarge) }
         items(recipe.ingredients) { line ->
-            Text("• ${line.name}${if (line.optional) " (optional)" else ""}", style = MaterialTheme.typography.bodyLarge)
+            val scaledAmount = scaleRecipeAmount(line.amount, recipe.servings, targetServings)
+            val amountText = scaledAmount?.let(::formatRecipeQuantity)
+            val parts = listOfNotNull(amountText, line.unit, line.name)
+            Text("• ${parts.joinToString(" ")}${if (line.optional) " (optional)" else ""}", style = MaterialTheme.typography.bodyLarge)
         }
         if (recipe.instructions.isNotBlank()) {
             item { Text("METHOD", style = MaterialTheme.typography.labelLarge) }
@@ -829,26 +845,47 @@ private fun RecipeDetailScreen(
     }
 }
 
+private fun formatRecipeQuantity(value: Double): String = java.text.DecimalFormat("0.##").format(value)
+
+private fun parseRecipeIngredientDrafts(text: String): List<RecipeIngredientDraft>? {
+    val entries = text.lines().filter { it.isNotBlank() }
+    if (entries.isEmpty()) return null
+    return entries.map { raw ->
+        val parts = raw.split('|').map(String::trim)
+        if (parts.size !in 1..3 || parts.first().isBlank()) return null
+        if (parts.size == 1) RecipeIngredientDraft(parts.first())
+        else {
+            val amount = parts[1].toDoubleOrNull()?.takeIf { it.isFinite() && it > 0.0 } ?: return null
+            val unit = parts.getOrNull(2)?.takeIf(String::isNotBlank)
+            RecipeIngredientDraft(parts.first(), amount, unit)
+        }
+    }
+}
+
 @Composable
 private fun AddRecipeDialog(
     onDismiss: () -> Unit,
     families: List<RecipeCard>,
-    onSave: (String, String, String, RecipeStyle, String?) -> Unit,
+    onSave: (String, List<RecipeIngredientDraft>, String, Double, RecipeStyle, String?) -> Boolean,
 ) {
     var title by remember { mutableStateOf("") }
     var ingredients by remember { mutableStateOf("") }
     var instructions by remember { mutableStateOf("") }
+    var servings by remember { mutableStateOf("1") }
     var style by remember { mutableStateOf(RecipeStyle.OTHER) }
     var styleMenu by remember { mutableStateOf(false) }
     var familyId by remember { mutableStateOf<String?>(null) }
     var familyMenu by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Add a recipe") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(title, { title = it }, label = { Text("Drink name") }, singleLine = true)
-                OutlinedTextField(ingredients, { ingredients = it }, label = { Text("Ingredients · one per line") }, minLines = 3)
+                OutlinedTextField(ingredients, { ingredients = it; error = null }, label = { Text("Ingredient · name | amount | unit (amount optional)") }, minLines = 3)
+                OutlinedTextField(servings, { servings = it; error = null }, label = { Text("Original servings") }, singleLine = true)
+                if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
                 OutlinedTextField(instructions, { instructions = it }, label = { Text("Method (optional)") }, minLines = 2)
                 TextButton(onClick = { familyMenu = true }) {
                     val familyName = families.firstOrNull { it.familyId.value == familyId }?.name
@@ -871,7 +908,18 @@ private fun AddRecipeDialog(
                 }
             }
         },
-        confirmButton = { Button(onClick = { onSave(title, ingredients, instructions, style, familyId) }, enabled = title.isNotBlank() && ingredients.lines().any { it.isNotBlank() }) { Text("Save") } },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val parsed = parseRecipeIngredientDrafts(ingredients)
+                    val parsedServings = servings.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0.0 }
+                    if (parsed == null) error = "Enter each ingredient as a name, or name | amount | unit. Amounts must be positive numbers."
+                    else if (parsedServings == null) error = "Servings must be a positive number."
+                    else if (!onSave(title, parsed, instructions, parsedServings, style, familyId)) error = "Check the recipe details and try again."
+                },
+                enabled = title.isNotBlank() && ingredients.lines().any { it.isNotBlank() },
+            ) { Text("Save") }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }

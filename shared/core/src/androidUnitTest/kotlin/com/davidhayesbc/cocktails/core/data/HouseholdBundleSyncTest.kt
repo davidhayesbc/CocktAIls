@@ -5,6 +5,7 @@ import com.davidhayesbc.cocktails.core.interchange.BundleDecodeResult
 import com.davidhayesbc.cocktails.core.interchange.HouseholdBundleCodec
 import com.davidhayesbc.cocktails.core.model.IngredientId
 import com.davidhayesbc.cocktails.core.model.InventoryLevel
+import com.davidhayesbc.cocktails.core.model.RecipeIngredientDraft
 import com.davidhayesbc.cocktails.core.model.RecipeStyle
 import com.davidhayesbc.cocktails.shared.db.CocktailsDatabase
 import kotlinx.serialization.json.buildJsonObject
@@ -246,6 +247,38 @@ class HouseholdBundleSyncTest {
         assertTrue(HouseholdBundleCodec.decode(left.exportHouseholdBundle(15)) is BundleDecodeResult.Valid)
         leftDriver.close()
         rightDriver.close()
+    }
+
+    @Test
+    fun measuredRecipeLinesAndYieldSurviveHouseholdExportImport() {
+        val sourceDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        CocktailsDatabase.Schema.create(sourceDriver)
+        CocktailsDatabase.Schema.create(targetDriver)
+        val source = LocalCocktailRepository(CocktailsDatabase(sourceDriver))
+        val target = LocalCocktailRepository(CocktailsDatabase(targetDriver))
+        source.initialize(10)
+        assertTrue(source.addRecipeLines(
+            title = "Gimlet",
+            ingredientLines = listOf(
+                RecipeIngredientDraft("Gin", 60.0, "ml"),
+                RecipeIngredientDraft("Lime juice", 25.0, "ml"),
+            ),
+            instructions = "Shake with ice.",
+            style = RecipeStyle.SOUR,
+            servings = 2.0,
+            nowMillis = 20,
+        ))
+
+        val bundle = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(source.exportHouseholdBundle(30))).bundle
+        val preview = assertIs<ImportPreviewResult.Valid>(target.previewHouseholdBundle(bundle)).preview
+        assertIs<ImportApplyResult.Applied>(target.applyHouseholdBundle(bundle, preview, emptyMap(), 40))
+        val recipe = target.recipes().single()
+        assertEquals(2.0, recipe.servings)
+        assertEquals(listOf(60.0, 25.0), recipe.ingredients.map { it.amount })
+        assertEquals(listOf("ml", "ml"), recipe.ingredients.map { it.unit })
+        sourceDriver.close()
+        targetDriver.close()
     }
 
     private fun database(): CocktailsDatabase {
