@@ -51,7 +51,7 @@ jobs:
           printf 'no\n' | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
             --force --name cocktails-ci --package 'system-images;android-35;default;x86_64' --device pixel_2
           "$ANDROID_HOME/emulator/emulator" -avd cocktails-ci -no-window -no-audio -no-boot-anim \
-            -gpu swiftshader_indirect -accel auto -no-snapshot -no-metrics > "$RUNNER_TEMP/cocktails-emulator.log" 2>&1 &
+            -gpu swiftshader_indirect -accel off -no-snapshot -no-metrics > "$RUNNER_TEMP/cocktails-emulator.log" 2>&1 &
           emulator_pid="$!"
           echo "$emulator_pid" > "$RUNNER_TEMP/cocktails-emulator.pid"
           adb="$ANDROID_HOME/platform-tools/adb"
