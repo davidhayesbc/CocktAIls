@@ -82,6 +82,7 @@ import com.davidhayesbc.cocktails.core.matching.scaleRecipeAmount
 import com.davidhayesbc.cocktails.core.model.TastingNote
 import com.davidhayesbc.cocktails.core.model.ShopSuggestion
 import com.davidhayesbc.cocktails.core.model.MemberProfile
+import com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup
 import com.davidhayesbc.cocktails.core.model.RecipeCard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -132,6 +133,9 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var selectedPage by remember { mutableStateOf(Page.MAKE) }
     var showShop by remember { mutableStateOf(false) }
     var showAddIngredient by remember { mutableStateOf(false) }
+    var showBarcodeScanner by remember { mutableStateOf(false) }
+    var barcodeInput by remember { mutableStateOf("") }
+    var barcodePermissionMessage by remember { mutableStateOf<String?>(null) }
     var showAddRecipe by remember { mutableStateOf(false) }
     var recipeToEdit by remember { mutableStateOf<RecipeDetail?>(null) }
     var showAddLocation by remember { mutableStateOf(false) }
@@ -296,6 +300,23 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         pendingLocationAction = null
         if (granted && action != null) performLocationAction(action)
         else if (!granted) locationMessage = "Location permission wasn't granted. Manual home selection still works."
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted && showAddIngredient) {
+            barcodePermissionMessage = null
+            showBarcodeScanner = true
+        } else if (!granted && showAddIngredient) {
+            barcodePermissionMessage = "Camera access wasn't granted. Enter the barcode manually instead."
+        }
+    }
+
+    fun beginBarcodeScan() {
+        if (context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            showBarcodeScanner = true
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
     }
 
     fun beginLocationAction(action: LocationAction) {
@@ -467,20 +488,51 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
 
     if (showAddIngredient) {
         AddIngredientDialog(
-            onDismiss = { showAddIngredient = false },
-            onSave = { name, category, level ->
+            barcode = barcodeInput,
+            barcodeMessage = barcodePermissionMessage,
+            onBarcodeChanged = { barcodeInput = it; barcodePermissionMessage = null },
+            onScanBarcode = ::beginBarcodeScan,
+            onDismiss = { showAddIngredient = false; barcodeInput = ""; barcodePermissionMessage = null },
+            onSave = { name, category, level, barcode, brand, productName ->
                 val saved = repository.addIngredient(
                     name = name,
                     category = category,
                     level = level,
                     locationId = selectedLocationId,
                     nowMillis = System.currentTimeMillis(),
+                    barcode = barcode,
+                    brand = brand,
+                    productName = productName,
                 )
                 if (saved) {
                     refreshPantry()
                     showAddIngredient = false
+                    barcodeInput = ""
+                    barcodePermissionMessage = null
+                    null
+                } else if (barcode.isNotBlank() && normalizeGtinForLookup(barcode) == null) {
+                    "That isn't a valid UPC or EAN barcode. Edit it or clear the field to save the ingredient without a product code."
+                } else if (barcode.isNotBlank()) {
+                    "This barcode is already linked to a different ingredient. Edit it or clear the field to save the ingredient without it."
+                } else {
+                    "Enter an ingredient name before saving."
                 }
             },
+        )
+    }
+
+    if (showBarcodeScanner) {
+        BarcodeScannerDialog(
+            onDetected = { scanned ->
+                if (normalizeGtinForLookup(scanned) != null) {
+                    barcodeInput = scanned
+                    barcodePermissionMessage = "Barcode captured on this phone. Confirm the ingredient and product details before saving."
+                    showBarcodeScanner = false
+                } else {
+                    barcodePermissionMessage = "The scanned code isn't a supported UPC/EAN. You can enter a valid code manually."
+                }
+            },
+            onDismiss = { showBarcodeScanner = false },
         )
     }
 
@@ -769,10 +821,17 @@ private fun PantryRow(entry: PantryEntry, onLevelSelected: (PantryEntry, Invento
 
 @Composable
 private fun AddIngredientDialog(
+    barcode: String,
+    barcodeMessage: String?,
+    onBarcodeChanged: (String) -> Unit,
+    onScanBarcode: () -> Unit,
     onDismiss: () -> Unit,
-    onSave: (String, String, InventoryLevel) -> Unit,
+    onSave: (String, String, InventoryLevel, String, String?, String?) -> String?,
 ) {
     var name by remember { mutableStateOf("") }
+    var brand by remember { mutableStateOf("") }
+    var productName by remember { mutableStateOf("") }
+    var saveError by remember { mutableStateOf<String?>(null) }
     var category by remember { mutableStateOf("Spirit") }
     var level by remember { mutableStateOf(InventoryLevel.FULL) }
     var categoryMenuExpanded by remember { mutableStateOf(false) }
@@ -782,13 +841,46 @@ private fun AddIngredientDialog(
         onDismissRequest = onDismiss,
         title = { Text("Add to your bar") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
                     label = { Text("Ingredient name") },
                     singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("ingredient-name"),
                 )
+                OutlinedTextField(
+                    value = barcode,
+                    onValueChange = onBarcodeChanged,
+                    label = { Text("UPC / EAN barcode") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("ingredient-barcode"),
+                )
+                OutlinedButton(onClick = onScanBarcode, modifier = Modifier.fillMaxWidth()) { Text("Scan barcode") }
+                OutlinedTextField(
+                    value = brand,
+                    onValueChange = { brand = it },
+                    label = { Text("Brand (optional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = productName,
+                    onValueChange = { productName = it },
+                    label = { Text("Bottle / product name (optional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "No product lookup is required. Camera frames are processed on this phone and aren't saved or sent. Confirmed barcodes and ingredient links stay local and are included in household backups.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (barcodeMessage != null) Text(barcodeMessage, style = MaterialTheme.typography.bodySmall)
+                if (saveError != null) Text(saveError!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Column {
                         TextButton(onClick = { categoryMenuExpanded = true }) { Text(category) }
@@ -822,7 +914,10 @@ private fun AddIngredientDialog(
             }
         },
         confirmButton = {
-            Button(onClick = { onSave(name, category, level) }, enabled = name.isNotBlank()) { Text("Save") }
+            Button(
+                onClick = { saveError = onSave(name, category, level, barcode, brand.takeIf(String::isNotBlank), productName.takeIf(String::isNotBlank)) },
+                enabled = name.isNotBlank(),
+            ) { Text("Save") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )

@@ -451,6 +451,11 @@ UPDATE ingredient SET canonical_name = ?, category = ? WHERE id = ?;
 insertProductIgnore:
 INSERT OR IGNORE INTO ingredient_product(id, ingredient_id, brand, product_name, barcode, created_at) VALUES (?, ?, ?, ?, ?, ?);
 
+selectProductsForBarcodeDeduplication:
+SELECT id, ingredient_id, brand, product_name, barcode, created_at
+FROM ingredient_product
+WHERE barcode IS NOT NULL;
+
 updateProduct:
 UPDATE ingredient_product SET ingredient_id = ?, brand = ?, product_name = ?, barcode = ? WHERE id = ?;
 

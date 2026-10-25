@@ -1,5 +1,6 @@
 package com.davidhayesbc.cocktails.core.interchange
 
+import com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -224,7 +225,11 @@ object BundleValidator {
                 }
                 "PRODUCT" -> {
                     reference("ingredientId", ingredientIds); requiredString("productName"); requiredLong("createdAt")
-                    record.data.optionalString("barcode")?.let { if (!barcodeKeys.add(it)) errors += "Bundle contains duplicate product barcodes." }
+                    record.data.optionalString("barcode")?.let { barcode ->
+                        val normalizedBarcode = normalizeGtinForLookup(barcode)
+                        if (normalizedBarcode == null) errors += "PRODUCT ${record.id} has an invalid UPC/EAN barcode."
+                        else if (!barcodeKeys.add(normalizedBarcode)) errors += "Bundle contains duplicate product barcodes."
+                    }
                 }
                 "INVENTORY_ITEM" -> {
                     reference("locationId", locationIds)

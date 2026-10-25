@@ -22,6 +22,7 @@ import com.davidhayesbc.cocktails.core.model.MemberProfile
 import com.davidhayesbc.cocktails.core.matching.rankSpiritUnlocks
 import com.davidhayesbc.cocktails.core.matching.HomeLocationArea
 import com.davidhayesbc.cocktails.core.model.newUuidV7
+import com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup
 import com.davidhayesbc.cocktails.core.interchange.HouseholdBundle
 
 class LocalCocktailRepository(private val database: CocktailsDatabase) {
@@ -541,20 +542,39 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         level: InventoryLevel,
         locationId: String,
         nowMillis: Long,
+        barcode: String? = null,
+        brand: String? = null,
+        productName: String? = null,
     ): Boolean {
         val cleanedName = name.trim()
         val cleanedCategory = category.trim().ifEmpty { "Other" }
         if (cleanedName.isEmpty()) return false
+        val originalBarcode = barcode?.trim()?.takeIf(String::isNotEmpty)
+        val normalizedBarcode = originalBarcode?.let(::normalizeGtinForLookup)
+        if (originalBarcode != null && normalizedBarcode == null) return false
+        val cleanedBrand = brand?.trim()?.takeIf(String::isNotEmpty)
+        val cleanedProductName = productName?.trim()?.takeIf(String::isNotEmpty) ?: cleanedName
 
-        database.transaction {
+        return database.transactionWithResult {
             val householdId = queries.selectFirstHousehold().executeAsOne().id
             val memberId = preferredMemberId() ?: queries.selectFirstMember(householdId).executeAsOne().id
             val exactId = queries.selectIngredientByNameAndCategory(cleanedName, cleanedCategory).executeAsOneOrNull()
+            val sameNameId = if (exactId == null && queries.countIngredientsByName(cleanedName).executeAsOne() == 1L) {
+                queries.selectIngredientsByName(cleanedName).executeAsOneOrNull()
+            } else null
+            val matchingProduct = normalizedBarcode?.let { normalized ->
+                queries.selectProductsForBarcodeDeduplication().executeAsList().firstOrNull { product ->
+                    product.barcode?.let(::normalizeGtinForLookup) == normalized
+                }
+            }
+            val targetIngredientId = exactId ?: sameNameId
+            if (matchingProduct != null && targetIngredientId != matchingProduct.ingredient_id) {
+                return@transactionWithResult false
+            }
             val ingredientId = exactId ?: run {
-                val existingId = queries.selectIngredientsByName(cleanedName).executeAsOneOrNull()
-                if (existingId != null && queries.countIngredientsByName(cleanedName).executeAsOne() == 1L) {
-                    queries.updateIngredientCategory(cleanedCategory, existingId)
-                    existingId
+                if (sameNameId != null) {
+                    queries.updateIngredientCategory(cleanedCategory, sameNameId)
+                    sameNameId
                 } else {
                     queries.insertIngredientIgnore(newUuidV7(nowMillis), cleanedName, cleanedCategory, nowMillis)
                     queries.selectIngredientByNameAndCategory(cleanedName, cleanedCategory).executeAsOne()
@@ -562,8 +582,25 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             }
             writeRevision(ingredientId, "INGREDIENT", memberId, nowMillis, jsonObject("name" to jsonString(cleanedName), "category" to jsonString(cleanedCategory)))
             writeInventory(locationId, ingredientId, level, memberId, nowMillis)
+
+            if (originalBarcode != null) {
+                val productId = matchingProduct?.id ?: newUuidV7(nowMillis + 1)
+                if (matchingProduct == null) {
+                    queries.insertProductIgnore(productId, ingredientId, cleanedBrand, cleanedProductName, originalBarcode, nowMillis)
+                }
+                queries.updateProduct(ingredientId, cleanedBrand, cleanedProductName, originalBarcode, productId)
+                val productPayload = jsonObject(
+                    "id" to jsonString(productId),
+                    "ingredientId" to jsonString(ingredientId),
+                    "brand" to nullableJsonString(cleanedBrand),
+                    "productName" to jsonString(cleanedProductName),
+                    "barcode" to jsonString(originalBarcode),
+                    "createdAt" to (matchingProduct?.created_at?.toString() ?: nowMillis.toString()),
+                )
+                writeRevision(productId, "PRODUCT", memberId, nowMillis, productPayload)
+            }
+            true
         }
-        return true
     }
 
     fun updateInventoryLevel(
@@ -659,6 +696,8 @@ private fun jsonString(value: String): String = buildString {
     }
     append('"')
 }
+
+private fun nullableJsonString(value: String?): String = value?.let(::jsonString) ?: "null"
 
 private fun favoriteRecordId(memberId: String, familyId: String): String =
     "${memberId.length}#$memberId${familyId.length}#$familyId"

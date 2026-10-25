@@ -53,4 +53,29 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("home-location-selector").assertIsDisplayed().performClick()
         composeRule.onNodeWithText("Home").assertIsDisplayed()
     }
+
+    @Test
+    fun manualBarcodeEntrySavesWithoutOpeningCamera() {
+        InstrumentationRegistry.getInstrumentation().uiAutomation.revokeRuntimePermission(
+            composeRule.activity.packageName,
+            Manifest.permission.CAMERA,
+        )
+        composeRule.waitForIdle()
+        assertEquals(
+            PackageManager.PERMISSION_DENIED,
+            composeRule.activity.checkSelfPermission(Manifest.permission.CAMERA),
+        )
+
+        composeRule.onNodeWithText("My Bar").performClick()
+        composeRule.onNodeWithText("＋ Add").performClick()
+        composeRule.onNodeWithText("Scan barcode").assertIsDisplayed()
+        composeRule.onNodeWithTag("ingredient-name").performTextInput("CI Manual Barcode Gin")
+        composeRule.onNodeWithTag("ingredient-barcode").performTextInput("036000291452")
+        composeRule.onNodeWithText("Save").performClick()
+        composeRule.onNodeWithText("CI Manual Barcode Gin").assertIsDisplayed()
+        assertEquals(
+            PackageManager.PERMISSION_DENIED,
+            composeRule.activity.checkSelfPermission(Manifest.permission.CAMERA),
+        )
+    }
 }

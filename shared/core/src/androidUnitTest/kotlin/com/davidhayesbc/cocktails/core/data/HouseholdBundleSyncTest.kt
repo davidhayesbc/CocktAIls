@@ -10,6 +10,7 @@ import com.davidhayesbc.cocktails.core.model.RecipeStyle
 import com.davidhayesbc.cocktails.core.model.RecipeVariantId
 import com.davidhayesbc.cocktails.shared.db.CocktailsDatabase
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -436,6 +437,46 @@ class HouseholdBundleSyncTest {
 
         reopenedRepository.setAutomaticHomeSelectionEnabled(false)
         assertFalse(reopenedRepository.automaticHomeSelectionOverridden())
+    }
+
+    @Test
+    fun barcodeProductLinkPreservesOriginalAndDeduplicatesEquivalentUpcAndEan() {
+        val database = database()
+        val repository = LocalCocktailRepository(database)
+        repository.initialize(10)
+        val homeId = repository.locations().single().id
+
+        assertFalse(repository.addIngredient("Vodka", "Spirit", InventoryLevel.FULL, homeId, 20, barcode = "036000291453"))
+        assertTrue(repository.pantry(homeId).isEmpty())
+        assertTrue(repository.addIngredient("Vodka", "Spirit", InventoryLevel.FULL, homeId, 30, barcode = "036000291452", brand = "Example", productName = "Example Vodka 750 ml"))
+        assertTrue(repository.addIngredient("Vodka", "Spirit", InventoryLevel.MOSTLY_FULL, homeId, 40, barcode = "0036000291452", brand = "Example", productName = "Example Vodka 750 ml"))
+
+        val backup = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(repository.exportHouseholdBundle(50))).bundle
+        val currentProduct = backup.records.single { it.type == "PRODUCT" }
+        assertEquals("0036000291452", currentProduct.data["barcode"]?.jsonPrimitive?.content)
+        assertEquals("Example Vodka 750 ml", currentProduct.data["productName"]?.jsonPrimitive?.content)
+        assertEquals(1, backup.records.count { it.type == "PRODUCT" })
+        assertTrue(backup.revisions.any { it.recordType == "PRODUCT" && it.payload["barcode"]?.jsonPrimitive?.content == "036000291452" })
+        assertEquals(InventoryLevel.MOSTLY_FULL, repository.pantry(homeId).single().level)
+
+        val peer = LocalCocktailRepository(database())
+        peer.initialize(60)
+        val preview = assertIs<ImportPreviewResult.Valid>(peer.previewHouseholdBundle(backup)).preview
+        assertIs<ImportApplyResult.Applied>(peer.applyHouseholdBundle(backup, preview, emptyMap(), 70))
+        val peerBundle = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(peer.exportHouseholdBundle(80))).bundle
+        assertEquals("0036000291452", peerBundle.records.single { it.type == "PRODUCT" }.data["barcode"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun oneBarcodeCannotBeAssociatedWithUnrelatedIngredients() {
+        val database = database()
+        val repository = LocalCocktailRepository(database)
+        repository.initialize(10)
+        val homeId = repository.locations().single().id
+
+        assertTrue(repository.addIngredient("Vodka", "Spirit", InventoryLevel.FULL, homeId, 20, barcode = "036000291452"))
+        assertFalse(repository.addIngredient("Gin", "Spirit", InventoryLevel.FULL, homeId, 30, barcode = "0036000291452"))
+        assertEquals("Vodka", repository.pantry(homeId).single().name)
     }
 
     private fun database(): CocktailsDatabase {
