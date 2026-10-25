@@ -4,7 +4,6 @@ import android.os.Process
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -14,8 +13,19 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.system.exitProcess
 
 /** Local, allowlisted diagnostics. No free-form user or exception text is persisted. */
-internal class DiagnosticStore(private val file: File, private val metadata: Map<String, String> = emptyMap()) {
+internal class DiagnosticStore(
+    private val file: File,
+    private val metadata: Map<String, String> = emptyMap(),
+    private val deleteFile: (File) -> Boolean = { it.delete() },
+) {
     private val lock = Any()
+
+    init {
+        synchronized(lock) {
+            val root = read()
+            write(JsonObject(root.toMutableMap().apply { put("metadata", metadataJson()) }))
+        }
+    }
 
     fun recordEvent(category: String, atMillis: Long = System.currentTimeMillis()) = synchronized(lock) {
         if (category !in EVENT_CATEGORIES) return@synchronized
@@ -34,6 +44,7 @@ internal class DiagnosticStore(private val file: File, private val metadata: Map
             put("category", category)
             // Type only. Exception message and arbitrary throwable fields are intentionally excluded.
             put("type", safeType(failure))
+            put("build", metadataJson())
         }
         write(root.with("scannerErrors", JsonArray(errors.takeLast(MAX_SCANNER_ERRORS))))
     }
@@ -45,6 +56,8 @@ internal class DiagnosticStore(private val file: File, private val metadata: Map
             put("at", atMillis)
             put("thread", if (thread.name == "main") "main" else "background")
             put("type", safeType(failure))
+            // Snapshot the build at crash time so later launches can refresh top-level metadata safely.
+            put("build", metadataJson())
             put("frames", buildJsonArray {
                 firstPartyFrames(failure).take(MAX_FRAMES).forEach { frame ->
                     add(buildJsonObject {
@@ -65,7 +78,12 @@ internal class DiagnosticStore(private val file: File, private val metadata: Map
         Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), current)
     }
 
-    fun clear() = synchronized(lock) { runCatching { file.delete() } }
+    fun clear(): Boolean = synchronized(lock) {
+        val temp = File(file.parentFile, "${file.name}.tmp")
+        val dataDeleted = !file.exists() || runCatching { deleteFile(file) }.getOrDefault(false)
+        val tempDeleted = !temp.exists() || runCatching { deleteFile(temp) }.getOrDefault(false)
+        dataDeleted && tempDeleted && !file.exists() && !temp.exists()
+    }
 
     private fun read(): JsonObject = runCatching {
         if (!file.exists() || file.length() > MAX_BYTES) emptyJson()
@@ -103,10 +121,16 @@ internal class DiagnosticStore(private val file: File, private val metadata: Map
 
     private fun emptyJson() = buildJsonObject {
         put("formatVersion", 1)
-        put("metadata", buildJsonObject { metadata.forEach { (k, v) -> put(k, safeLabel(v)) } })
+        put("metadata", metadataJson())
         put("events", JsonArray(emptyList()))
         put("scannerErrors", JsonArray(emptyList()))
         put("crashes", JsonArray(emptyList()))
+    }
+
+    private fun metadataJson() = buildJsonObject {
+        metadata.forEach { (k, v) ->
+            if (k in METADATA_FIELDS) put(k, safeLabel(v))
+        }
     }
 
     companion object {
@@ -122,6 +146,7 @@ internal class DiagnosticStore(private val file: File, private val metadata: Map
         val SCANNER_FAILURE_CATEGORIES = setOf(
             "CAMERA_PROVIDER_FAILED", "CAMERA_START_FAILED", "CAMERA_FRAME_FAILED", "BARCODE_DECODE_FAILED",
         )
+        private val METADATA_FIELDS = setOf("versionName", "versionCode", "androidApi", "device")
 
         private fun safeType(t: Throwable?) = t?.javaClass?.simpleName?.take(64)?.filter { it.isLetterOrDigit() || it == '_' } ?: "Unknown"
         private fun safeLabel(value: String) = value.take(100).filter { it.isLetterOrDigit() || it in "._-$" }
@@ -144,29 +169,32 @@ internal object LocalDiagnostics {
         recordEvent("APP_STARTED")
     }
 
-    fun installHandlerForTest(prior: UncaughtExceptionHandler?, recorder: (Thread, Throwable) -> Unit): UncaughtExceptionHandler =
-        UncaughtExceptionHandler { thread, error ->
-            runCatching { recorder(thread, error) }
-            if (prior != null) prior.uncaughtException(thread, error) else throw error
-        }
+    internal fun createUncaughtExceptionHandler(
+        prior: UncaughtExceptionHandler?,
+        recorder: (Thread, Throwable) -> Unit,
+        noPriorHandler: (Thread, Throwable) -> Unit,
+    ): UncaughtExceptionHandler = UncaughtExceptionHandler { thread, error ->
+        runCatching { recorder(thread, error) }
+        if (prior != null) prior.uncaughtException(thread, error) else noPriorHandler(thread, error)
+    }
 
     private fun installHandler() {
         val prior = Thread.getDefaultUncaughtExceptionHandler()
-        Thread.setDefaultUncaughtExceptionHandler(UncaughtExceptionHandler { thread, error ->
-            runCatching { store?.recordCrash(thread, error) }
-            if (prior != null) prior.uncaughtException(thread, error)
-            else {
+        Thread.setDefaultUncaughtExceptionHandler(createUncaughtExceptionHandler(
+            prior = prior,
+            recorder = { thread, error -> store?.recordCrash(thread, error) },
+            noPriorHandler = { _, _ ->
                 Process.killProcess(Process.myPid())
                 exitProcess(10)
-            }
-        })
+            },
+        ))
     }
 
     fun recordEvent(category: String) { runCatching { store?.recordEvent(category) } }
     fun recordScannerFailure(category: String, error: Throwable? = null) { runCatching { store?.recordScannerFailure(category, error) } }
     fun preview(): String = runCatching { store?.preview().orEmpty() }.getOrDefault("Diagnostics are unavailable.")
     fun export(): String = runCatching { store?.export().orEmpty() }.getOrDefault("{}")
-    fun clear() { runCatching { store?.clear() } }
+    fun clear(): Boolean = runCatching { store?.clear() == true }.getOrDefault(false)
 }
 
 private fun JsonObject.with(key: String, value: JsonArray): JsonObject = JsonObject(toMutableMap().apply { put(key, value) })

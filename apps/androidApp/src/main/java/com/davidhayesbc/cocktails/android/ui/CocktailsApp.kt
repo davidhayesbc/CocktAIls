@@ -699,7 +699,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         DiagnosticsDialog(
             preview = LocalDiagnostics.preview(),
             onExport = { diagnosticsExportLauncher.launch("CocktAIls-Diagnostics.json") },
-            onClear = { LocalDiagnostics.clear(); showDiagnostics = false },
+            onClear = { LocalDiagnostics.clear() },
             onDismiss = { showDiagnostics = false },
         )
     }
@@ -1697,7 +1697,8 @@ private fun HouseholdScreen(
 }
 
 @Composable
-private fun DiagnosticsDialog(preview: String, onExport: () -> Unit, onClear: () -> Unit, onDismiss: () -> Unit) {
+private fun DiagnosticsDialog(preview: String, onExport: () -> Unit, onClear: () -> Boolean, onDismiss: () -> Unit) {
+    var clearError by remember { mutableStateOf<String?>(null) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Local diagnostics") },
@@ -1707,12 +1708,13 @@ private fun DiagnosticsDialog(preview: String, onExport: () -> Unit, onClear: ()
                 Text("Includes app/device version, camera event categories, and crash stack frames. Excludes recipes, household/member data, photos, barcode values, and exception messages.")
                 Text("This captures uncaught Java/Kotlin exceptions. It does not collect logcat and may not capture native crashes or ANRs.", style = MaterialTheme.typography.bodySmall)
                 Text(preview, style = MaterialTheme.typography.bodySmall)
+                clearError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         },
         confirmButton = { Button(onClick = onExport) { Text("Export diagnostics") } },
         dismissButton = {
             Row {
-                TextButton(onClick = onClear) { Text("Clear") }
+                TextButton(onClick = { if (onClear()) onDismiss() else clearError = "Could not remove every local diagnostics file." }) { Text("Clear") }
                 TextButton(onClick = onDismiss) { Text("Done") }
             }
         },

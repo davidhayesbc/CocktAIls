@@ -15,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,6 +48,7 @@ internal fun BarcodeScannerDialog(
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
     var scannerMessage by remember { mutableStateOf("Starting camera preview…") }
     val completed = remember { AtomicBoolean(false) }
+    val readiness = remember(previewView, lifecycleOwner) { ScannerReadiness() }
     val currentOnDetected by rememberUpdatedState(onDetected)
     DisposableEffect(previewView, lifecycleOwner) {
         val view = previewView
@@ -60,14 +62,19 @@ internal fun BarcodeScannerDialog(
         var provider: ProcessCameraProvider? = null
         var analysis: ImageAnalysis? = null
         val disposed = AtomicBoolean(false)
-        val analyzerReady = AtomicBoolean(false)
+        fun publishReadiness() {
+            ContextCompat.getMainExecutor(context).execute {
+                if (!disposed.get()) scannerMessage = readiness.message()
+            }
+        }
         var previewStateObserver: Observer<PreviewView.StreamState>? = null
         if (view != null) {
             previewStateObserver = Observer { streamState ->
                 if (streamState == PreviewView.StreamState.STREAMING && !disposed.get()) {
-                    LocalDiagnostics.recordEvent("CAMERA_PREVIEW_STREAMING")
-                    scannerMessage = if (analyzerReady.get()) "Camera preview is live. Center a UPC or EAN barcode in the frame."
-                    else "Camera preview is live. Preparing barcode reader…"
+                    if (readiness.markPreviewStreaming()) {
+                        LocalDiagnostics.recordEvent("CAMERA_PREVIEW_STREAMING")
+                        publishReadiness()
+                    }
                 }
             }
             view.previewStreamState.observe(lifecycleOwner, previewStateObserver!!)
@@ -110,10 +117,8 @@ internal fun BarcodeScannerDialog(
                                     }
                                 }
                                 .onFailure { error ->
-                                    if (error is ReaderException && analyzerReady.compareAndSet(false, true)) {
-                                        ContextCompat.getMainExecutor(context).execute {
-                                            if (!disposed.get()) scannerMessage = "Camera is live and barcode frames are being analyzed."
-                                        }
+                                    if (error is ReaderException && readiness.markAnalyzerReady()) {
+                                        publishReadiness()
                                     } else if (error !is ReaderException) {
                                         LocalDiagnostics.recordScannerFailure("BARCODE_DECODE_FAILED", error)
                                         ContextCompat.getMainExecutor(context).execute {
@@ -147,7 +152,7 @@ internal fun BarcodeScannerDialog(
         }
     }
 
-    androidx.compose.runtime.LaunchedEffect(Unit) { LocalDiagnostics.recordEvent("CAMERA_SCAN_OPENED") }
+    LaunchedEffect(Unit) { LocalDiagnostics.recordEvent("CAMERA_SCAN_OPENED") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
