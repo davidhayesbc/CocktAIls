@@ -62,10 +62,6 @@ jobs:
     name: Android offline launch and persistence smoke test
     runs-on: ubuntu-24.04
     timeout-minutes: 40
-    env:
-      ANDROID_USER_HOME: ${{ runner.temp }}/cocktails-android-user
-      ANDROID_EMULATOR_HOME: ${{ runner.temp }}/cocktails-android-user
-      ANDROID_AVD_HOME: ${{ runner.temp }}/cocktails-avd
     steps:
       - name: Check out source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -77,6 +73,18 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+
+      - name: Configure writable Android user directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "ANDROID_USER_HOME=$RUNNER_TEMP/cocktails-android-user" >> "$GITHUB_ENV"
+          echo "ANDROID_EMULATOR_HOME=$RUNNER_TEMP/cocktails-android-user" >> "$GITHUB_ENV"
+          echo "ANDROID_AVD_HOME=$RUNNER_TEMP/cocktails-avd" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.android" \
+            "$RUNNER_TEMP/cocktails-android-user" \
+            "$RUNNER_TEMP/cocktails-avd"
+          chmod 700 "$HOME/.android" "$RUNNER_TEMP/cocktails-android-user"
 
       - name: Install Android emulator packages
         shell: bash
