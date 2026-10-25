@@ -45,7 +45,7 @@ class BarcodeScannerLifecycleTest {
         composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Scan barcode"))
         composeRule.onNodeWithText("Scan barcode").assertIsDisplayed()
         composeRule.onNodeWithText("Scan barcode").performClick()
-        clickPermissionPrompt("don't allow", "deny")
+        clickPermissionPrompt("Don't allow", "Do not allow", "Deny")
         composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Camera access wasn't granted. Enter the barcode manually instead."))
         composeRule.onNodeWithText("Camera access wasn't granted. Enter the barcode manually instead.").assertIsDisplayed()
         composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasTestTag("ingredient-barcode"))
@@ -64,8 +64,9 @@ class BarcodeScannerLifecycleTest {
         composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Scan barcode"))
         composeRule.onNodeWithText("Scan barcode").assertIsDisplayed()
         composeRule.onNodeWithText("Scan barcode").performClick()
-        clickPermissionPrompt("while using the app", "only this time", "allow")
-        composeRule.onNodeWithText("Scan a bottle").assertIsDisplayed()
+        clickPermissionPrompt("While using the app", "Allow only while using the app", "Only this time", "Allow")
+        awaitCameraPermissionGranted()
+        awaitScannerDialog()
         composeRule.onNodeWithTag("barcode-camera-preview").assertIsDisplayed()
         composeRule.waitUntil(timeoutMillis = 30_000) {
             composeRule.onAllNodesWithText("Camera is live and barcode frames are being analyzed.")
@@ -75,10 +76,10 @@ class BarcodeScannerLifecycleTest {
         composeRule.waitForIdle()
         composeRule.onAllNodesWithText("Scan a bottle").assertCountEquals(0)
         composeRule.onNodeWithText("Scan barcode").performClick()
-        composeRule.onNodeWithText("Scan a bottle").assertIsDisplayed()
+        awaitScannerDialog()
         composeRule.onNodeWithText("Enter manually").performClick()
         composeRule.onNodeWithText("Scan barcode").performClick()
-        composeRule.onNodeWithText("Scan a bottle").assertIsDisplayed()
+        awaitScannerDialog()
         composeRule.activityRule.scenario.recreate()
         composeRule.waitForIdle()
         composeRule.onAllNodesWithText("Scan a bottle").assertCountEquals(0)
@@ -89,21 +90,45 @@ class BarcodeScannerLifecycleTest {
         val deadline = SystemClock.uptimeMillis() + 8_000
         while (SystemClock.uptimeMillis() < deadline) {
             val candidates = automation.windows.mapNotNull { runCatching { it.root }.getOrNull() } + listOfNotNull(automation.rootInActiveWindow)
-            val node = candidates.firstNotNullOfOrNull { root -> findPermissionAction(root, acceptedLabels, targetResourceIds(acceptedLabels)) }
+            val node = findPermissionAction(candidates, acceptedLabels, targetResourceIds(acceptedLabels))
             node?.let { target ->
-                assertTrue("Permission prompt action was not clickable", target.performAction(AccessibilityNodeInfo.ACTION_CLICK))
+                if (!target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                    failWithCameraUiDiagnostics(
+                        "Permission action was not clickable: id=${target.viewIdResourceName} text=${target.text}",
+                    )
+                }
                 return
             }
             SystemClock.sleep(100)
         }
-        failWithPermissionPromptDiagnostics("Camera permission prompt action not found for ${acceptedLabels.joinToString()}")
+        failWithCameraUiDiagnostics("Camera permission prompt action not found for ${acceptedLabels.joinToString()}")
+    }
+
+    private fun awaitScannerDialog() {
+        try {
+            composeRule.waitUntil(timeoutMillis = 15_000) {
+                composeRule.onAllNodesWithText("Scan a bottle").fetchSemanticsNodes().isNotEmpty()
+            }
+        } catch (failure: AssertionError) {
+            failWithCameraUiDiagnostics("Scanner dialog did not appear after the camera action: ${failure.message}")
+        }
+        composeRule.onNodeWithText("Scan a bottle").assertIsDisplayed()
+    }
+
+    private fun awaitCameraPermissionGranted() {
+        val deadline = SystemClock.uptimeMillis() + 10_000
+        while (SystemClock.uptimeMillis() < deadline &&
+            composeRule.activity.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED
+        ) {
+            SystemClock.sleep(100)
+        }
+        if (composeRule.activity.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            failWithCameraUiDiagnostics("Android did not grant CAMERA after the selected permission action")
+        }
     }
 
     private fun targetResourceIds(labels: Array<out String>): Set<String> = when {
-        labels.any { it.contains("deny", ignoreCase = true) || it.contains("don't allow", ignoreCase = true) } -> setOf(
-            "com.android.permissioncontroller:id/permission_deny_button",
-            "com.android.permissioncontroller:id/permission_deny_and_dont_ask_again_button",
-        )
+        labels.any { it.contains("deny", ignoreCase = true) || it.contains("don't allow", ignoreCase = true) } -> denialResourceIds()
         else -> setOf(
             "com.android.permissioncontroller:id/permission_allow_foreground_only_button",
             "com.android.permissioncontroller:id/permission_allow_one_time_button",
@@ -112,29 +137,55 @@ class BarcodeScannerLifecycleTest {
     }
 
     private fun findPermissionAction(
-        node: AccessibilityNodeInfo?,
+        roots: List<AccessibilityNodeInfo>,
         acceptedLabels: Array<out String>,
         acceptedResourceIds: Set<String>,
     ): AccessibilityNodeInfo? {
-        if (node == null) return null
-        val text = node.text?.toString().orEmpty()
-        val resourceId = node.viewIdResourceName.orEmpty()
-        if (resourceId in acceptedResourceIds || (node.isClickable && isAcceptedLabel(text, acceptedLabels))) return node
-        for (index in 0 until node.childCount) {
-            findPermissionAction(node.getChild(index), acceptedLabels, acceptedResourceIds)?.let { return it }
+        val nodes = buildList {
+            fun collect(current: AccessibilityNodeInfo?) {
+                if (current == null) return
+                add(current)
+                for (index in 0 until current.childCount) collect(current.getChild(index))
+            }
+            roots.forEach(::collect)
         }
-        return null
+        val denyIds = denialResourceIds()
+        nodes.firstOrNull { candidate ->
+            val id = candidate.viewIdResourceName.orEmpty()
+            candidate.isClickable && id in acceptedResourceIds && id !in denyIds && !isDenyLabel(candidate.text?.toString().orEmpty())
+        }?.let { return it }
+        return nodes.firstOrNull { candidate ->
+            candidate.isClickable && isAcceptedLabel(candidate.text?.toString().orEmpty(), acceptedLabels)
+        }
     }
 
     private fun isAcceptedLabel(text: String, acceptedLabels: Array<out String>): Boolean {
-        val normalized = text.lowercase()
+        val normalized = normalizePermissionLabel(text)
+        val accepted = acceptedLabels.map(::normalizePermissionLabel)
         val wantsDeny = acceptedLabels.any { it.contains("deny", true) || it.contains("don't allow", true) }
-        val isDeny = normalized.contains("deny") || normalized.contains("don't allow") || normalized.contains("do not allow")
-        if (wantsDeny) return isDeny
-        return !isDeny && acceptedLabels.any { normalized.contains(it.lowercase()) }
+        val isDeny = isDenyLabel(normalized)
+        if (wantsDeny) return isDeny && normalized in accepted
+        return !isDeny && normalized in accepted
     }
 
-    private fun failWithPermissionPromptDiagnostics(message: String): Nothing {
+    private fun isDenyLabel(text: String): Boolean {
+        val normalized = normalizePermissionLabel(text)
+        return normalized == "deny" || normalized == "don't allow" || normalized == "do not allow" || normalized == "never allow"
+    }
+
+    private fun denialResourceIds(): Set<String> = setOf(
+        "com.android.permissioncontroller:id/permission_deny_button",
+        "com.android.permissioncontroller:id/permission_deny_and_dont_ask_again_button",
+    )
+
+    private fun normalizePermissionLabel(value: String): String = value
+        .lowercase()
+        .replace('\u2018', '\'')
+        .replace('\u2019', '\'')
+        .replace(Regex("\\s+"), " ")
+        .trim()
+
+    private fun failWithCameraUiDiagnostics(message: String): Nothing {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val automation = instrumentation.uiAutomation
         val hierarchy = automation.windows.joinToString("\n--- window ---\n") { window ->
