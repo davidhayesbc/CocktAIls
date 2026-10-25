@@ -100,7 +100,9 @@ class OfflineRecipeSmokeTest {
             composeRule.waitUntil(timeoutMillis = 5_000) {
                 composeRule.onAllNodesWithText("Product: Provider Gin").fetchSemanticsNodes().isNotEmpty()
             }
+            composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Product: Provider Gin"))
             composeRule.onNodeWithText("Product: Provider Gin").assertIsDisplayed()
+            composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Showing a result saved on this phone."))
             composeRule.onNodeWithText("Showing a result saved on this phone.").assertIsDisplayed()
             composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Ingredient name"))
             composeRule.onNodeWithTag("ingredient-name").assertTextEquals("My Manual Gin")
