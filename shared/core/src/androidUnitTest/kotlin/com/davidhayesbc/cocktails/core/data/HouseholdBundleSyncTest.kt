@@ -338,6 +338,51 @@ class HouseholdBundleSyncTest {
     }
 
     @Test
+    fun concurrentRecipeArchiveAndEditRequireAnExplicitChoiceAndPreserveBothParents() {
+        val leftDatabase = database()
+        val rightDatabase = database()
+        val left = LocalCocktailRepository(leftDatabase)
+        val right = LocalCocktailRepository(rightDatabase)
+        left.initialize(100)
+        assertTrue(left.addRecipe("Daiquiri", listOf("Rum", "Lime"), "Shake with ice.", RecipeStyle.SOUR, nowMillis = 200))
+        val recipe = left.recipes().single()
+        val baseline = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(left.exportHouseholdBundle(300))).bundle
+        right.initialize(400)
+        val initialPreview = assertIs<ImportPreviewResult.Valid>(right.previewHouseholdBundle(baseline)).preview
+        assertIs<ImportApplyResult.Applied>(right.applyHouseholdBundle(baseline, initialPreview, emptyMap(), 500))
+
+        assertTrue(right.editRecipeVariant(
+            variantId = recipe.id,
+            title = "Daiquiri (house method)",
+            ingredientLines = recipe.ingredients.map { RecipeIngredientDraft(it.name, it.amount, it.unit, it.preparation, it.optional) },
+            instructions = "Shake hard and double strain.",
+            servings = recipe.servings,
+            style = recipe.style,
+            nowMillis = 600,
+        ))
+        val localEditHead = rightDatabase.householdQueries.selectLatestRecordRevision(recipe.id.value, "RECIPE_VARIANT").executeAsOne()
+        assertTrue(left.archiveRecipeVariant(recipe.id, 700))
+        val incomingArchive = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(left.exportHouseholdBundle(800))).bundle
+
+        val preview = assertIs<ImportPreviewResult.Valid>(right.previewHouseholdBundle(incomingArchive)).preview
+        val conflict = preview.conflicts.single { it.type == "RECIPE_VARIANT" && it.id == recipe.id.value }
+        assertFalse(conflict.localDeleted)
+        assertTrue(conflict.incomingDeleted)
+        assertIs<ImportApplyResult.Invalid>(right.applyHouseholdBundle(incomingArchive, preview, emptyMap(), 900))
+
+        assertIs<ImportApplyResult.Applied>(right.applyHouseholdBundle(
+            incomingArchive,
+            preview,
+            mapOf(conflict.key to ConflictResolution(ConflictChoice.USE_INCOMING)),
+            1_000,
+        ))
+        assertFalse(right.recipes().any { it.id == recipe.id })
+        assertEquals(recipe.id.value, rightDatabase.householdQueries.selectAllTombstonesForBundle().executeAsList().single().record_id)
+        val mergeHead = rightDatabase.householdQueries.selectLatestRecordRevision(recipe.id.value, "RECIPE_VARIANT").executeAsOne()
+        assertEquals(setOf(localEditHead, conflict.incomingHeadIds.single()), rightDatabase.householdQueries.selectRevisionParents(mergeHead).executeAsList().toSet())
+    }
+
+    @Test
     fun combinedImportCannotExceedHouseholdBackupLimit() {
         val leftDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
         val rightDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
