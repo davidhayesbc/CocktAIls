@@ -7,6 +7,8 @@ This is a snapshot of implementation and verification, not a release-readiness c
 - Android debug app and Kotlin Multiplatform shared core are in place; Android CI compiles the common metadata, runs shared-core tests and lint, builds the debug APK, and uploads it as a 30-day Actions artifact.
 - SQLDelight schema v3 migrates a populated v1 pantry without changing its existing IDs or stock levels. Tests cover the v1-to-v3 migration, canonical UUIDv7 generation, family-level shop unlock counting, recipe-family explicit association, tasting-note author attribution, and revision payload/parent links.
 - Household recipe variants can now be archived with an immutable deletion revision and tombstone. Archived variants stay in storage/history and disappear from browse results; repeated archive attempts do not create another deletion.
+- Versioned household JSON backups can be written/read with Android's document picker. Import is size/schema/reference checked, staged for preview, cancelable without writes, and committed in one database transaction. Device-local preferences and provider/coordinate settings are excluded.
+- Import conflict review compares revision ancestry, never relies on device timestamps, supports keep-local/use-backup/field merge, and writes a merge revision with both branch heads as parents. Reimporting an older branch after merge does not roll back the selected result.
 - Local household and member profiles, multiple homes, per-home approximate inventory, persisted manual home/member choices, recipe entry, grouped variants, style filters, tasting notes, and the initial At the shop spirit ranking are implemented.
 - Recipe catalog remains empty by design pending record-level rights review. No credentials, model providers, or network service are required for the app's current workflows.
 
@@ -15,23 +17,23 @@ This is a snapshot of implementation and verification, not a release-readiness c
 | # | State | Evidence or remaining work |
 |---|---|---|
 | 1 | Partial | Offline-capable local storage, homes, pantry, recipe entry, availability, and notes exist. Favorites, scaling, missing-one/two suggestions, and airplane-mode device validation remain. |
-| 2 | Not implemented | Versioned household bundle export/import and optional photo transfer are pending. |
-| 3 | Not implemented | Concurrent edit conflict detection, conflict review, field merge, and two-parent merge revisions are pending. |
-| 4 | Partial | Member-attributed tasting notes are stored independently and tested locally; cross-device round-trip is pending. |
-| 5 | Not implemented | Reimport fast-forward/idempotence and old-bundle no-rollback behavior need import tests. |
+| 2 | Partial | Versioned household JSON export/import is implemented with preview, cancel, size/reference validation, atomic apply, and an Android file-picker flow. Photo transfer and generic recipe CSV/JSON mapping remain. |
+| 3 | Partial | Revision-ancestry conflicts, explicit resolution, field merge, and merge revisions with both parents are implemented and tested. Tombstone transfer and deletion-vs-edit edge-case tests remain. |
+| 4 | Partial | Member-attributed tasting notes round-trip across two independent databases in the sync regression test. Device-level multi-user usability remains unverified. |
+| 5 | Partial | Duplicate reimport and stale branch no-rollback behavior are tested. Broader fast-forward/tombstone/import-history fixtures remain. |
 | 6 | Not implemented | Barcode capture, local barcode storage, product association, and offline manual fallback are pending. |
 | 7 | Partial | The app has no AI dependency. Provider configuration, disclosure, request limits, structured validation, and save-as-draft behavior are pending. |
-| 8 | Partial | Device-only preferences are in a separate local table and there are no provider credentials yet. Export privacy tests are pending with interchange. |
-| 9 | Not implemented | Staged CSV/JSON mapping, preview, cancel-without-writes, validation, and atomic commit are pending. |
+| 8 | Partial | Device-only preferences stay in a separate table; export tests verify API-key/coordinate/radius canaries are omitted. |
+| 9 | Partial | Household bundle staging, preview, cancel-without-writes, validation, and atomic commit are implemented. Generic recipe CSV/JSON field mapping remains. |
 | 10 | Partial | Manual recipes are separate by default; users can explicitly associate a variant with a family. Source-aware duplicate detection and reversible import associations are pending. |
 | 11 | Partial | Manual home override is persisted and tested. Opt-in foreground location permission, on-device home matching, ambiguity handling, and permission-path device tests are pending. |
 | 12 | Partial | Offline spirit unlock ranking counts distinct newly makeable families and has unit coverage. Shop-specific fixed destination selection and full Pixel validation remain. |
-| 13 | Not implemented | Household export and tests that exclude coordinates, radii, credentials, and local preferences are pending. |
+| 13 | Partial | Household export excludes local preferences; regression coverage checks credential, coordinate, and radius canaries. |
 
 ## Remaining Phase 1 work
 
-1. Complete versioned bundle and CSV/JSON interchange with staging, preview/cancel, atomic validation, idempotent imports, provenance preservation, and privacy tests.
-2. Add revision graph comparison, skewed-clock concurrent edit detection, conflict review/field selection, two-parent merge revisions, and robust tombstone import/merge coverage.
+1. Complete generic recipe CSV/JSON interchange with staging, field mapping, provenance review, and idempotent commits; household JSON exchange is implemented.
+2. Add robust tombstone-vs-edit conflict tests, validate import behavior for all record types and malformed/large bundles, and retain the tested skewed-clock two-device conflict path.
 3. Add missing recipe CRUD and discovery functions: edit/duplicate, favorites, recent drinks, recipe scaling and units, and missing-ingredient filters. Keep source association explicit and reversible.
 4. Add location permission and foreground home selection with persisted manual override; keep the At the shop destination fixed for the shop session.
 5. Add barcode scan capture with an always-available manual path. Any external lookup requires a separate coverage, privacy, and license review.

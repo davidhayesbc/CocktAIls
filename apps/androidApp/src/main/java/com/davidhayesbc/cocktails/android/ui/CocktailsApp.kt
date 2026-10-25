@@ -1,5 +1,9 @@
 package com.davidhayesbc.cocktails.android.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -33,12 +37,24 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.davidhayesbc.cocktails.core.data.LocalCocktailRepository
+import com.davidhayesbc.cocktails.core.data.ImportApplyResult
+import com.davidhayesbc.cocktails.core.data.ImportPreviewResult
+import com.davidhayesbc.cocktails.core.data.HouseholdImportPreview
+import com.davidhayesbc.cocktails.core.data.BundleRecordChange
+import com.davidhayesbc.cocktails.core.data.ConflictChoice
+import com.davidhayesbc.cocktails.core.data.ConflictResolution
+import com.davidhayesbc.cocktails.core.interchange.BundleDecodeResult
+import com.davidhayesbc.cocktails.core.interchange.HouseholdBundle
+import com.davidhayesbc.cocktails.core.interchange.HouseholdBundleCodec
+import com.davidhayesbc.cocktails.core.interchange.MAX_HOUSEHOLD_BUNDLE_BYTES
 import com.davidhayesbc.cocktails.core.model.HomeLocation
 import com.davidhayesbc.cocktails.core.model.CocktailFamilyId
 import com.davidhayesbc.cocktails.core.model.InventoryLevel
@@ -49,6 +65,16 @@ import com.davidhayesbc.cocktails.core.model.TastingNote
 import com.davidhayesbc.cocktails.core.model.ShopSuggestion
 import com.davidhayesbc.cocktails.core.model.MemberProfile
 import com.davidhayesbc.cocktails.core.model.RecipeCard
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import java.io.ByteArrayOutputStream
 
 private enum class Page(val label: String) {
     MAKE("Make"),
@@ -59,6 +85,8 @@ private enum class Page(val label: String) {
 
 @Composable
 fun CocktailsApp(repository: LocalCocktailRepository) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var locations by remember(repository) { mutableStateOf(repository.locations()) }
     var members by remember(repository) { mutableStateOf(repository.members()) }
     var selectedLocationId by remember(repository) {
@@ -78,6 +106,66 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var recipes by remember { mutableStateOf(repository.recipes()) }
     var recipeFamilies by remember { mutableStateOf(repository.recipeFamilies()) }
     var pantry by remember { mutableStateOf(emptyList<PantryEntry>()) }
+    var shareMessage by remember { mutableStateOf<String?>(null) }
+    var stagedBundle by remember { mutableStateOf<HouseholdBundle?>(null) }
+    var stagedPreview by remember { mutableStateOf<HouseholdImportPreview?>(null) }
+    var conflictResolutions by remember { mutableStateOf<Map<String, ConflictResolution>>(emptyMap()) }
+
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri == null) {
+            shareMessage = "Export canceled. No file was written."
+        } else {
+            coroutineScope.launch {
+                shareMessage = runCatching {
+                    val contents = withContext(Dispatchers.IO) { repository.exportHouseholdBundle(System.currentTimeMillis()) }
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri, "w")?.buffered()?.use { it.write(contents.encodeToByteArray()) }
+                            ?: error("Could not open the selected file for writing.")
+                    }
+                    "Household backup saved. Keep it somewhere both phones can access."
+                }.getOrElse { "Export failed: ${it.message ?: "could not write the backup"}" }
+            }
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) {
+            shareMessage = "Import canceled. Your data was not changed."
+        } else {
+            coroutineScope.launch {
+                val result = runCatching {
+                    val contents = withContext(Dispatchers.IO) {
+                        context.contentResolver.openInputStream(uri)?.use { input ->
+                            val output = ByteArrayOutputStream()
+                            val buffer = ByteArray(8 * 1024)
+                            var total = 0
+                            while (true) {
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                total += count
+                                require(total <= MAX_HOUSEHOLD_BUNDLE_BYTES) { "Bundle exceeds the 10 MiB limit." }
+                                output.write(buffer, 0, count)
+                            }
+                            output.toByteArray().decodeToString()
+                        } ?: error("Could not open the selected file for reading.")
+                    }
+                    when (val decoded = HouseholdBundleCodec.decode(contents)) {
+                        is BundleDecodeResult.Invalid -> shareMessage = decoded.reason
+                        is BundleDecodeResult.Valid -> when (val preview = withContext(Dispatchers.IO) { repository.previewHouseholdBundle(decoded.bundle) }) {
+                            is ImportPreviewResult.Invalid -> shareMessage = preview.reason
+                            is ImportPreviewResult.Valid -> {
+                                stagedBundle = decoded.bundle
+                                stagedPreview = preview.preview
+                                conflictResolutions = emptyMap()
+                                shareMessage = null
+                            }
+                        }
+                    }
+                }
+                result.exceptionOrNull()?.let { shareMessage = "Import preview failed: ${it.message ?: "file could not be read"}" }
+            }
+        }
+    }
 
     LaunchedEffect(selectedLocationId) {
         pantry = if (selectedLocationId.isEmpty()) emptyList() else repository.pantry(selectedLocationId)
@@ -95,6 +183,17 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     fun selectMember(memberId: String) {
         selectedMemberId = memberId
         repository.setPreferredMemberId(memberId)
+    }
+
+    fun refreshHousehold() {
+        locations = repository.locations()
+        members = repository.members()
+        recipes = repository.recipes()
+        recipeFamilies = repository.recipeFamilies()
+        selectedLocationId = repository.preferredHomeId()?.takeIf { id -> locations.any { it.id == id } } ?: locations.firstOrNull()?.id.orEmpty()
+        selectedMemberId = repository.preferredMemberId()?.takeIf { id -> members.any { it.id == id } } ?: members.firstOrNull()?.id.orEmpty()
+        refreshPantry()
+        selectedRecipe = null
     }
 
     Scaffold(
@@ -174,12 +273,14 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     selectedRecipe = null
                 },
             )
-            else -> PlaceholderScreen(
+            else -> HouseholdScreen(
                 modifier = Modifier.padding(contentPadding),
-                title = "More",
-                message = "Manage who's using this bar.",
-                actionLabel = "Members · ${members.firstOrNull { it.id == selectedMemberId }?.name ?: "Choose a member"}",
-                onAction = { showAddMember = true },
+                members = members,
+                selectedMemberId = selectedMemberId,
+                onManageMembers = { showAddMember = true },
+                onExport = { exportLauncher.launch("CocktAIls-Household-Backup.json") },
+                onImport = { importLauncher.launch(arrayOf("application/json", "text/json", "*/*")) },
+                shareMessage = shareMessage,
             )
         }
     }
@@ -266,6 +367,38 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     nowMillis = System.currentTimeMillis(),
                 )
                 showAddNote = false
+            },
+        )
+    }
+
+    val preview = stagedPreview
+    val bundle = stagedBundle
+    if (preview != null && bundle != null) {
+        HouseholdImportDialog(
+            preview = preview,
+            resolutions = conflictResolutions,
+            onResolution = { key, resolution -> conflictResolutions = conflictResolutions + (key to resolution) },
+            onCancel = {
+                stagedPreview = null
+                stagedBundle = null
+                conflictResolutions = emptyMap()
+                shareMessage = "Import canceled. Your data was not changed."
+            },
+            onApply = {
+                coroutineScope.launch {
+                    when (val result = withContext(Dispatchers.IO) {
+                        repository.applyHouseholdBundle(bundle, preview, conflictResolutions, System.currentTimeMillis())
+                    }) {
+                        is ImportApplyResult.Invalid -> shareMessage = result.reason
+                        is ImportApplyResult.Applied -> {
+                            stagedPreview = null
+                            stagedBundle = null
+                            conflictResolutions = emptyMap()
+                            refreshHousehold()
+                            shareMessage = "Imported ${result.additions} new and ${result.updates} updated records; resolved ${result.resolvedConflicts} conflicts."
+                        }
+                    }
+                }
             },
         )
     }
@@ -755,6 +888,136 @@ private fun AddNoteDialog(onDismiss: () -> Unit, onSave: (Int?, String) -> Unit)
         confirmButton = { Button(onClick = { onSave(rating, note) }) { Text("Save note") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+}
+
+@Composable
+private fun HouseholdScreen(
+    modifier: Modifier,
+    members: List<MemberProfile>,
+    selectedMemberId: String,
+    onManageMembers: () -> Unit,
+    onExport: () -> Unit,
+    onImport: () -> Unit,
+    shareMessage: String?,
+) {
+    Column(
+        modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Text("Household", style = MaterialTheme.typography.headlineMedium)
+        Text("Shared at home", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+        Text("Tasting notes are saved under the selected member. Backups contain recipes, pantry, member notes, and revision history.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        OutlinedButton(onClick = onManageMembers) {
+            Text("Member · ${members.firstOrNull { it.id == selectedMemberId }?.name ?: "Choose a member"}  ▾")
+        }
+        Text("Manual sharing", style = MaterialTheme.typography.titleLarge)
+        Button(onClick = onExport, modifier = Modifier.fillMaxWidth()) { Text("Export household backup") }
+        OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth()) { Text("Import household backup") }
+        Text("Import previews never change your data. Each phone can share a backup using Nearby Share, Drive, or another file app.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (shareMessage != null) Text(shareMessage, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+@Composable
+private fun HouseholdImportDialog(
+    preview: HouseholdImportPreview,
+    resolutions: Map<String, ConflictResolution>,
+    onResolution: (String, ConflictResolution) -> Unit,
+    onCancel: () -> Unit,
+    onApply: () -> Unit,
+) {
+    val canApply = preview.conflicts.all { conflict -> resolutions[conflict.key] != null }
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Review household import") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("${preview.additions} new · ${preview.updates} updated · ${preview.unchanged} unchanged · ${preview.conflicts.size} conflicts")
+                Text("Nothing has been written yet. Cancel leaves this phone unchanged.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (preview.conflicts.isNotEmpty()) {
+                    Text("Choose a version for each conflict. Every choice preserves both histories in a new merge revision.", style = MaterialTheme.typography.bodySmall)
+                    LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(preview.conflicts, key = { it.key }) { conflict ->
+                            ImportConflictChooser(conflict, resolutions[conflict.key], onResolution)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { Button(onClick = onApply, enabled = canApply) { Text("Import") } },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun ImportConflictChooser(
+    conflict: BundleRecordChange,
+    resolution: ConflictResolution?,
+    onResolution: (String, ConflictResolution) -> Unit,
+) {
+    val local = conflict.local?.data ?: JsonObject(emptyMap())
+    val incoming = conflict.incoming.data
+    val fields = (local.keys + incoming.keys).distinct().sorted()
+    var mergeFields by remember(conflict.key) { mutableStateOf(false) }
+    var incomingFields by remember(conflict.key) { mutableStateOf<Set<String>>(emptySet()) }
+    var mergedDeleted by remember(conflict.key) { mutableStateOf(conflict.localDeleted) }
+
+    fun publishMerge() {
+        val merged = buildJsonObject {
+            fields.forEach { field ->
+                val value = if (field in incomingFields) incoming[field] ?: local[field] else local[field] ?: incoming[field]
+                if (value != null) put(field, value)
+            }
+        }
+        onResolution(conflict.key, ConflictResolution(ConflictChoice.MERGE_FIELDS, merged, mergedDeleted))
+    }
+
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("${conflict.type} · ${conflict.id.take(12)}", style = MaterialTheme.typography.titleSmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = {
+                    mergeFields = false
+                    onResolution(conflict.key, ConflictResolution(ConflictChoice.KEEP_LOCAL))
+                }, modifier = Modifier.weight(1f)) { Text("Keep local") }
+                OutlinedButton(onClick = {
+                    mergeFields = false
+                    onResolution(conflict.key, ConflictResolution(ConflictChoice.USE_INCOMING))
+                }, modifier = Modifier.weight(1f)) { Text("Use backup") }
+            }
+            OutlinedButton(onClick = {
+                mergeFields = true
+                incomingFields = fields.filterTo(mutableSetOf()) { it !in local && it in incoming }
+                mergedDeleted = conflict.localDeleted
+                publishMerge()
+            }, modifier = Modifier.fillMaxWidth()) { Text("Merge selected fields") }
+            if (mergeFields && resolution?.choice == ConflictChoice.MERGE_FIELDS) {
+                fields.filter { local[it] != incoming[it] }.forEach { field ->
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(field, style = MaterialTheme.typography.labelLarge)
+                        Text("Local: ${displayJson(local[field])}", style = MaterialTheme.typography.bodySmall, maxLines = 2)
+                        Text("Backup: ${displayJson(incoming[field])}", style = MaterialTheme.typography.bodySmall, maxLines = 2)
+                        TextButton(onClick = {
+                            incomingFields = if (field in incomingFields) incomingFields - field else incomingFields + field
+                            publishMerge()
+                        }) { Text(if (field in incomingFields) "Use local value" else "Use backup value") }
+                    }
+                }
+                if (conflict.localDeleted != conflict.incomingDeleted) {
+                    TextButton(onClick = {
+                        mergedDeleted = !mergedDeleted
+                        publishMerge()
+                    }) { Text(if (mergedDeleted) "Archived · tap to keep active" else "Active · tap to archive") }
+                }
+            }
+        }
+    }
+}
+
+private fun displayJson(value: JsonElement?): String = when (value) {
+    null, JsonNull -> "—"
+    is JsonPrimitive -> if (value.isString) value.content else value.toString()
+    else -> value.toString()
 }
 
 @Composable

@@ -1,0 +1,157 @@
+package com.davidhayesbc.cocktails.core.data
+
+import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
+import com.davidhayesbc.cocktails.core.interchange.BundleDecodeResult
+import com.davidhayesbc.cocktails.core.interchange.HouseholdBundleCodec
+import com.davidhayesbc.cocktails.core.model.IngredientId
+import com.davidhayesbc.cocktails.core.model.InventoryLevel
+import com.davidhayesbc.cocktails.core.model.RecipeStyle
+import com.davidhayesbc.cocktails.shared.db.CocktailsDatabase
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertIs
+import kotlin.test.assertTrue
+
+class HouseholdBundleSyncTest {
+    @Test
+    fun twoDatabasesPreserveSkewedConcurrentEditsAndMergeBothParents() {
+        val left = database()
+        val right = database()
+        val leftRepo = LocalCocktailRepository(left)
+        val rightRepo = LocalCocktailRepository(right)
+        leftRepo.initialize(1_000)
+        val leftMember = leftRepo.members().single().id
+        val partner = leftRepo.addMember("Partner", 1_100)!!
+        val location = leftRepo.locations().single().id
+        assertTrue(leftRepo.addIngredient("Gin", "Spirit", InventoryLevel.FULL, location, 2_000))
+        assertTrue(leftRepo.addRecipe("Dry Martini", listOf("Gin"), "Stir with ice", RecipeStyle.SHORT, nowMillis = 3_000))
+        val recipe = leftRepo.recipes().single()
+        leftRepo.addTastingNote(recipe.id, leftMember, 4, "Bright and dry", location, 4_000)
+        val initialText = leftRepo.exportHouseholdBundle(5_000)
+        val initial = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(initialText)).bundle
+
+        rightRepo.initialize(6_000)
+        val initialPreview = assertIs<ImportPreviewResult.Valid>(rightRepo.previewHouseholdBundle(initial)).preview
+        assertTrue(initialPreview.additions > 0)
+        assertIs<ImportApplyResult.Applied>(rightRepo.applyHouseholdBundle(initial, initialPreview, emptyMap(), 7_000))
+        assertEquals(listOf("Gin"), rightRepo.pantry(location).map { it.name })
+
+        // A slow clock on the right must not make its edit disappear behind the later left timestamp.
+        val ginId = left.householdQueries.selectIngredientsByName("Gin").executeAsOne()
+        val rightPartner = rightRepo.members().first { it.name == "Partner" }
+        rightRepo.updateInventoryLevel(IngredientId(ginId), location, InventoryLevel.LOW, 20_000)
+        rightRepo.addTastingNote(recipe.id, rightPartner.id, 5, "Partner prefers it colder", location, 21_000)
+        leftRepo.updateInventoryLevel(IngredientId(ginId), location, InventoryLevel.HALF, 900_000)
+        leftRepo.addTastingNote(recipe.id, leftMember, 3, "Dilute a little more", location, 900_001)
+
+        // Preview/cancel is read-only and bundle data excludes local-only settings.
+        left.householdQueries.setLocalPreference("api_key", "secret-canary")
+        left.householdQueries.setLocalPreference("latitude", "coordinate-canary")
+        left.householdQueries.setLocalPreference("location_radius", "radius-canary")
+        val rightBundleText = rightRepo.exportHouseholdBundle(22_000)
+        assertFalse(rightBundleText.contains("secret-canary"))
+        assertFalse(rightBundleText.contains("coordinate-canary"))
+        assertFalse(rightBundleText.contains("radius-canary"))
+        val rightBundle = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(rightBundleText)).bundle
+        val inventoryId = left.householdQueries.selectInventoryId(location, ginId).executeAsOne()
+        val beforeCancel = leftRepo.pantry(location).single().level
+        val preview = assertIs<ImportPreviewResult.Valid>(leftRepo.previewHouseholdBundle(rightBundle)).preview
+        assertEquals(1, preview.conflicts.count { it.type == "INVENTORY_ITEM" && it.id == inventoryId })
+        assertEquals(beforeCancel, leftRepo.pantry(location).single().level)
+
+        val conflict = preview.conflicts.single { it.type == "INVENTORY_ITEM" && it.id == inventoryId }
+        val mergedInventory = buildJsonObject {
+            conflict.local!!.data.forEach { (key, value) -> put(key, value) }
+            put("level", "LOW")
+            put("updatedAt", 900_000L) // preserve local device's later clock metadata
+        }
+        val applied = assertIs<ImportApplyResult.Applied>(leftRepo.applyHouseholdBundle(
+            rightBundle,
+            preview,
+            mapOf(conflict.key to ConflictResolution(ConflictChoice.MERGE_FIELDS, mergedInventory, false)),
+            900_002,
+        ))
+        assertEquals(1, applied.resolvedConflicts)
+        assertEquals(InventoryLevel.LOW, leftRepo.pantry(location).single().level)
+        assertEquals(setOf("Bright and dry", "Partner prefers it colder", "Dilute a little more"), leftRepo.tastingNotes(recipe.id).map { it.note }.toSet())
+
+        val mergedRevisionId = left.householdQueries.selectLatestRecordRevision(inventoryId, "INVENTORY_ITEM").executeAsOne()
+        val mergeParents = left.householdQueries.selectRevisionParents(mergedRevisionId).executeAsList().toSet()
+        assertEquals(setOf(conflict.localHeadIds.single(), conflict.incomingHeadIds.single()), mergeParents)
+
+        val revisionsBeforeReimport = left.householdQueries.selectAllRevisionsForBundle().executeAsList().size
+        val reimportPreview = assertIs<ImportPreviewResult.Valid>(leftRepo.previewHouseholdBundle(rightBundle)).preview
+        assertFalse(reimportPreview.conflicts.any { it.id == inventoryId })
+        assertTrue(reimportPreview.changes.filter { it.id == inventoryId }.all { it.kind == BundleChangeKind.UNCHANGED })
+        assertIs<ImportApplyResult.Applied>(leftRepo.applyHouseholdBundle(rightBundle, reimportPreview, emptyMap(), 900_003))
+        assertEquals(revisionsBeforeReimport, left.householdQueries.selectAllRevisionsForBundle().executeAsList().size)
+        assertEquals(3, leftRepo.tastingNotes(recipe.id).size)
+
+    }
+
+    @Test
+    fun invalidReferencesAreRejectedBeforeAnyImportWrites() {
+        val sourceDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        CocktailsDatabase.Schema.create(sourceDriver)
+        val source = LocalCocktailRepository(CocktailsDatabase(sourceDriver))
+        source.initialize(10)
+        assertTrue(source.addIngredient("Gin", "Spirit", InventoryLevel.FULL, source.locations().single().id, 20))
+        val bundle = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(source.exportHouseholdBundle(30))).bundle
+        val broken = bundle.copy(records = bundle.records.map { record ->
+            if (record.type == "INVENTORY_ITEM") record.copy(data = buildJsonObject {
+                record.data.forEach { (key, value) -> put(key, value) }
+                put("ingredientId", "missing-ingredient")
+            }) else record
+        })
+
+        val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        CocktailsDatabase.Schema.create(targetDriver)
+        val target = LocalCocktailRepository(CocktailsDatabase(targetDriver))
+        target.initialize(40)
+        assertIs<ImportPreviewResult.Invalid>(target.previewHouseholdBundle(broken))
+        assertTrue(target.pantry(target.locations().single().id).isEmpty())
+        sourceDriver.close()
+        targetDriver.close()
+    }
+
+    @Test
+    fun databaseFailureRollsBackTheWholeImport() {
+        val sourceDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        CocktailsDatabase.Schema.create(sourceDriver)
+        val sourceDb = CocktailsDatabase(sourceDriver)
+        val source = LocalCocktailRepository(sourceDb)
+        source.initialize(10)
+        assertTrue(source.addIngredient("Gin", "Spirit", InventoryLevel.FULL, source.locations().single().id, 20))
+        val bundle = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(source.exportHouseholdBundle(30))).bundle
+
+        val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        CocktailsDatabase.Schema.create(targetDriver)
+        targetDriver.execute(null, "CREATE TRIGGER reject_bundle_ingredient BEFORE INSERT ON ingredient BEGIN SELECT RAISE(ABORT, 'forced import failure'); END", 0)
+        val targetDb = CocktailsDatabase(targetDriver)
+        val target = LocalCocktailRepository(targetDb)
+        val preview = assertIs<ImportPreviewResult.Valid>(target.previewHouseholdBundle(bundle)).preview
+        val result = assertIs<ImportApplyResult.Invalid>(target.applyHouseholdBundle(bundle, preview, emptyMap(), 40))
+        assertTrue(result.reason.contains("rolled back", ignoreCase = true))
+        assertEquals(0, targetDb.householdQueries.selectAllHouseholdsForBundle().executeAsList().size)
+        assertEquals(0, targetDb.householdQueries.selectAllMembersForBundle().executeAsList().size)
+        sourceDriver.close()
+        targetDriver.close()
+    }
+
+    @Test
+    fun codecRejectsUnsupportedVersionsAndOversizedFiles() {
+        val unsupported = HouseholdBundleCodec.decode("""{"format":"com.davidhayesbc.cocktails.household","formatVersion":4294967297}""")
+        assertIs<BundleDecodeResult.Invalid>(unsupported)
+        val oversized = HouseholdBundleCodec.decode(" ".repeat(10 * 1024 * 1024 + 1))
+        assertIs<BundleDecodeResult.Invalid>(oversized)
+    }
+
+    private fun database(): CocktailsDatabase {
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        CocktailsDatabase.Schema.create(driver)
+        return CocktailsDatabase(driver)
+    }
+}

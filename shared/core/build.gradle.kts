@@ -12,6 +12,7 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             implementation("app.cash.sqldelight:runtime:${libs.versions.sqldelight.get()}")
+            implementation(libs.kotlinx.serialization.json)
         }
         androidMain.dependencies {
             implementation("app.cash.sqldelight:android-driver:${libs.versions.sqldelight.get()}")

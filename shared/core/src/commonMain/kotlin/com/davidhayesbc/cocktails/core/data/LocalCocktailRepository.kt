@@ -19,9 +19,22 @@ import com.davidhayesbc.cocktails.core.model.ShopSuggestion
 import com.davidhayesbc.cocktails.core.model.MemberProfile
 import com.davidhayesbc.cocktails.core.matching.rankSpiritUnlocks
 import com.davidhayesbc.cocktails.core.model.newUuidV7
+import com.davidhayesbc.cocktails.core.interchange.HouseholdBundle
 
 class LocalCocktailRepository(private val database: CocktailsDatabase) {
     private val queries = database.householdQueries
+    private val bundleStore = HouseholdBundleStore(database)
+
+    fun exportHouseholdBundle(exportedAt: Long): String = bundleStore.export(exportedAt)
+
+    fun previewHouseholdBundle(bundle: HouseholdBundle): ImportPreviewResult = bundleStore.preview(bundle)
+
+    fun applyHouseholdBundle(
+        bundle: HouseholdBundle,
+        preview: HouseholdImportPreview,
+        resolutions: Map<String, ConflictResolution>,
+        nowMillis: Long,
+    ): ImportApplyResult = bundleStore.apply(bundle, preview, resolutions, nowMillis)
 
     fun initialize(nowMillis: Long) {
         if (queries.selectFirstHousehold().executeAsOneOrNull() != null) return

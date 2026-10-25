@@ -315,3 +315,177 @@ INSERT INTO tombstone(record_id, record_type, revision_id, deleted_at) VALUES (?
 
 selectTombstone:
 SELECT revision_id FROM tombstone WHERE record_id = ? AND record_type = ?;
+
+selectAllHouseholdsForBundle:
+SELECT id, name, created_at FROM household;
+
+selectAllMembersForBundle:
+SELECT id, household_id, display_name, created_at FROM household_member;
+
+selectAllLocationsForBundle:
+SELECT id, household_id, name, created_at FROM household_location;
+
+selectAllIngredientsForBundle:
+SELECT id, canonical_name, category, created_at FROM ingredient;
+
+selectAllProductsForBundle:
+SELECT id, ingredient_id, brand, product_name, barcode, created_at FROM ingredient_product;
+
+selectAllInventoryForBundle:
+SELECT id, location_id, ingredient_id, level, updated_at, updated_by_member_id FROM inventory_item;
+
+selectAllFamiliesForBundle:
+SELECT id, canonical_name, created_at FROM cocktail_family;
+
+selectAllAliasesForBundle:
+SELECT family_id, alias FROM cocktail_alias ORDER BY family_id, alias;
+
+selectAllVariantsForBundle:
+SELECT id, family_id, title, source_kind, instructions, preparation, servings, style, revision_id, created_at FROM recipe_variant;
+
+selectAllSourcesForBundle:
+SELECT id, variant_id, source_name, source_record_id, source_url, license_name, attribution, modifications, imported_at FROM recipe_source;
+
+selectAllRecipeIngredientsForBundle:
+SELECT id, variant_id, ingredient_id, amount_value, amount_unit, preparation, optional, sort_order FROM recipe_ingredient;
+
+selectAllNotesForBundle:
+SELECT id, variant_id, member_id, location_id, rating, note, created_at, revision_id FROM tasting_note;
+
+selectAllFavoritesForBundle:
+SELECT member_id, family_id, created_at FROM favorite;
+
+selectAllRevisionsForBundle:
+SELECT id, record_id, record_type, author_member_id, device_id, created_at, schema_version, payload FROM record_revision ORDER BY rowid;
+
+selectAllRevisionParentsForBundle:
+SELECT revision_id, parent_revision_id FROM revision_parent;
+
+selectAllTombstonesForBundle:
+SELECT record_id, record_type, revision_id, deleted_at FROM tombstone;
+
+selectRevisionHeads:
+SELECT revision.id
+FROM record_revision AS revision
+WHERE revision.record_id = ? AND revision.record_type = ?
+AND NOT EXISTS (SELECT 1 FROM revision_parent WHERE revision_parent.parent_revision_id = revision.id)
+ORDER BY revision.id;
+
+insertHouseholdIgnore:
+INSERT OR IGNORE INTO household(id, name, created_at) VALUES (?, ?, ?);
+
+updateHousehold:
+UPDATE household SET name = ? WHERE id = ?;
+
+insertMemberIgnore:
+INSERT OR IGNORE INTO household_member(id, household_id, display_name, created_at) VALUES (?, ?, ?, ?);
+
+updateMember:
+UPDATE household_member SET household_id = ?, display_name = ? WHERE id = ?;
+
+insertLocationIgnore:
+INSERT OR IGNORE INTO household_location(id, household_id, name, created_at) VALUES (?, ?, ?, ?);
+
+updateLocation:
+UPDATE household_location SET household_id = ?, name = ? WHERE id = ?;
+
+insertIngredientBundleIgnore:
+INSERT OR IGNORE INTO ingredient(id, canonical_name, category, created_at) VALUES (?, ?, ?, ?);
+
+updateIngredientBundle:
+UPDATE ingredient SET canonical_name = ?, category = ? WHERE id = ?;
+
+insertProductIgnore:
+INSERT OR IGNORE INTO ingredient_product(id, ingredient_id, brand, product_name, barcode, created_at) VALUES (?, ?, ?, ?, ?, ?);
+
+updateProduct:
+UPDATE ingredient_product SET ingredient_id = ?, brand = ?, product_name = ?, barcode = ? WHERE id = ?;
+
+insertInventoryBundleIgnore:
+INSERT OR IGNORE INTO inventory_item(id, location_id, ingredient_id, level, updated_at, updated_by_member_id) VALUES (?, ?, ?, ?, ?, ?);
+
+updateInventoryBundleById:
+UPDATE inventory_item SET location_id = ?, ingredient_id = ?, level = ?, updated_at = ?, updated_by_member_id = ? WHERE id = ?;
+
+updateInventoryBundleByLocationIngredient:
+UPDATE inventory_item SET level = ?, updated_at = ?, updated_by_member_id = ? WHERE location_id = ? AND ingredient_id = ?;
+
+insertFamilyIgnore:
+INSERT OR IGNORE INTO cocktail_family(id, canonical_name, created_at) VALUES (?, ?, ?);
+
+updateFamily:
+UPDATE cocktail_family SET canonical_name = ? WHERE id = ?;
+
+deleteAliasesForFamily:
+DELETE FROM cocktail_alias WHERE family_id = ?;
+
+insertAliasIgnore:
+INSERT OR IGNORE INTO cocktail_alias(family_id, alias) VALUES (?, ?);
+
+insertRecipeVariantBundleIgnore:
+INSERT OR IGNORE INTO recipe_variant(id, family_id, title, source_kind, instructions, preparation, servings, style, revision_id, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+updateRecipeVariantBundle:
+UPDATE recipe_variant SET family_id = ?, title = ?, source_kind = ?, instructions = ?, preparation = ?, servings = ?, style = ?, revision_id = ? WHERE id = ?;
+
+deleteRecipeIngredientsForVariant:
+DELETE FROM recipe_ingredient WHERE variant_id = ?;
+
+insertRecipeSourceIgnore:
+INSERT OR IGNORE INTO recipe_source(id, variant_id, source_name, source_record_id, source_url, license_name, attribution, modifications, imported_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+updateRecipeSource:
+UPDATE recipe_source SET variant_id = ?, source_name = ?, source_record_id = ?, source_url = ?, license_name = ?, attribution = ?, modifications = ?, imported_at = ? WHERE id = ?;
+
+insertRecipeIngredientBundleIgnore:
+INSERT INTO recipe_ingredient(id, variant_id, ingredient_id, amount_value, amount_unit, preparation, optional, sort_order)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+insertTastingNoteIgnore:
+INSERT OR IGNORE INTO tasting_note(id, variant_id, member_id, location_id, rating, note, created_at, revision_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+updateTastingNote:
+UPDATE tasting_note SET variant_id = ?, member_id = ?, location_id = ?, rating = ?, note = ?, created_at = ?, revision_id = ? WHERE id = ?;
+
+insertFavoriteIgnore:
+INSERT OR IGNORE INTO favorite(member_id, family_id, created_at) VALUES (?, ?, ?);
+
+updateFavorite:
+UPDATE favorite SET created_at = ? WHERE member_id = ? AND family_id = ?;
+
+insertRecordRevisionIgnore:
+INSERT OR IGNORE INTO record_revision(id, record_id, record_type, author_member_id, device_id, created_at, schema_version, payload)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+updateRecordRevisionParentIgnore:
+INSERT OR IGNORE INTO revision_parent(revision_id, parent_revision_id) VALUES (?, ?);
+
+deleteTombstone:
+DELETE FROM tombstone WHERE record_id = ?;
+
+insertTombstoneBundle:
+INSERT INTO tombstone(record_id, record_type, revision_id, deleted_at) VALUES (?, ?, ?, ?);
+
+deleteAllRevisionParents:
+DELETE FROM revision_parent;
+
+deleteAllRecordRevisions:
+DELETE FROM record_revision;
+
+deleteAllLocations:
+DELETE FROM household_location;
+
+deleteAllMembers:
+DELETE FROM household_member;
+
+deleteAllHouseholds:
+DELETE FROM household;
+
+deleteSelectedHomeAndMemberPreferences:
+DELETE FROM local_preference WHERE preference_key IN ('selected_home', 'selected_member');
+
+deleteTombstoneRevision:
+DELETE FROM tombstone WHERE record_id = ?;
