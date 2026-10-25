@@ -73,7 +73,10 @@ sealed interface ImportApplyResult {
 }
 
 /** Versioned, validated, additive household exchange. Local preferences never enter this service. */
-class HouseholdBundleStore(private val database: CocktailsDatabase) {
+class HouseholdBundleStore internal constructor(
+    private val database: CocktailsDatabase,
+    private val beforeApplyTransaction: (() -> Unit)? = null,
+) {
     private val queries = database.householdQueries
 
     fun export(exportedAt: Long): String = HouseholdBundleCodec.encode(snapshot(exportedAt))
@@ -219,9 +222,26 @@ class HouseholdBundleStore(private val database: CocktailsDatabase) {
             tombstones = candidateTombstones.values.toList(),
         )
         BundleValidator.validate(selectedBundle).firstOrNull()?.let { return ImportApplyResult.Invalid("The selected merge is invalid: $it") }
+        try {
+            HouseholdBundleCodec.encode(selectedBundle)
+        } catch (exception: IllegalArgumentException) {
+            if (exception.message?.contains("exceeds", ignoreCase = true) == true) {
+                return ImportApplyResult.Invalid("The combined household backup would exceed 10 MiB. Reduce the imported data before applying it.")
+            }
+            return ImportApplyResult.Invalid("The selected household data could not be encoded: ${exception.message ?: "invalid bundle"}.")
+        }
 
         return try {
+            // Test seam for a local writer racing the preview/commit boundary. Production callers omit it.
+            beforeApplyTransaction?.invoke()
+            var staleAtTransactionStart = false
             database.transaction {
+                val transactionSnapshot = localSnapshot()
+                val transactionFingerprint = transactionSnapshot?.let(::fingerprint) ?: EMPTY_FINGERPRINT
+                if (transactionFingerprint != preview.localFingerprint) {
+                    staleAtTransactionStart = true
+                    return@transaction
+                }
                 if (preview.replacesEmptyStarter) clearEmptyStarterHousehold()
                 val chosen = currentRecords.values
                 chosen.filter { it.type == "HOUSEHOLD" }.forEach(::writeHousehold)
@@ -252,18 +272,19 @@ class HouseholdBundleStore(private val database: CocktailsDatabase) {
 
                 selectedRecords.values.forEach { record ->
                     if (selectedDeleted["${record.type}\u0000${record.id}"] == true) {
-                        val revision = mergedRevisionByKey["${record.type}\u0000${record.id}"]?.id
-                            ?: bundle.tombstones.firstOrNull { it.recordId == record.id && it.recordType == record.type }?.revisionId
-                            ?: revisionsToApply.lastOrNull { it.recordId == record.id && it.recordType == record.type }?.id
-                            ?: error("Deleted record ${record.id} is missing a deletion revision.")
-                        val deletionTime = bundle.tombstones.firstOrNull { it.recordId == record.id && it.recordType == record.type }?.deletedAt ?: nowMillis
+                        val selectedTombstone = candidateTombstones[record.id]
+                            ?.takeIf { it.recordType == record.type }
+                            ?: error("Deleted record ${record.id} is missing its selected tombstone.")
                         queries.deleteTombstone(record.id)
-                        queries.insertTombstoneBundle(record.id, record.type, revision, deletionTime)
+                        queries.insertTombstoneBundle(record.id, record.type, selectedTombstone.revisionId, selectedTombstone.deletedAt)
                     } else if (record.type == "RECIPE_VARIANT" || record.type == "COCKTAIL_FAMILY") {
                         queries.deleteTombstone(record.id)
                     }
                 }
                 repairLocalSelections(bundle)
+            }
+            if (staleAtTransactionStart) {
+                return ImportApplyResult.Invalid("Household data changed after preview. Preview the file again before importing.")
             }
             ImportApplyResult.Applied(
                 additions = preview.additions,

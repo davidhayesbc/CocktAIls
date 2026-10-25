@@ -6,6 +6,6 @@ Recipe variants can be archived with a deletion revision and tombstone while pre
 
 ## Sideload preview builds
 
-Pushes to `main` and manually dispatched workflow runs upload a debug-signed APK as a GitHub Actions artifact for 30 days. Pull requests run verification and builds but do not publish an artifact. The artifact is a development preview, not a production release. It uses package `com.davidhayesbc.cocktails`, minimum Android API 26 (Android 8.0), and a CI version name containing the run and commit identity.
+Pushes to `main` and manually dispatched workflow runs upload a debug-signed APK as a GitHub Actions artifact for 30 days. GitHub downloads that artifact as a ZIP archive: extract it first, then open `androidApp-debug.apk` from Files to start Android's package installer. Pull requests run verification and builds but do not publish an artifact. The APK is a development preview, not a production release. It uses package `com.davidhayesbc.cocktails`, minimum Android API 26 (Android 8.0), and a CI version name containing the run and commit identity.
 
 Each hosted runner creates its own Android debug signing key. APKs from different runs therefore cannot update each other in place. To install a different run, uninstall the previous app first; uninstalling removes its local database. No stable signing key or production signing secret is configured.
