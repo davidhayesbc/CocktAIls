@@ -1,8 +1,10 @@
 # Shared core
 
-Kotlin Multiplatform module shared by Android and iOS. The current implementation includes UUIDv7 IDs, household/location/ingredient/inventory and recipe models, the SQLDelight schema and v1-to-v2 migration, a local repository, and spirit unlock ranking. Keep UI and platform APIs out of common code.
+Kotlin Multiplatform module shared by Android and iOS. The current implementation includes canonical UUIDv7 generation, household/location/ingredient/inventory and recipe models, the SQLDelight schema and v1-to-v3 migrations, a local repository, append-only JSON revision payloads with local parent links, and spirit unlock ranking. Keep UI and platform APIs out of common code.
 
-The first debug build used a UUIDv7 formatter that emitted malformed variant groups. The v1-to-v2 migration deliberately preserves existing text IDs and all foreign-key relationships as opaque identifiers; it does not rewrite them. New IDs use canonical UUIDv7 formatting. Import and sync code must accept opaque legacy IDs.
+The first debug build used a UUIDv7 formatter that emitted malformed variant groups. The migrations deliberately preserve existing text IDs and all foreign-key relationships as opaque identifiers; they do not rewrite them. New IDs use canonical UUIDv7 formatting. Import and sync code must accept opaque legacy IDs.
+
+Local edits now write revision payloads and link each revision to its immediate local parent. The device ID and selected home/member are stored in `local_preference`, which is device-local state and must be excluded from household exports. Conflict detection, multi-parent merge revisions, tombstone writes, and bundle import/export are still pending.
 
 Initial package areas:
 

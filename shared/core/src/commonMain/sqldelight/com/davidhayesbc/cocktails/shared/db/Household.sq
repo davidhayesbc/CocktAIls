@@ -23,7 +23,8 @@ CREATE TABLE record_revision (
     author_member_id TEXT NOT NULL REFERENCES household_member(id),
     device_id TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    schema_version INTEGER NOT NULL DEFAULT 1
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    payload TEXT NOT NULL
 );
 
 CREATE TABLE revision_parent (
@@ -176,6 +177,12 @@ SELECT preference_value FROM local_preference WHERE preference_key = 'selected_m
 setPreferredMember:
 INSERT OR REPLACE INTO local_preference(preference_key, preference_value) VALUES ('selected_member', ?);
 
+selectLocalPreference:
+SELECT preference_value FROM local_preference WHERE preference_key = ?;
+
+setLocalPreference:
+INSERT OR REPLACE INTO local_preference(preference_key, preference_value) VALUES (?, ?);
+
 insertIngredientIgnore:
 INSERT OR IGNORE INTO ingredient(id, canonical_name, category, created_at) VALUES (?, ?, ?, ?);
 
@@ -214,6 +221,9 @@ INSERT INTO cocktail_family(id, canonical_name, created_at) VALUES (?, ?, ?);
 insertRecipeVariant:
 INSERT INTO recipe_variant(id, family_id, title, source_kind, instructions, preparation, servings, style, created_at)
 VALUES (?, ?, ?, 'HOUSEHOLD', ?, ?, ?, ?, ?);
+
+updateRecipeVariantRevision:
+UPDATE recipe_variant SET revision_id = ? WHERE id = ?;
 
 insertRecipeIngredient:
 INSERT INTO recipe_ingredient(id, variant_id, ingredient_id, amount_value, amount_unit, preparation, optional, sort_order)
@@ -254,6 +264,9 @@ insertTastingNote:
 INSERT INTO tasting_note(id, variant_id, member_id, location_id, rating, note, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?);
 
+updateTastingNoteRevision:
+UPDATE tasting_note SET revision_id = ? WHERE id = ?;
+
 selectTastingNotes:
 SELECT tasting_note.id, tasting_note.member_id, household_member.display_name,
        tasting_note.location_id, tasting_note.rating, tasting_note.note, tasting_note.created_at
@@ -261,3 +274,21 @@ FROM tasting_note
 JOIN household_member ON household_member.id = tasting_note.member_id
 WHERE tasting_note.variant_id = ?
 ORDER BY tasting_note.created_at DESC;
+
+selectLatestRecordRevision:
+SELECT id FROM record_revision
+WHERE record_id = ? AND record_type = ?
+ORDER BY rowid DESC LIMIT 1;
+
+insertRecordRevision:
+INSERT INTO record_revision(id, record_id, record_type, author_member_id, device_id, created_at, schema_version, payload)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+insertRevisionParent:
+INSERT OR IGNORE INTO revision_parent(revision_id, parent_revision_id) VALUES (?, ?);
+
+selectRevisionPayload:
+SELECT payload FROM record_revision WHERE id = ?;
+
+selectRevisionParents:
+SELECT parent_revision_id FROM revision_parent WHERE revision_id = ? ORDER BY parent_revision_id;

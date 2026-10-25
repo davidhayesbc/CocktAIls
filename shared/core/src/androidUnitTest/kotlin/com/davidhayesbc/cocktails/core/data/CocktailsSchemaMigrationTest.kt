@@ -2,8 +2,12 @@ package com.davidhayesbc.cocktails.core.data
 
 import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import com.davidhayesbc.cocktails.shared.db.CocktailsDatabase
+import com.davidhayesbc.cocktails.core.model.InventoryLevel
+import com.davidhayesbc.cocktails.core.model.IngredientId
+import com.davidhayesbc.cocktails.core.model.RecipeStyle
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class CocktailsSchemaMigrationTest {
     @Test
@@ -34,7 +38,7 @@ class CocktailsSchemaMigrationTest {
         }
         driver.execute(null, "PRAGMA user_version = 1", 0)
 
-        CocktailsDatabase.Schema.migrate(driver, 1, 2)
+        CocktailsDatabase.Schema.migrate(driver, 1, 3)
         val database = CocktailsDatabase(driver)
         val migratedPantry = database.householdQueries.selectPantryForLocation(legacyLocationId).executeAsOne()
 
@@ -46,6 +50,30 @@ class CocktailsSchemaMigrationTest {
         assertEquals(legacyLocationId, database.householdQueries.selectPreferredHome().executeAsOne())
         database.householdQueries.setPreferredHome("manually-selected-location")
         assertEquals("manually-selected-location", CocktailsDatabase(driver).householdQueries.selectPreferredHome().executeAsOne())
+
+        val repository = LocalCocktailRepository(database)
+        repository.addIngredient("Vodka", "Spirit", InventoryLevel.LOW, legacyLocationId, 20L)
+        val vodkaId = database.householdQueries.selectIngredientsByName("Vodka").executeAsOne()
+        val inventoryId = database.householdQueries.selectInventoryId(legacyLocationId, vodkaId).executeAsOne()
+        val firstRevision = database.householdQueries.selectLatestRecordRevision(inventoryId, "INVENTORY_ITEM").executeAsOne()
+        assertTrue(database.householdQueries.selectRevisionPayload(firstRevision).executeAsOne().contains("LOW"))
+
+        repository.updateInventoryLevel(IngredientId(vodkaId), legacyLocationId, InventoryLevel.FULL, 30L)
+        val secondRevision = database.householdQueries.selectLatestRecordRevision(inventoryId, "INVENTORY_ITEM").executeAsOne()
+        assertEquals(firstRevision, database.householdQueries.selectRevisionParents(secondRevision).executeAsOne())
+
+        repository.addRecipe("Sidecar", listOf("Brandy", "Lemon"), "Shake", RecipeStyle.SHORT, nowMillis = 40L)
+        repository.addRecipe("sidecar", listOf("Whisky", "Lime"), "Stir", RecipeStyle.SHORT, nowMillis = 50L)
+        val sameTitleFamilies = repository.recipeFamilies().filter { it.name.equals("Sidecar", ignoreCase = true) }
+        assertEquals(2, sameTitleFamilies.size)
+        repository.addRecipe("House Sidecar", listOf("Brandy", "Lemon"), "Shake", RecipeStyle.SHORT, sameTitleFamilies.first().familyId, 60L)
+        assertEquals(2, repository.recipeFamilies().first { it.familyId == sameTitleFamilies.first().familyId }.variantCount)
+
+        val partner = repository.addMember("Partner", 70L)!!
+        repository.setPreferredMemberId(partner.id)
+        val recipe = repository.recipes().first { it.familyId == sameTitleFamilies.first().familyId }
+        repository.addTastingNote(recipe.id, partner.id, 5, "Balanced", legacyLocationId, 80L)
+        assertEquals("Partner", repository.tastingNotes(recipe.id).single().memberName)
         driver.close()
     }
 }

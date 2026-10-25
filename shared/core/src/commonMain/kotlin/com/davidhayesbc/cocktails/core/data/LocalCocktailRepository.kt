@@ -35,6 +35,9 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             queries.insertLocation(locationId, householdId, "Home", nowMillis)
             queries.setPreferredHome(locationId)
             queries.setPreferredMember(memberId)
+            writeRevision(householdId, "HOUSEHOLD", memberId, nowMillis, jsonObject("name" to jsonString("Our Bar")))
+            writeRevision(memberId, "MEMBER", memberId, nowMillis, jsonObject("name" to jsonString("You")))
+            writeRevision(locationId, "LOCATION", memberId, nowMillis, jsonObject("name" to jsonString("Home")))
         }
     }
 
@@ -57,7 +60,10 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         if (cleaned.isEmpty()) return null
         val householdId = queries.selectFirstHousehold().executeAsOne().id
         val member = MemberProfile(newUuidV7(nowMillis), cleaned)
-        queries.insertMember(member.id, householdId, member.name, nowMillis)
+        database.transaction {
+            queries.insertMember(member.id, householdId, member.name, nowMillis)
+            writeRevision(member.id, "MEMBER", member.id, nowMillis, jsonObject("name" to jsonString(member.name)))
+        }
         return member
     }
 
@@ -73,7 +79,9 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         val id = newUuidV7(nowMillis)
         database.transaction {
             val householdId = queries.selectFirstHousehold().executeAsOne().id
+            val memberId = preferredMemberId() ?: queries.selectFirstMember(householdId).executeAsOne().id
             queries.insertLocation(id, householdId, cleaned, nowMillis)
+            writeRevision(id, "LOCATION", memberId, nowMillis, jsonObject("name" to jsonString(cleaned)))
         }
         return HomeLocation(id, cleaned)
     }
@@ -109,8 +117,12 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         val cleanIngredients = ingredientNames.map(String::trim).filter(String::isNotEmpty).distinctBy { it.lowercase() }
         if (cleanTitle.isEmpty() || cleanIngredients.isEmpty()) return false
         database.transaction {
-            val familyId = existingFamilyId?.value
-                ?: newUuidV7(nowMillis).also { queries.insertRecipeFamily(it, cleanTitle, nowMillis) }
+            val householdId = queries.selectFirstHousehold().executeAsOne().id
+            val memberId = preferredMemberId() ?: queries.selectFirstMember(householdId).executeAsOne().id
+            val familyId = existingFamilyId?.value ?: newUuidV7(nowMillis).also {
+                queries.insertRecipeFamily(it, cleanTitle, nowMillis)
+                writeRevision(it, "COCKTAIL_FAMILY", memberId, nowMillis, jsonObject("name" to jsonString(cleanTitle)))
+            }
             val variantId = newUuidV7(nowMillis)
             queries.insertRecipeVariant(variantId, familyId, cleanTitle, instructions.trim(), "", 1.0, style.name, nowMillis)
             cleanIngredients.forEachIndexed { index, name ->
@@ -127,6 +139,21 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                     sort_order = index.toLong(),
                 )
             }
+            val ingredientPayload = "[${cleanIngredients.joinToString(",") { jsonString(it) }}]"
+            val revisionId = writeRevision(
+                variantId,
+                "RECIPE_VARIANT",
+                memberId,
+                nowMillis,
+                jsonObject(
+                    "familyId" to jsonString(familyId),
+                    "title" to jsonString(cleanTitle),
+                    "instructions" to jsonString(instructions.trim()),
+                    "style" to jsonString(style.name),
+                    "ingredients" to ingredientPayload,
+                ),
+            )
+            queries.updateRecipeVariantRevision(revisionId, variantId)
         }
         return true
     }
@@ -140,7 +167,23 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         nowMillis: Long,
     ) {
         database.transaction {
-            queries.insertTastingNote(newUuidV7(nowMillis), variantId.value, memberId, locationId, rating?.toLong(), note.trim(), nowMillis)
+            val noteId = newUuidV7(nowMillis)
+            val cleanedNote = note.trim()
+            queries.insertTastingNote(noteId, variantId.value, memberId, locationId, rating?.toLong(), cleanedNote, nowMillis)
+            val revisionId = writeRevision(
+                noteId,
+                "TASTING_NOTE",
+                memberId,
+                nowMillis,
+                jsonObject(
+                    "variantId" to jsonString(variantId.value),
+                    "memberId" to jsonString(memberId),
+                    "locationId" to (locationId?.let(::jsonString) ?: "null"),
+                    "rating" to (rating?.toString() ?: "null"),
+                    "note" to jsonString(cleanedNote),
+                ),
+            )
+            queries.updateTastingNoteRevision(revisionId, noteId)
         }
     }
 
@@ -200,7 +243,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
 
         database.transaction {
             val householdId = queries.selectFirstHousehold().executeAsOne().id
-            val memberId = queries.selectFirstMember(householdId).executeAsOne().id
+            val memberId = preferredMemberId() ?: queries.selectFirstMember(householdId).executeAsOne().id
             val exactId = queries.selectIngredientByNameAndCategory(cleanedName, cleanedCategory).executeAsOneOrNull()
             val ingredientId = exactId ?: run {
                 val existingId = queries.selectIngredientsByName(cleanedName).executeAsOneOrNull()
@@ -212,6 +255,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                     queries.selectIngredientByNameAndCategory(cleanedName, cleanedCategory).executeAsOne()
                 }
             }
+            writeRevision(ingredientId, "INGREDIENT", memberId, nowMillis, jsonObject("name" to jsonString(cleanedName), "category" to jsonString(cleanedCategory)))
             writeInventory(locationId, ingredientId, level, memberId, nowMillis)
         }
         return true
@@ -225,7 +269,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
     ) {
         database.transaction {
             val householdId = queries.selectFirstHousehold().executeAsOne().id
-            val memberId = queries.selectFirstMember(householdId).executeAsOne().id
+            val memberId = preferredMemberId() ?: queries.selectFirstMember(householdId).executeAsOne().id
             writeInventory(locationId, ingredientId.value, level, memberId, nowMillis)
         }
     }
@@ -238,9 +282,10 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         nowMillis: Long,
     ) {
         val existingId = queries.selectInventoryId(locationId, ingredientId).executeAsOneOrNull()
+        val inventoryId = existingId ?: newUuidV7(nowMillis)
         if (existingId == null) {
             queries.insertInventory(
-                id = newUuidV7(nowMillis),
+                id = inventoryId,
                 location_id = locationId,
                 ingredient_id = ingredientId,
                 level = level.name,
@@ -250,5 +295,55 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         } else {
             queries.updateInventory(level.name, nowMillis, memberId, locationId, ingredientId)
         }
+        writeRevision(
+            inventoryId,
+            "INVENTORY_ITEM",
+            memberId,
+            nowMillis,
+            jsonObject(
+                "locationId" to jsonString(locationId),
+                "ingredientId" to jsonString(ingredientId),
+                "level" to jsonString(level.name),
+            ),
+        )
     }
+
+    private fun writeRevision(
+        recordId: String,
+        recordType: String,
+        memberId: String,
+        nowMillis: Long,
+        payload: String,
+    ): String {
+        val revisionId = newUuidV7(nowMillis)
+        val parentRevisionId = queries.selectLatestRecordRevision(recordId, recordType).executeAsOneOrNull()
+        val deviceId = queries.selectLocalPreference("device_id").executeAsOneOrNull()
+            ?: newUuidV7(nowMillis + 1).also { queries.setLocalPreference("device_id", it) }
+        queries.insertRecordRevision(revisionId, recordId, recordType, memberId, deviceId, nowMillis, 1L, payload)
+        parentRevisionId?.let { queries.insertRevisionParent(revisionId, it) }
+        return revisionId
+    }
+}
+
+private fun jsonObject(vararg fields: Pair<String, String>): String =
+    fields.joinToString(prefix = "{", postfix = "}") { (name, encodedValue) -> "${jsonString(name)}:$encodedValue" }
+
+private fun jsonString(value: String): String = buildString {
+    append('"')
+    value.forEach { character ->
+        when (character) {
+            '"' -> append("\\\"")
+            '\\' -> append("\\\\")
+            '\b' -> append("\\b")
+            '\u000C' -> append("\\f")
+            '\n' -> append("\\n")
+            '\r' -> append("\\r")
+            '\t' -> append("\\t")
+            else -> if (character.code < 0x20) {
+                append("\\u")
+                append(character.code.toString(16).padStart(4, '0'))
+            } else append(character)
+        }
+    }
+    append('"')
 }
