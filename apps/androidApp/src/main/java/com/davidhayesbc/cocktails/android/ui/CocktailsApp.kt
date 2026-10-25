@@ -123,9 +123,11 @@ import com.davidhayesbc.cocktails.android.product.OpenFoodFactsLookupClient
 import com.davidhayesbc.cocktails.android.product.OpenFoodFactsLookupResult
 import com.davidhayesbc.cocktails.android.product.OpenFoodFactsSuggestion
 import com.davidhayesbc.cocktails.android.product.SharedPreferencesLookupStorage
-import com.davidhayesbc.cocktails.android.product.lookupResultMatchesCurrentBarcode
+import com.davidhayesbc.cocktails.android.product.lookupResultMatchesActiveRequest
 import com.davidhayesbc.cocktails.android.product.OPEN_FOOD_FACTS_HOME
 import com.davidhayesbc.cocktails.android.product.OPEN_FOOD_FACTS_LICENSE
+import com.davidhayesbc.cocktails.android.product.ODBL_LICENSE_URL
+import com.davidhayesbc.cocktails.android.product.DBCL_LICENSE_URL
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -268,6 +270,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var localProductMatch by remember { mutableStateOf<LocalProductBarcodeMatch?>(null) }
     var productLookupResult by remember { mutableStateOf<OpenFoodFactsLookupResult?>(null) }
     var productLookupInProgress by remember { mutableStateOf(false) }
+    var productLookupRequestToken by remember { mutableStateOf(0L) }
     var selectedProductPhoto by remember { mutableStateOf<ByteArray?>(null) }
     var productPhotoMessage by remember { mutableStateOf<String?>(null) }
     var showAddRecipe by remember { mutableStateOf(false) }
@@ -292,6 +295,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var conflictResolutions by remember { mutableStateOf<Map<String, ConflictResolution>>(emptyMap()) }
 
     fun setBarcodeInput(value: String) {
+        productLookupRequestToken += 1
         barcodeInput = value
         localProductMatch = repository.localProductForBarcode(value)
         productLookupResult = null
@@ -301,14 +305,18 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         if (productLookupInProgress) return
         productLookupInProgress = true
         productLookupResult = null
+        val requestToken = productLookupRequestToken + 1
+        productLookupRequestToken = requestToken
         coroutineScope.launch {
             try {
                 val result = openFoodFactsClient.lookup(value, installedAppVersion.name)
-                if (lookupResultMatchesCurrentBarcode(value, barcodeInput)) productLookupResult = result
+                if (lookupResultMatchesActiveRequest(value, barcodeInput, requestToken, productLookupRequestToken)) {
+                    productLookupResult = result
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
-                if (lookupResultMatchesCurrentBarcode(value, barcodeInput)) {
+                if (lookupResultMatchesActiveRequest(value, barcodeInput, requestToken, productLookupRequestToken)) {
                     productLookupResult = OpenFoodFactsLookupResult.Unavailable
                 }
             } finally {
@@ -1259,7 +1267,8 @@ private fun AddIngredientDialog(
                     OpenFoodFactsLookupResult.InvalidBarcode -> Text("Enter a valid UPC or EAN barcode to look up.", color = MaterialTheme.colorScheme.error)
                     OpenFoodFactsLookupResult.NotFound -> Text("Open Food Facts has no product record for this barcode. You can continue entering details manually.")
                     OpenFoodFactsLookupResult.DifferentProductType -> Text("Open Food Facts reports this code as a different product type. Review it carefully or continue manually.")
-                    OpenFoodFactsLookupResult.RateLimited -> Text("Open Food Facts is limiting requests from this network. Try again later or continue manually.")
+                    OpenFoodFactsLookupResult.LocallyThrottled -> Text("You've made several lookups recently. Wait a moment before trying again, or continue manually.")
+                    OpenFoodFactsLookupResult.ProviderRateLimited -> Text("Open Food Facts is limiting requests from this network. Try again later or continue manually.")
                     OpenFoodFactsLookupResult.Unavailable -> Text("Open Food Facts couldn't be reached. Check your connection or continue manually.")
                     OpenFoodFactsLookupResult.InvalidResponse -> Text("Open Food Facts returned data this version couldn't read. Continue manually or try later.")
                     null -> Unit
@@ -1669,6 +1678,7 @@ private fun parseRecipeIngredientDrafts(text: String): List<RecipeIngredientDraf
 
 @Composable
 private fun OpenFoodFactsSuggestionCard(suggestion: OpenFoodFactsSuggestion, fromCache: Boolean) {
+    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Open Food Facts suggestion", style = MaterialTheme.typography.titleSmall)
@@ -1684,6 +1694,12 @@ private fun OpenFoodFactsSuggestionCard(suggestion: OpenFoodFactsSuggestion, fro
             }
             Text(if (fromCache) "Showing a result saved on this phone." else "Result saved in this phone's local lookup cache.", style = MaterialTheme.typography.bodySmall)
             Text("Data from $OPEN_FOOD_FACTS_LICENSE · ${OPEN_FOOD_FACTS_HOME}", style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { runCatching { uriHandler.openUri(ODBL_LICENSE_URL) } }, modifier = Modifier.fillMaxWidth()) {
+                Text("Open ODbL 1.0 terms")
+            }
+            TextButton(onClick = { runCatching { uriHandler.openUri(DBCL_LICENSE_URL) } }, modifier = Modifier.fillMaxWidth()) {
+                Text("Open DbCL 1.0 terms")
+            }
             Text(
                 "Provider details stay in the local lookup cache, outside household records and backups. They aren't copied into the ingredient, brand, or product-name fields; category remains manually chosen, and ABV isn't retrieved or stored. Quantity is source text, not a verified bottle volume.",
                 style = MaterialTheme.typography.bodySmall,

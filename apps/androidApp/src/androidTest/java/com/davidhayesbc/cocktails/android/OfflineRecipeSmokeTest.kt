@@ -30,6 +30,7 @@ import com.davidhayesbc.cocktails.core.model.InventoryLevel
 import com.davidhayesbc.cocktails.core.model.IngredientId
 import com.davidhayesbc.cocktails.shared.db.CocktailsDatabase
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -97,8 +98,9 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasTestTag("open-food-facts-lookup"))
             composeRule.onNodeWithTag("open-food-facts-lookup").assertIsDisplayed().performClick()
             composeRule.waitUntil(timeoutMillis = 5_000) {
-                composeRule.onAllNodesWithText("Provider Gin").fetchSemanticsNodes().isNotEmpty()
+                composeRule.onAllNodesWithText("Product: Provider Gin").fetchSemanticsNodes().isNotEmpty()
             }
+            composeRule.onNodeWithText("Product: Provider Gin").assertIsDisplayed()
             composeRule.onNodeWithText("Showing a result saved on this phone.").assertIsDisplayed()
             composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Ingredient name"))
             composeRule.onNodeWithTag("ingredient-name").assertTextEquals("My Manual Gin")
@@ -106,6 +108,23 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("ingredient-brand").assertTextEquals("")
             composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasTestTag("ingredient-product-name"))
             composeRule.onNodeWithTag("ingredient-product-name").assertTextEquals("")
+
+            val databaseName = "off-lookup-export-${System.currentTimeMillis()}.db"
+            val driver = AndroidSqliteDriver(CocktailsDatabase.Schema, context, databaseName)
+            try {
+                val repository = LocalCocktailRepository(CocktailsDatabase(driver))
+                repository.initialize(1)
+                val homeId = repository.locations().first().id
+                assertTrue(repository.addIngredient("My Manual Gin", "Spirit", InventoryLevel.FULL, homeId, 2, barcode = "036000291452"))
+                val backup = repository.exportHouseholdBundle(3)
+                assertTrue(backup.contains("My Manual Gin"))
+                assertFalse(backup.contains("Provider Gin"))
+                assertFalse(backup.contains("Provider Brand"))
+                assertFalse(backup.contains("700 ml"))
+            } finally {
+                driver.close()
+                context.deleteDatabase(databaseName)
+            }
         } finally {
             preferences.edit().clear().commit()
         }

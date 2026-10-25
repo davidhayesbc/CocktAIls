@@ -26,6 +26,8 @@ import kotlinx.serialization.json.put
 
 internal const val OPEN_FOOD_FACTS_HOME = "https://world.openfoodfacts.org/"
 internal const val OPEN_FOOD_FACTS_LICENSE = "Open Food Facts · ODbL 1.0 / DbCL"
+internal const val ODBL_LICENSE_URL = "https://opendatacommons.org/licenses/odbl/1-0/"
+internal const val DBCL_LICENSE_URL = "https://opendatacommons.org/licenses/dbcl/1-0/"
 private const val OPEN_FOOD_FACTS_ENDPOINT = "https://world.openfoodfacts.org/api/v3.6/product/"
 private const val CACHE_KEY = "product_suggestions"
 private const val REQUEST_TIMES_KEY = "request_times"
@@ -55,12 +57,19 @@ internal sealed interface OpenFoodFactsLookupResult {
     data object InvalidBarcode : OpenFoodFactsLookupResult
     data object NotFound : OpenFoodFactsLookupResult
     data object DifferentProductType : OpenFoodFactsLookupResult
-    data object RateLimited : OpenFoodFactsLookupResult
+    data object LocallyThrottled : OpenFoodFactsLookupResult
+    data object ProviderRateLimited : OpenFoodFactsLookupResult
     data object Unavailable : OpenFoodFactsLookupResult
     data object InvalidResponse : OpenFoodFactsLookupResult
 }
 
-internal fun lookupResultMatchesCurrentBarcode(requestedBarcode: String, currentBarcode: String): Boolean {
+internal fun lookupResultMatchesActiveRequest(
+    requestedBarcode: String,
+    currentBarcode: String,
+    requestToken: Long,
+    activeToken: Long,
+): Boolean {
+    if (requestToken != activeToken) return false
     val requested = normalizeGtinForLookup(requestedBarcode) ?: return false
     return requested == normalizeGtinForLookup(currentBarcode)
 }
@@ -182,7 +191,7 @@ internal class OpenFoodFactsLookupClient(
         if (normalizeGtinForLookup(originalCode) == null) return OpenFoodFactsLookupResult.InvalidBarcode
         val requestCode = originalCode.filter { it in '0'..'9' }
         cache.find(requestCode)?.let { return OpenFoodFactsLookupResult.Found(it, fromCache = true) }
-        if (!cache.reserveRequest()) return OpenFoodFactsLookupResult.RateLimited
+        if (!cache.reserveRequest()) return OpenFoodFactsLookupResult.LocallyThrottled
 
         val safeVersion = versionName.filter { it.isLetterOrDigit() || it in ".-_+" }.take(80).ifBlank { "unknown" }
         val requestUrl = "$OPEN_FOOD_FACTS_ENDPOINT$requestCode.json?fields=$REQUEST_FIELDS"
@@ -202,7 +211,7 @@ internal class OpenFoodFactsLookupClient(
 
         return try {
             val status = connection.responseCode
-            if (status == 429) return OpenFoodFactsLookupResult.RateLimited
+            if (status == 429) return OpenFoodFactsLookupResult.ProviderRateLimited
             if (status !in 200..299 && status != 404) return OpenFoodFactsLookupResult.Unavailable
             val body = (if (status in 200..299) connection.inputStream else connection.errorStream)
                 ?.use(::readBoundedUtf8)
@@ -230,6 +239,8 @@ internal fun parseOpenFoodFactsResponse(
     requestedBarcode: String,
     fetchedAtMillis: Long,
 ): OpenFoodFactsLookupResult {
+    val normalizedRequestedCode = normalizeGtinForLookup(requestedBarcode)
+        ?: return OpenFoodFactsLookupResult.InvalidBarcode
     val root = runCatching { Json.parseToJsonElement(body).jsonObject }.getOrNull()
         ?: return OpenFoodFactsLookupResult.InvalidResponse
     val status = root.string("status") ?: return OpenFoodFactsLookupResult.InvalidResponse
@@ -252,6 +263,9 @@ internal fun parseOpenFoodFactsResponse(
         it.isNotBlank() && it.length <= 32 && it.all(Char::isDigit) && normalizeGtinForLookup(it) != null
     }
         ?: return OpenFoodFactsLookupResult.InvalidResponse
+    if (normalizeGtinForLookup(canonicalCode) != normalizedRequestedCode) {
+        return OpenFoodFactsLookupResult.InvalidResponse
+    }
     val quantity = product.string("quantity")?.takeIf(String::isNotBlank) ?: run {
         val amount = product.scalarString("product_quantity")
         val unit = product.scalarString("product_quantity_unit")

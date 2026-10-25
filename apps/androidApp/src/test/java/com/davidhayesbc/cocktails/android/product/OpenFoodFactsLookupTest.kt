@@ -26,7 +26,7 @@ class OpenFoodFactsLookupTest {
         assertEquals("Example Brand", found.suggestion.brands)
         assertEquals("750 ml", found.suggestion.quantity)
         assertEquals(1_700_000_000L, found.suggestion.lastModifiedSeconds)
-        assertEquals("3.6", found.suggestion.schemaVersion)
+        assertEquals("1004", found.suggestion.schemaVersion)
         assertEquals(listOf("product_image_missing"), found.suggestion.warningIds)
     }
 
@@ -75,6 +75,38 @@ class OpenFoodFactsLookupTest {
             "036000291452",
             100,
         ))
+        assertIs<OpenFoodFactsLookupResult.InvalidResponse>(parseOpenFoodFactsResponse(
+            200,
+            successResponse.replace("0036000291452", "0000000000000"),
+            "036000291452",
+            100,
+        ))
+    }
+
+    @Test
+    fun acceptsEquivalentUpcAndEanProductCodesButRejectsDifferentValidGtin() {
+        val upcResponse = successResponse.replace("0036000291452", "036000291452")
+        val found = assertIs<OpenFoodFactsLookupResult.Found>(parseOpenFoodFactsResponse(
+            200,
+            upcResponse,
+            "0036000291452",
+            100,
+        ))
+        assertEquals("036000291452", found.suggestion.canonicalCode)
+        assertIs<OpenFoodFactsLookupResult.InvalidResponse>(parseOpenFoodFactsResponse(
+            200,
+            successResponse,
+            "0000000000000",
+            100,
+        ))
+
+        val cache = OpenFoodFactsLocalCache(MemoryLookupStorage()) { 100_000L }
+        val mismatched = successResponse.replace("0036000291452", "0000000000000")
+        val client = OpenFoodFactsLookupClient(cache, { 100_000L }) { value ->
+            FakeConnection(URL(value), 200, mismatched)
+        }
+        assertIs<OpenFoodFactsLookupResult.InvalidResponse>(client.lookupBlocking("036000291452", "test"))
+        assertNull(cache.find("036000291452"))
     }
 
     @Test
@@ -143,7 +175,7 @@ class OpenFoodFactsLookupTest {
         }
         assertIs<OpenFoodFactsLookupResult.InvalidBarcode>(client.lookupBlocking("036000291453", "test"))
         assertEquals(0, requestCount)
-        assertIs<OpenFoodFactsLookupResult.RateLimited>(client.lookupBlocking("036000291452", "test"))
+        assertIs<OpenFoodFactsLookupResult.ProviderRateLimited>(client.lookupBlocking("036000291452", "test"))
         assertEquals(1, requestCount)
         now += 3_001L
         responseCode = 503
@@ -152,11 +184,12 @@ class OpenFoodFactsLookupTest {
     }
 
     @Test
-    fun completedLookupIsShownOnlyForTheBarcodeItWasRequestedFor() {
-        assertTrue(lookupResultMatchesCurrentBarcode("036000291452", "036000291452"))
-        assertTrue(lookupResultMatchesCurrentBarcode("036000291452", "0036000291452"))
-        assertEquals(false, lookupResultMatchesCurrentBarcode("036000291452", "0036000291453"))
-        assertEquals(false, lookupResultMatchesCurrentBarcode("036000291452", ""))
+    fun completedLookupIsDiscardedAfterBarcodeChangeOrLookupDialogReopen() {
+        assertTrue(lookupResultMatchesActiveRequest("036000291452", "036000291452", 3, 3))
+        assertTrue(lookupResultMatchesActiveRequest("036000291452", "0036000291452", 3, 3))
+        assertEquals(false, lookupResultMatchesActiveRequest("036000291452", "0000000000000", 3, 3))
+        assertEquals(false, lookupResultMatchesActiveRequest("036000291452", "", 3, 3))
+        assertEquals(false, lookupResultMatchesActiveRequest("036000291452", "036000291452", 3, 4))
     }
 
     @Test
@@ -174,6 +207,10 @@ class OpenFoodFactsLookupTest {
             now += 3_001L
         }
         assertEquals(false, throttledCache.reserveRequest())
+        val throttledClient = OpenFoodFactsLookupClient(throttledCache, { now }) {
+            error("Locally throttled request must not access network")
+        }
+        assertIs<OpenFoodFactsLookupResult.LocallyThrottled>(throttledClient.lookupBlocking("036000291452", "test"))
     }
 
     private class MemoryLookupStorage : LocalLookupStorage {
@@ -199,6 +236,6 @@ class OpenFoodFactsLookupTest {
     }
 
     private companion object {
-        const val successResponse = """{"status":"success_with_warnings","schema_version":"3.6","result":{"id":"product_found"},"warnings":[{"message":{"id":"product_image_missing"}}],"product":{"code":"0036000291452","product_name":"Example Gin","brands":"Example Brand","quantity":"750 ml","product_quantity":750,"product_quantity_unit":"ml","last_modified_t":1700000000,"schema_version":"3.6","unknown_field":"ignored"}}"""
+        const val successResponse = """{"status":"success_with_warnings","schema_version":1004,"result":{"id":"product_found"},"warnings":[{"message":{"id":"product_image_missing"}}],"product":{"code":"0036000291452","product_name":"Example Gin","brands":"Example Brand","quantity":"750 ml","product_quantity":750,"product_quantity_unit":"ml","last_modified_t":1700000000,"schema_version":1004,"unknown_field":"ignored"}}"""
     }
 }
