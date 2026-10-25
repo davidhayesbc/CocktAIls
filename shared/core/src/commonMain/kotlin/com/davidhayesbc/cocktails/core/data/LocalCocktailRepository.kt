@@ -192,6 +192,32 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             TastingNote(it.id, it.display_name, it.rating?.toInt(), it.note, it.created_at)
         }
 
+    /** Hides a household recipe variant while retaining its rows and an exportable deletion revision. */
+    fun archiveRecipeVariant(variantId: RecipeVariantId, nowMillis: Long): Boolean {
+        val recipe = recipes().firstOrNull { it.id == variantId } ?: return false
+        val householdId = queries.selectFirstHousehold().executeAsOne().id
+        val memberId = preferredMemberId() ?: queries.selectFirstMember(householdId).executeAsOne().id
+        var archived = false
+        database.transaction {
+            if (queries.selectTombstone(variantId.value, "RECIPE_VARIANT").executeAsOneOrNull() != null) return@transaction
+            val revisionId = writeRevision(
+                recordId = variantId.value,
+                recordType = "RECIPE_VARIANT",
+                memberId = memberId,
+                nowMillis = nowMillis,
+                payload = jsonObject(
+                    "deleted" to "true",
+                    "recordId" to jsonString(variantId.value),
+                    "recordType" to jsonString("RECIPE_VARIANT"),
+                    "familyId" to jsonString(recipe.familyId.value),
+                ),
+            )
+            queries.insertTombstone(variantId.value, "RECIPE_VARIANT", revisionId, nowMillis)
+            archived = true
+        }
+        return archived
+    }
+
     fun shopSuggestions(pantry: List<PantryEntry>): List<ShopSuggestion> {
         val variants = recipes()
         val families = variants.groupBy { it.familyId }.map { (familyId, familyVariants) ->

@@ -167,6 +167,12 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 notes = repository.tastingNotes(selectedRecipe!!.id),
                 onBack = { selectedRecipe = null },
                 onAddNote = { showAddNote = true },
+                onArchive = {
+                    repository.archiveRecipeVariant(selectedRecipe!!.id, System.currentTimeMillis())
+                    recipes = repository.recipes()
+                    recipeFamilies = repository.recipeFamilies()
+                    selectedRecipe = null
+                },
             )
             else -> PlaceholderScreen(
                 modifier = Modifier.padding(contentPadding),
@@ -634,7 +640,9 @@ private fun RecipeDetailScreen(
     notes: List<TastingNote>,
     onBack: () -> Unit,
     onAddNote: () -> Unit,
+    onArchive: () -> Unit,
 ) {
+    var confirmArchive by remember(recipe.id) { mutableStateOf(false) }
     LazyColumn(modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { TextButton(onClick = onBack) { Text("‹  Recipes") } }
         item { Text(recipe.title, style = MaterialTheme.typography.headlineMedium) }
@@ -662,6 +670,20 @@ private fun RecipeDetailScreen(
                 }
             }
         }
+        item {
+            TextButton(onClick = { confirmArchive = true }) { Text("Archive this recipe version") }
+        }
+    }
+    if (confirmArchive) {
+        AlertDialog(
+            onDismissRequest = { confirmArchive = false },
+            title = { Text("Archive this version?") },
+            text = { Text("It will disappear from your recipe lists. Its history is kept for sharing and conflict recovery.") },
+            confirmButton = {
+                Button(onClick = { confirmArchive = false; onArchive() }) { Text("Archive") }
+            },
+            dismissButton = { TextButton(onClick = { confirmArchive = false }) { Text("Keep it") } },
+        )
     }
 }
 

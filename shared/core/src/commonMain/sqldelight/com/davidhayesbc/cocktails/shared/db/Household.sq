@@ -209,7 +209,16 @@ SELECT cocktail_family.id AS family_id, cocktail_family.canonical_name,
        COUNT(DISTINCT recipe_variant.id) AS variant_count
 FROM cocktail_family
 JOIN recipe_variant ON recipe_variant.family_id = cocktail_family.id
+WHERE NOT EXISTS (
+    SELECT 1 FROM tombstone
+    WHERE tombstone.record_type = 'RECIPE_VARIANT' AND tombstone.record_id = recipe_variant.id
+)
+AND NOT EXISTS (
+    SELECT 1 FROM tombstone
+    WHERE tombstone.record_type = 'COCKTAIL_FAMILY' AND tombstone.record_id = cocktail_family.id
+)
 GROUP BY cocktail_family.id
+HAVING COUNT(DISTINCT recipe_variant.id) > 0
 ORDER BY cocktail_family.canonical_name COLLATE NOCASE;
 
 findFamilyByName:
@@ -250,6 +259,14 @@ selectRecipeVariants:
 SELECT recipe_variant.id AS variant_id, recipe_variant.family_id, recipe_variant.title,
        recipe_variant.instructions, recipe_variant.preparation, recipe_variant.servings, recipe_variant.style
 FROM recipe_variant
+WHERE NOT EXISTS (
+    SELECT 1 FROM tombstone
+    WHERE tombstone.record_type = 'RECIPE_VARIANT' AND tombstone.record_id = recipe_variant.id
+)
+AND NOT EXISTS (
+    SELECT 1 FROM tombstone
+    WHERE tombstone.record_type = 'COCKTAIL_FAMILY' AND tombstone.record_id = recipe_variant.family_id
+)
 ORDER BY recipe_variant.title COLLATE NOCASE;
 
 selectRecipeIngredients:
@@ -292,3 +309,9 @@ SELECT payload FROM record_revision WHERE id = ?;
 
 selectRevisionParents:
 SELECT parent_revision_id FROM revision_parent WHERE revision_id = ? ORDER BY parent_revision_id;
+
+insertTombstone:
+INSERT INTO tombstone(record_id, record_type, revision_id, deleted_at) VALUES (?, ?, ?, ?);
+
+selectTombstone:
+SELECT revision_id FROM tombstone WHERE record_id = ? AND record_type = ?;

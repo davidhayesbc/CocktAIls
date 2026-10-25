@@ -6,6 +6,7 @@ An offline-first cocktail library and household bar companion for Android. The a
 
 - [MVP specification](docs/product/MVP_SPEC.md)
 - [Phase 1 plan](docs/planning/PHASE_1_PLAN.md)
+- [Phase 1 implementation status](docs/planning/PHASE_1_STATUS.md)
 - [Architecture decision records](docs/architecture/)
 - [UI design direction and sketches](docs/design/)
 

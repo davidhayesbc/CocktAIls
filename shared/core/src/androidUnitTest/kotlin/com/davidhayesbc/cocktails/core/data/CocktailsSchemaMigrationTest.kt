@@ -7,6 +7,7 @@ import com.davidhayesbc.cocktails.core.model.IngredientId
 import com.davidhayesbc.cocktails.core.model.RecipeStyle
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class CocktailsSchemaMigrationTest {
@@ -74,6 +75,16 @@ class CocktailsSchemaMigrationTest {
         val recipe = repository.recipes().first { it.familyId == sameTitleFamilies.first().familyId }
         repository.addTastingNote(recipe.id, partner.id, 5, "Balanced", legacyLocationId, 80L)
         assertEquals("Partner", repository.tastingNotes(recipe.id).single().memberName)
+
+        val previousRecipeRevision = database.householdQueries
+            .selectLatestRecordRevision(recipe.id.value, "RECIPE_VARIANT").executeAsOne()
+        assertTrue(repository.archiveRecipeVariant(recipe.id, 90L))
+        assertFalse(repository.recipes().any { it.id == recipe.id })
+        assertEquals(1, repository.recipeFamilies().first { it.familyId == recipe.familyId }.variantCount)
+        val tombstoneRevision = database.householdQueries.selectTombstone(recipe.id.value, "RECIPE_VARIANT").executeAsOne()
+        assertEquals(previousRecipeRevision, database.householdQueries.selectRevisionParents(tombstoneRevision).executeAsOne())
+        assertTrue(database.householdQueries.selectRevisionPayload(tombstoneRevision).executeAsOne().contains("\"deleted\":true"))
+        assertFalse(repository.archiveRecipeVariant(recipe.id, 100L))
         driver.close()
     }
 }
