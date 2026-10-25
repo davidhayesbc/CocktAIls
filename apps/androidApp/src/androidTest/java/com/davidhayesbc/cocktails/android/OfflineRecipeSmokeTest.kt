@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.hasText
@@ -44,12 +45,14 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("recipe-servings").performTextInput("1")
         composeRule.onNodeWithText("Save").performClick()
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText(title))
-        composeRule.onNodeWithTag("recipe-family-title").assertIsDisplayed().assertTextEquals(title)
+        composeRule.onNode(hasTestTag("recipe-family-title") and hasText(title, substring = false))
+            .assertIsDisplayed().assertTextEquals(title)
 
         composeRule.activityRule.scenario.recreate()
         composeRule.onNodeWithText("Recipes").performClick()
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText(title))
-        composeRule.onNodeWithTag("recipe-family-title").assertIsDisplayed().assertTextEquals(title)
+        composeRule.onNode(hasTestTag("recipe-family-title") and hasText(title, substring = false))
+            .assertIsDisplayed().assertTextEquals(title)
     }
 
     @Test
@@ -77,7 +80,8 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Search recipes or ingredients"))
         composeRule.onNodeWithText("Search recipes or ingredients").performTextInput("Whiskey Sour")
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Whiskey Sour"))
-        composeRule.onNodeWithTag("recipe-family-title").assertIsDisplayed().assertTextEquals("Whiskey Sour")
+        composeRule.onNode(hasTestTag("recipe-family-title") and hasText("Whiskey Sour", substring = false))
+            .assertIsDisplayed().assertTextEquals("Whiskey Sour")
         composeRule.activityRule.scenario.recreate()
         composeRule.onNodeWithText("Recipes").performClick()
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Daiquiri"))

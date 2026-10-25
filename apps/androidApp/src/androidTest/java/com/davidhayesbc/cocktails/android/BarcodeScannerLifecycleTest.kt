@@ -11,6 +11,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -47,6 +48,7 @@ class BarcodeScannerLifecycleTest {
         clickPermissionPrompt("don't allow", "deny")
         composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Camera access wasn't granted. Enter the barcode manually instead."))
         composeRule.onNodeWithText("Camera access wasn't granted. Enter the barcode manually instead.").assertIsDisplayed()
+        composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasTestTag("ingredient-barcode"))
         composeRule.onNodeWithTag("ingredient-barcode").assertIsDisplayed()
         composeRule.onAllNodesWithText("Scan a bottle").assertCountEquals(0)
 
