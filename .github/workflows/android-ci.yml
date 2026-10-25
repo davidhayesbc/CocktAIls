@@ -111,12 +111,23 @@ jobs:
           mkdir -p "$HOME/.android" "$ANDROID_USER_HOME" "$ANDROID_EMULATOR_HOME" "$ANDROID_AVD_HOME"
           chmod 700 "$HOME/.android"
           chmod 700 "$ANDROID_USER_HOME"
-          printf 'no\n' | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
-            --force --name cocktails-ci --package 'system-images;android-35;default;x86_64' --device pixel_2
+          avdmanager_log="$RUNNER_TEMP/cocktails-avdmanager.log"
+          if ! timeout 120 "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
+            --force --name cocktails-ci --package 'system-images;android-35;default;x86_64' --device pixel_2 \
+            <<< 'no' > "$avdmanager_log" 2>&1; then
+            echo 'AVD creation failed or exceeded its 120-second limit.'
+            tail -n 250 "$avdmanager_log" || true
+            exit 1
+          fi
 
           adb="$ANDROID_HOME/platform-tools/adb"
-          timeout 30 "$adb" start-server
-          timeout 15 "$adb" devices -l
+          adb_bootstrap_log="$RUNNER_TEMP/cocktails-adb-bootstrap.log"
+          if ! timeout 30 "$adb" start-server > "$adb_bootstrap_log" 2>&1; then
+            echo 'adb server failed to start within 30 seconds.'
+            cat "$adb_bootstrap_log" || true
+            exit 1
+          fi
+          timeout 15 "$adb" devices -l | tee -a "$adb_bootstrap_log"
 
           emulator_log="$RUNNER_TEMP/cocktails-emulator.log"
           emulator_pid_file="$RUNNER_TEMP/cocktails-emulator.pid"
@@ -181,6 +192,10 @@ jobs:
           pgrep -af 'adb|emulator' | head -n 40
           echo '--- emulator log (last 300 lines) ---'
           tail -n 300 "$RUNNER_TEMP/cocktails-emulator.log"
+          echo '--- AVD manager log (last 300 lines) ---'
+          tail -n 300 "$RUNNER_TEMP/cocktails-avdmanager.log"
+          echo '--- adb bootstrap log (last 100 lines) ---'
+          tail -n 100 "$RUNNER_TEMP/cocktails-adb-bootstrap.log"
 
       - name: Upload emulator diagnostics
         if: always()
@@ -190,6 +205,8 @@ jobs:
           path: |
             ${{ runner.temp }}/cocktails-emulator.log
             ${{ runner.temp }}/cocktails-emulator.pid
+            ${{ runner.temp }}/cocktails-avdmanager.log
+            ${{ runner.temp }}/cocktails-adb-bootstrap.log
           if-no-files-found: ignore
           retention-days: 7
 
