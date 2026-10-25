@@ -54,7 +54,6 @@ internal fun BarcodeScannerDialog(
             val hints = EnumMap<DecodeHintType, Any>(DecodeHintType::class.java)
             hints[DecodeHintType.POSSIBLE_FORMATS] = listOf(
                 BarcodeFormat.UPC_A,
-                BarcodeFormat.UPC_E,
                 BarcodeFormat.EAN_8,
                 BarcodeFormat.EAN_13,
             )

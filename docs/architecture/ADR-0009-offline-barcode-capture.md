@@ -5,7 +5,7 @@
 
 ## Decision
 
-Use CameraX for the Android camera preview and ZXing Core for UPC-A, UPC-E, EAN-8, and EAN-13 decoding. ZXing runs against camera luminance frames on the device. Ask for camera permission only after the user taps **Scan barcode**; manual entry is always available and remains usable after permission denial or camera failure.
+Use CameraX for the Android camera preview and ZXing Core for UPC-A, EAN-8, and EAN-13 decoding. ZXing runs against camera luminance frames on the device. Ask for camera permission only after the user taps **Scan barcode**; manual entry is always available and remains usable after permission denial or camera failure.
 
 Validate GTIN lengths and check digits before saving. Normalize UPC-A to its equivalent zero-prefixed GTIN-13 form only for comparison, while retaining the exact scanned or entered string in the product record. Confirm the generic ingredient and optional brand before saving. The product-to-ingredient relationship and inventory addition commit together locally and travel through the versioned household backup.
 

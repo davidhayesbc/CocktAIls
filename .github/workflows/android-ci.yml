@@ -21,6 +21,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Test preview workflow gate helpers
+        run: python3 -m unittest discover -s .github/scripts -p 'test_preview_*.py'
+
       - name: Set up JDK 17
         uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
         with:
