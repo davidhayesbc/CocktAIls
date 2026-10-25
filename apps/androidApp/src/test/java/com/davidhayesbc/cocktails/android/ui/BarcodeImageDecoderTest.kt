@@ -4,6 +4,7 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.DecodeHintType
 import com.google.zxing.MultiFormatReader
 import com.google.zxing.MultiFormatWriter
+import com.google.zxing.PlanarYUVLuminanceSource
 import java.nio.ByteBuffer
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -58,6 +59,12 @@ class BarcodeImageDecoderTest {
     @Test
     fun rejectsUnsupportedCameraRotationInsteadOfSilentlyMisdecoding() {
         assertThrows(IllegalArgumentException::class.java) { rotateLumaFrame(barcodeFrame("036000291452"), 45) }
+    }
+
+    @Test
+    fun zxingPlanarYuvSourceThrowsWhenAskedToRotate() {
+        val source = PlanarYUVLuminanceSource(byteArrayOf(0, 0, 0, 0), 2, 2, 0, 0, 2, 2, false)
+        assertThrows(UnsupportedOperationException::class.java) { source.rotateCounterClockwise() }
     }
 
     private fun barcodeFrame(contents: String): LumaFrame {
