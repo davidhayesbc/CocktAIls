@@ -1,0 +1,185 @@
+name: CocktAIls Preview Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cocktails-preview-release
+  cancel-in-progress: false
+
+jobs:
+  validate-dispatch:
+    name: Require a trusted main-branch dispatch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Reject non-main refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != 'refs/heads/main' ]]; then
+            echo '::error::Preview releases can only be dispatched from the trusted main branch.'
+            exit 1
+          fi
+
+  prepare-preview:
+    name: Verify and sign the preview APK
+    needs: validate-dispatch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - name: Require configured preview signing key
+        shell: bash
+        env:
+          COCKTAILS_PREVIEW_KEYSTORE_BASE64: ${{ secrets.COCKTAILS_PREVIEW_KEYSTORE_BASE64 }}
+          COCKTAILS_PREVIEW_KEYSTORE_PASSWORD: ${{ secrets.COCKTAILS_PREVIEW_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${COCKTAILS_PREVIEW_KEYSTORE_BASE64:-}" || -z "${COCKTAILS_PREVIEW_KEYSTORE_PASSWORD:-}" ]]; then
+            echo '::error::Configure the approved preview keystore and password repository secrets before dispatching this workflow.'
+            exit 1
+          fi
+
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK build packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager_path="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          if [[ ! -x "$sdkmanager_path" ]]; then
+            sdkmanager_path="$(command -v sdkmanager)"
+          fi
+          "$sdkmanager_path" --sdk_root="$ANDROID_HOME" --install \
+            'platform-tools' \
+            'platforms;android-36' \
+            'build-tools;36.0.0'
+
+      - name: Set preview build identity
+        shell: bash
+        run: echo "COCKTAILS_VERSION_NAME=0.1.0-preview.${GITHUB_RUN_NUMBER}+${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Run checks and build the exact commit
+        run: ./gradlew --no-daemon :shared:core:compileCommonMainKotlinMetadata :shared:core:testDebugUnitTest :apps:androidApp:compileDebugAndroidTestKotlin :apps:androidApp:lintDebug :shared:core:lintDebug :apps:androidApp:assembleDebug
+
+      - name: Sign and verify APK with the persistent preview certificate
+        shell: bash
+        env:
+          COCKTAILS_PREVIEW_KEYSTORE_BASE64: ${{ secrets.COCKTAILS_PREVIEW_KEYSTORE_BASE64 }}
+          COCKTAILS_PREVIEW_KEYSTORE_PASSWORD: ${{ secrets.COCKTAILS_PREVIEW_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          keystore="$RUNNER_TEMP/cocktails-preview.p12"
+          aligned_apk="$RUNNER_TEMP/cocktails-preview-aligned.apk"
+          signed_apk="$RUNNER_TEMP/CocktAIls-preview.apk"
+          output_dir="$RUNNER_TEMP/preview-release"
+          cert_report="$RUNNER_TEMP/cocktails-preview-apk-cert.txt"
+          mkdir -p "$output_dir"
+          trap 'rm -f "$keystore" "$aligned_apk" "$cert_report"' EXIT
+
+          printf '%s' "$COCKTAILS_PREVIEW_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          chmod 600 "$keystore"
+          unset COCKTAILS_PREVIEW_KEYSTORE_BASE64
+
+          build_tools="$ANDROID_HOME/build-tools/36.0.0"
+          "$build_tools/zipalign" -f -p 4 \
+            apps/androidApp/build/outputs/apk/debug/androidApp-debug.apk "$aligned_apk"
+          "$build_tools/apksigner" sign \
+            --ks "$keystore" \
+            --ks-type PKCS12 \
+            --ks-key-alias cocktails-preview \
+            --ks-pass env:COCKTAILS_PREVIEW_KEYSTORE_PASSWORD \
+            --key-pass env:COCKTAILS_PREVIEW_KEYSTORE_PASSWORD \
+            --out "$signed_apk" \
+            "$aligned_apk"
+          "$build_tools/apksigner" verify --verbose --print-certs "$signed_apk" > "$cert_report"
+
+          apk_cert="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$cert_report" | head -n 1 | tr '[:upper:]' '[:lower:]')"
+          keystore_cert="$(keytool -exportcert \
+            -alias cocktails-preview \
+            -keystore "$keystore" \
+            -storetype PKCS12 \
+            -storepass:env COCKTAILS_PREVIEW_KEYSTORE_PASSWORD 2>/dev/null | sha256sum | awk '{print $1}')"
+          if [[ -z "$apk_cert" || "$apk_cert" != "$keystore_cert" ]]; then
+            echo '::error::The APK signer certificate did not match the configured preview keystore.'
+            exit 1
+          fi
+
+          cp "$signed_apk" "$output_dir/CocktAIls-preview.apk"
+          sha256sum "$output_dir/CocktAIls-preview.apk" \
+            | awk '{print $1 "  CocktAIls-preview.apk"}' > "$output_dir/SHA256SUMS.txt"
+          {
+            echo "Preview version: $COCKTAILS_VERSION_NAME"
+            echo "Source commit: $GITHUB_SHA"
+            echo "Package: com.davidhayesbc.cocktails"
+            echo 'Minimum Android version: API 26 (Android 8.0)'
+            echo "Signing certificate SHA-256: $apk_cert"
+            echo 'This is a debug-build preview for sideload testing, not a production or Play Store release.'
+            echo 'Back up or export household data before installing this first persistently signed preview. It must replace an APK installed with a different debug certificate; future previews signed with this same key can update in place.'
+          } > "$output_dir/RELEASE_NOTES.md"
+
+      - name: Upload verified signed preview
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: CocktAIls-signed-preview-${{ github.run_number }}-${{ github.sha }}
+          path: ${{ runner.temp }}/preview-release/*
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish-preview:
+    name: Publish the verified GitHub prerelease
+    needs: prepare-preview
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified preview files
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: CocktAIls-signed-preview-${{ github.run_number }}-${{ github.sha }}
+          path: ${{ runner.temp }}/preview-release
+
+      - name: Create the public prerelease
+        id: publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: preview-v0.1.0-${{ github.run_number }}-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" \
+            "$RUNNER_TEMP/preview-release/CocktAIls-preview.apk" \
+            "$RUNNER_TEMP/preview-release/SHA256SUMS.txt" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "CocktAIls Preview $RELEASE_TAG" \
+            --notes-file "$RUNNER_TEMP/preview-release/RELEASE_NOTES.md" \
+            --prerelease
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json isPrerelease,url,assets > "$RUNNER_TEMP/release-verification.json"
+          python3 - "$RUNNER_TEMP/release-verification.json" <<'PY'
+          import json, sys
+          release = json.load(open(sys.argv[1]))
+          assets = {asset['name'] for asset in release['assets']}
+          if not release['isPrerelease'] or 'CocktAIls-preview.apk' not in assets:
+              raise SystemExit('Prerelease verification failed: missing prerelease flag or APK asset.')
+          print('Verified public prerelease URL:', release['url'])
+          print('Verified assets:', ', '.join(sorted(assets)))
+          PY

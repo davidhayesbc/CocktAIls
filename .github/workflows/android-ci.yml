@@ -173,7 +173,7 @@ jobs:
           timeout 10 "$adb" -s emulator-5554 shell svc wifi disable
 
       - name: Run offline launch and persistence smoke test
-        run: ./gradlew --no-daemon :apps:androidApp:connectedDebugAndroidTest
+        run: timeout 600 ./gradlew --no-daemon :apps:androidApp:connectedDebugAndroidTest
 
       - name: Collect emulator diagnostics
         if: always()
@@ -192,6 +192,9 @@ jobs:
           pgrep -af 'adb|emulator' | head -n 40
           echo '--- emulator log (last 300 lines) ---'
           tail -n 300 "$RUNNER_TEMP/cocktails-emulator.log"
+          echo '--- emulator logcat (last 3000 lines) ---'
+          timeout 30 "$adb" -s emulator-5554 logcat -d -t 3000 > "$RUNNER_TEMP/cocktails-logcat.log" 2>&1
+          tail -n 300 "$RUNNER_TEMP/cocktails-logcat.log"
           echo '--- AVD manager log (last 300 lines) ---'
           tail -n 300 "$RUNNER_TEMP/cocktails-avdmanager.log"
           echo '--- adb bootstrap log (last 100 lines) ---'
@@ -205,8 +208,11 @@ jobs:
           path: |
             ${{ runner.temp }}/cocktails-emulator.log
             ${{ runner.temp }}/cocktails-emulator.pid
+            ${{ runner.temp }}/cocktails-logcat.log
             ${{ runner.temp }}/cocktails-avdmanager.log
             ${{ runner.temp }}/cocktails-adb-bootstrap.log
+            apps/androidApp/build/outputs/androidTest-results/connected/**/*.xml
+            apps/androidApp/build/reports/androidTests/connected/**
           if-no-files-found: ignore
           retention-days: 7
 

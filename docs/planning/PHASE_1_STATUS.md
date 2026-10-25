@@ -4,7 +4,8 @@ This is a snapshot of implementation and verification, not a release-readiness c
 
 ## Delivered foundation
 
-- Android debug app and Kotlin Multiplatform shared core are in place; Android CI compiles common metadata, runs shared-core tests and lint, builds the debug APK, and uploads it as a 30-day Actions artifact. A headless Android SDK emulator test for offline recipe entry and activity-recreation persistence is configured; its first hosted run is pending.
+- Android debug app and Kotlin Multiplatform shared core are in place; Android CI runs build/unit/lint/APK verification independently from the headless emulator smoke job. Exact-SHA Actions run [40161092337](https://github.com/davidhayesbc/CocktAIls/actions/runs/40161092337) passed both jobs on `359322082480c74728d01db4e7f4e9e2f577013b`: the APK was uploaded as a 30-day artifact, and the Android API 35 emulator passed offline recipe creation plus activity-recreation persistence. The emulator uses software acceleration and takes several minutes to boot; physical Pixel checks remain separate.
+- A manual, trusted-main-only preview release workflow is prepared. It requires `COCKTAILS_PREVIEW_KEYSTORE_BASE64` (PKCS#12) and `COCKTAILS_PREVIEW_KEYSTORE_PASSWORD`, signs with alias `cocktails-preview`, verifies the APK certificate against the keystore, then publishes a public GitHub prerelease using job-scoped `contents: write`. It has not run because the approved signing secrets are not yet configured; no key has been generated or release published.
 - SQLDelight schema v4 migrates a populated v3 pantry without changing its IDs or stock levels. Tests also cover v1-to-v3 migration, canonical UUIDv7 generation, family-level shop unlock counting, recipe-family explicit association, tasting-note author attribution, and revision payload/parent links.
 - Household recipe variants can now be archived with an immutable deletion revision and tombstone. Archived variants stay in storage/history and disappear from browse results; repeated archive attempts do not create another deletion.
 - Versioned household JSON backups can be written/read with Android's document picker. Import is size/schema/reference checked, staged for preview, cancelable without writes, and committed in one database transaction. Device-local preferences and provider/coordinate settings are excluded.
@@ -22,7 +23,7 @@ This is a snapshot of implementation and verification, not a release-readiness c
 
 | # | State | Evidence or remaining work |
 |---|---|---|
-| 1 | Partial | Offline-capable storage, manual recipe entry/edit/duplicate, favorites, recent-made history, scaling, availability filters, notes, and sync are implemented. Hosted emulator execution is pending; physical Pixel usability checks remain. |
+| 1 | Partial | Offline-capable storage, manual recipe entry/edit/duplicate, favorites, recent-made history, scaling, availability filters, notes, and sync are implemented. Hosted Android API 35 emulator passed offline recipe creation and activity-recreation persistence on run 40161092337; physical Pixel usability checks remain. |
 | 2 | Partial | Versioned household JSON export/import includes recipes, sources, notes, favorites, and recent-made events with preview, cancel, size/reference validation, and atomic apply. Photo transfer and generic recipe CSV/JSON mapping remain. |
 | 3 | Partial | Revision-ancestry conflicts, explicit resolution, field merge, two-parent recipe-edit revisions, favorite-removal tombstones, stale-import tombstone preservation, and edit-at-commit race are tested. Concurrent archive-vs-edit UX remains. |
 | 4 | Partial | Member-attributed tasting notes round-trip across two independent databases in the sync regression test. Device-level multi-user usability remains unverified. |
@@ -45,7 +46,7 @@ This is a snapshot of implementation and verification, not a release-readiness c
 5. Add barcode scan capture with an always-available manual path. Any external lookup requires a separate coverage, privacy, and license review.
 6. Finish the candidate page-revision history review in [CATALOG_DATA_REVIEW.md](CATALOG_DATA_REVIEW.md) before adding its separately licensed pack. Do not bundle other sources under that review.
 7. Validate migrations from every supported database version, export/import failure rollback, and clock-skew/large-bundle cases. Populated v1-to-v3 and v3-to-v4 migrations are directly tested; the SQLDelight migration verifier did not finish in its bounded run because its object-diff worker remained in recursive comparison.
-8. Run usability checks on Pixel 10 Pro and Pixel 8, including denied/ambiguous location, large font, dark theme, and long content. A hosted headless emulator test now covers offline recipe entry and activity recreation; its first run is pending and does not replace physical-device checks.
+8. Run usability checks on Pixel 10 Pro and Pixel 8, including denied/ambiguous location, large font, dark theme, and long content. The hosted headless emulator test covers offline recipe entry and activity recreation; it does not replace physical-device checks.
 9. Check shared iOS framework linking on macOS/Xcode before building the future SwiftUI client. No iOS application shell or iOS runtime validation exists yet.
 
 AI provider integration, shipping a model, a catalog dataset, hosted sync, and an iOS release remain outside Phase 1. The assistant provider boundary remains a later optional feature; neither the Codex subscription nor an OpenAI API credential is assumed.
