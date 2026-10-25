@@ -2,6 +2,7 @@ package com.davidhayesbc.cocktails.android.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.text.KeyboardOptions
@@ -67,6 +68,14 @@ import com.davidhayesbc.cocktails.core.interchange.BundleDecodeResult
 import com.davidhayesbc.cocktails.core.interchange.HouseholdBundle
 import com.davidhayesbc.cocktails.core.interchange.HouseholdBundleCodec
 import com.davidhayesbc.cocktails.core.interchange.MAX_HOUSEHOLD_BUNDLE_BYTES
+import com.davidhayesbc.cocktails.core.interchange.MAX_RECIPE_IMPORT_BYTES
+import com.davidhayesbc.cocktails.core.interchange.RecipeImportMapping
+import com.davidhayesbc.cocktails.core.interchange.RecipeImportPreview
+import com.davidhayesbc.cocktails.core.interchange.RecipeImportProvenance
+import com.davidhayesbc.cocktails.core.interchange.RecipeImportTable
+import com.davidhayesbc.cocktails.core.interchange.RecipeTableParseResult
+import com.davidhayesbc.cocktails.core.interchange.parseRecipeImportTable
+import com.davidhayesbc.cocktails.core.interchange.previewRecipeImport
 import com.davidhayesbc.cocktails.core.model.HomeLocation
 import com.davidhayesbc.cocktails.core.model.CocktailFamilyId
 import com.davidhayesbc.cocktails.core.model.InventoryLevel
@@ -151,6 +160,8 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var shareMessage by remember { mutableStateOf<String?>(null) }
     var stagedBundle by remember { mutableStateOf<HouseholdBundle?>(null) }
     var stagedPreview by remember { mutableStateOf<HouseholdImportPreview?>(null) }
+    var stagedRecipeTable by remember { mutableStateOf<RecipeImportTable?>(null) }
+    var stagedRecipeFileName by remember { mutableStateOf("") }
     var conflictResolutions by remember { mutableStateOf<Map<String, ConflictResolution>>(emptyMap()) }
 
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
@@ -205,6 +216,43 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     }
                 }
                 result.exceptionOrNull()?.let { shareMessage = "Import preview failed: ${it.message ?: "file could not be read"}" }
+            }
+        }
+    }
+
+    val recipeImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) {
+            shareMessage = "Recipe import canceled. Your data was not changed."
+        } else {
+            coroutineScope.launch {
+                runCatching {
+                    val bytes = withContext(Dispatchers.IO) {
+                        context.contentResolver.openInputStream(uri)?.use { input ->
+                            val output = ByteArrayOutputStream()
+                            val buffer = ByteArray(8 * 1024)
+                            var total = 0
+                            while (true) {
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                total += count
+                                require(total <= MAX_RECIPE_IMPORT_BYTES) { "Recipe file exceeds the 10 MiB limit." }
+                                output.write(buffer, 0, count)
+                            }
+                            output.toByteArray()
+                        } ?: error("Could not open the selected file for reading.")
+                    }
+                    val name = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                        if (cursor.moveToFirst()) cursor.getString(cursor.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME)) else null
+                    } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "recipes.csv"
+                    when (val parsed = parseRecipeImportTable(bytes.decodeToString(), name)) {
+                        is RecipeTableParseResult.Invalid -> shareMessage = parsed.reason
+                        is RecipeTableParseResult.Valid -> {
+                            stagedRecipeFileName = name
+                            stagedRecipeTable = parsed.table
+                            shareMessage = null
+                        }
+                    }
+                }.onFailure { shareMessage = "Recipe preview failed: ${it.message ?: "file could not be read"}" }
             }
         }
     }
@@ -460,6 +508,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 onManageMembers = { showAddMember = true },
                 onExport = { exportLauncher.launch("CocktAIls-Household-Backup.json") },
                 onImport = { importLauncher.launch(arrayOf("application/json", "text/json", "*/*")) },
+                onImportRecipes = { recipeImportLauncher.launch(arrayOf("text/csv", "application/json", "text/*", "*/*")) },
                 shareMessage = shareMessage,
                 onOpenLocationSettings = { showLocationSettings = true },
             )
@@ -631,6 +680,33 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                             conflictResolutions = emptyMap()
                             refreshHousehold()
                             shareMessage = "Imported ${result.additions} new and ${result.updates} updated records; resolved ${result.resolvedConflicts} conflicts."
+                        }
+                    }
+                }
+            },
+        )
+    }
+
+    stagedRecipeTable?.let { table ->
+        RecipeFileImportDialog(
+            fileName = stagedRecipeFileName,
+            table = table,
+            existingFamilies = recipeFamilies,
+            onCancel = {
+                stagedRecipeTable = null
+                shareMessage = "Recipe import canceled. Your data was not changed."
+            },
+            onApply = { preview, provenance, familyAssociations ->
+                coroutineScope.launch {
+                    when (val result = withContext(Dispatchers.IO) {
+                        repository.applyRecipeImport(preview, provenance, familyAssociations, System.currentTimeMillis())
+                    }) {
+                        is com.davidhayesbc.cocktails.core.interchange.RecipeImportApplyResult.Invalid -> shareMessage = result.reason
+                        is com.davidhayesbc.cocktails.core.interchange.RecipeImportApplyResult.Applied -> {
+                            stagedRecipeTable = null
+                            recipes = repository.recipes()
+                            recipeFamilies = repository.recipeFamilies()
+                            shareMessage = "Imported ${result.imported} recipes; skipped ${result.skippedDuplicates} duplicates."
                         }
                     }
                 }
@@ -1281,6 +1357,7 @@ private fun HouseholdScreen(
     onOpenLocationSettings: () -> Unit,
     onExport: () -> Unit,
     onImport: () -> Unit,
+    onImportRecipes: () -> Unit,
     shareMessage: String?,
 ) {
     Column(
@@ -1300,8 +1377,129 @@ private fun HouseholdScreen(
         Text("Manual sharing", style = MaterialTheme.typography.titleLarge)
         Button(onClick = onExport, modifier = Modifier.fillMaxWidth()) { Text("Export household backup") }
         OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth()) { Text("Import household backup") }
+        OutlinedButton(onClick = onImportRecipes, modifier = Modifier.fillMaxWidth()) { Text("Import recipes from CSV or JSON") }
         Text("Import previews never change your data. Each phone can share a backup using Nearby Share, Drive, or another file app.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (shareMessage != null) Text(shareMessage, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+@Composable
+private fun RecipeFileImportDialog(
+    fileName: String,
+    table: RecipeImportTable,
+    existingFamilies: List<RecipeCard>,
+    onCancel: () -> Unit,
+    onApply: (RecipeImportPreview, RecipeImportProvenance, Map<String, CocktailFamilyId>) -> Unit,
+) {
+    var titleField by remember(table) { mutableStateOf(table.headers.firstOrNull { it.contains("title", true) || it.contains("name", true) }.orEmpty()) }
+    var ingredientsField by remember(table) { mutableStateOf(table.headers.firstOrNull { it.contains("ingredient", true) }.orEmpty()) }
+    var instructionsField by remember(table) { mutableStateOf(table.headers.firstOrNull { it.contains("instruction", true) || it.contains("method", true) }.orEmpty()) }
+    var servingsField by remember(table) { mutableStateOf(table.headers.firstOrNull { it.contains("yield", true) || it.contains("serving", true) }.orEmpty()) }
+    var styleField by remember(table) { mutableStateOf(table.headers.firstOrNull { it.contains("style", true) }.orEmpty()) }
+    var familyField by remember(table) { mutableStateOf(table.headers.firstOrNull { it.contains("family", true) || it.contains("type", true) }.orEmpty()) }
+    var sourceIdField by remember(table) { mutableStateOf(table.headers.firstOrNull { it.contains("id", true) }.orEmpty()) }
+    var sourceName by remember(fileName) { mutableStateOf(fileName.substringBeforeLast('.').ifBlank { "Imported recipes" }) }
+    var sourceUrl by remember { mutableStateOf("") }
+    var license by remember { mutableStateOf("") }
+    var attribution by remember { mutableStateOf("") }
+    var associations by remember(table) { mutableStateOf<Map<String, CocktailFamilyId>>(emptyMap()) }
+    val mapping = RecipeImportMapping(
+        titleField = titleField,
+        ingredientsField = ingredientsField,
+        instructionsField = instructionsField.ifBlank { null },
+        servingsField = servingsField.ifBlank { null },
+        styleField = styleField.ifBlank { null },
+        familyField = familyField.ifBlank { null },
+        sourceRecordIdField = sourceIdField.ifBlank { null },
+    )
+    val provenance = RecipeImportProvenance(sourceName, sourceUrl.ifBlank { null }, license, attribution)
+    val preview = previewRecipeImport(table, mapping, provenance)
+
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Review recipe import") },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 620.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("$fileName · ${table.rows.size} rows", style = MaterialTheme.typography.bodySmall)
+                Text("Map each file column. Leaving family unmapped keeps every row in a separate drink group.", style = MaterialTheme.typography.bodySmall)
+                RecipeImportFieldPicker("Title *", titleField, table.headers, false) { titleField = it }
+                RecipeImportFieldPicker("Ingredients *", ingredientsField, table.headers, false) { ingredientsField = it }
+                RecipeImportFieldPicker("Instructions", instructionsField, table.headers) { instructionsField = it }
+                RecipeImportFieldPicker("Yield / servings", servingsField, table.headers) { servingsField = it }
+                RecipeImportFieldPicker("Style", styleField, table.headers) { styleField = it }
+                RecipeImportFieldPicker("Drink family", familyField, table.headers) { familyField = it; associations = emptyMap() }
+                RecipeImportFieldPicker("Stable source record ID", sourceIdField, table.headers) { sourceIdField = it }
+                Text("Source details", style = MaterialTheme.typography.titleMedium)
+                Text("Enter the terms and credit that apply to this file. CocktAIls does not verify third-party reuse rights.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedTextField(sourceName, { sourceName = it }, label = { Text("Source name *") }, singleLine = true)
+                OutlinedTextField(sourceUrl, { sourceUrl = it }, label = { Text("Source URL") }, singleLine = true)
+                OutlinedTextField(license, { license = it }, label = { Text("License or terms *") }, singleLine = true)
+                OutlinedTextField(attribution, { attribution = it }, label = { Text("Attribution *") }, singleLine = true)
+                Text("Ingredient text format: name | amount | unit | optional | preparation. JSON can use ingredient objects with name, amount, unit, optional, and preparation.", style = MaterialTheme.typography.bodySmall)
+                if (preview.recipes.isNotEmpty() && familyField.isNotBlank()) {
+                    Text("Explicitly link an imported family to an existing family (optional)", style = MaterialTheme.typography.titleSmall)
+                    preview.recipes.map { it.familyGroupKey to it.familyName }.distinctBy { it.first }.forEach { (key, name) ->
+                        RecipeFamilyAssociationPicker(
+                            familyName = name,
+                            families = existingFamilies,
+                            selected = associations[key],
+                            onSelected = { value -> associations = if (value == null) associations - key else associations + (key to value) },
+                        )
+                    }
+                }
+                Text("Preview", style = MaterialTheme.typography.titleMedium)
+                preview.recipes.take(8).forEach { recipe ->
+                    Text("${recipe.title} · ${recipe.ingredientLines.size} ingredients · yield ${recipe.servings}", style = MaterialTheme.typography.bodySmall)
+                }
+                if (preview.recipes.size > 8) Text("…and ${preview.recipes.size - 8} more", style = MaterialTheme.typography.bodySmall)
+                preview.errors.forEach { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                if (preview.errors.isEmpty() && preview.recipes.isNotEmpty()) {
+                    Text("No data is written until you choose Import. Cancel leaves the household unchanged.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        },
+        confirmButton = {
+            Button(enabled = preview.canApply, onClick = { onApply(preview, provenance, associations) }) { Text("Import ${preview.recipes.size} recipes") }
+        },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun RecipeImportFieldPicker(label: String, value: String, fields: List<String>, optional: Boolean = true, onSelected: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Column {
+        OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+            Text("$label · ${value.ifBlank { if (optional) "Skip" else "Select field" }}")
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            if (optional) DropdownMenuItem(text = { Text("Skip") }, onClick = { onSelected(""); expanded = false })
+            fields.forEach { field -> DropdownMenuItem(text = { Text(field) }, onClick = { onSelected(field); expanded = false }) }
+        }
+    }
+}
+
+@Composable
+private fun RecipeFamilyAssociationPicker(
+    familyName: String,
+    families: List<RecipeCard>,
+    selected: CocktailFamilyId?,
+    onSelected: (CocktailFamilyId?) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Column {
+        OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+            Text("$familyName · ${families.firstOrNull { it.familyId == selected }?.name ?: "Create separate family"} ▾")
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(text = { Text("Create separate family") }, onClick = { onSelected(null); expanded = false })
+            families.forEach { family ->
+                DropdownMenuItem(text = { Text(family.name) }, onClick = { onSelected(family.familyId); expanded = false })
+            }
+        }
     }
 }
 

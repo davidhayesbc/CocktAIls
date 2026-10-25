@@ -24,6 +24,10 @@ import com.davidhayesbc.cocktails.core.matching.HomeLocationArea
 import com.davidhayesbc.cocktails.core.model.newUuidV7
 import com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup
 import com.davidhayesbc.cocktails.core.interchange.HouseholdBundle
+import com.davidhayesbc.cocktails.core.interchange.RecipeImportApplyResult
+import com.davidhayesbc.cocktails.core.interchange.RecipeImportPreview
+import com.davidhayesbc.cocktails.core.interchange.RecipeImportProvenance
+import com.davidhayesbc.cocktails.core.interchange.StagedRecipeImport
 
 class LocalCocktailRepository(private val database: CocktailsDatabase) {
     private val queries = database.householdQueries
@@ -229,6 +233,157 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         servings: Double = 1.0,
         nowMillis: Long,
     ): Boolean = createRecipeLines(title, ingredientLines, instructions, style, existingFamilyId, servings, nowMillis) != null
+
+    /** Applies a staged user-file import as one transaction; no recipe is written if validation finds a conflict. */
+    fun applyRecipeImport(
+        preview: RecipeImportPreview,
+        provenance: RecipeImportProvenance,
+        existingFamilyByGroup: Map<String, CocktailFamilyId>,
+        nowMillis: Long,
+    ): RecipeImportApplyResult {
+        if (!preview.canApply) return RecipeImportApplyResult.Invalid("Fix every row and provenance error before importing.")
+        val sourceName = provenance.sourceName.trim()
+        val licenseName = provenance.licenseName.trim()
+        val attribution = provenance.attribution.trim()
+        if (sourceName.isEmpty() || licenseName.isEmpty() || attribution.isEmpty()) {
+            return RecipeImportApplyResult.Invalid("Source name, license or terms, and attribution are required.")
+        }
+        if (existingFamilyByGroup.keys.any { key -> preview.recipes.none { it.familyGroupKey == key } }) {
+            return RecipeImportApplyResult.Invalid("A selected cocktail-family association does not match this import preview.")
+        }
+
+        return try {
+            database.transactionWithResult {
+                val householdId = queries.selectFirstHousehold().executeAsOne().id
+                val memberId = preferredMemberId() ?: queries.selectFirstMember(householdId).executeAsOne().id
+                val activeFamilyIds = queries.selectRecipeFamilies().executeAsList().mapTo(mutableSetOf()) { it.family_id }
+                if (existingFamilyByGroup.values.any { it.value !in activeFamilyIds }) {
+                    return@transactionWithResult RecipeImportApplyResult.Invalid("A selected family no longer exists. Refresh the import preview.")
+                }
+
+                val existingSources = queries.selectAllSourcesForBundle().executeAsList()
+                val existingVariants = queries.selectAllVariantsForBundle().executeAsList().associateBy { it.id }
+                val prepared = mutableListOf<Pair<StagedRecipeImport, String>>()
+                val incomingByIdentity = mutableMapOf<String, StagedRecipeImport>()
+                var skipped = 0
+
+                for (recipe in preview.recipes) {
+                    val sourceRecordId = recipe.sourceRecordId?.trim()?.takeIf(String::isNotEmpty)
+                        ?: contentImportSourceId(sourceName, recipe)
+                    val identity = "${sourceName.lowercase()}\u0000$sourceRecordId"
+                    val previousInFile = incomingByIdentity[identity]
+                    if (previousInFile != null) {
+                        if (!sameImportedRecipe(previousInFile, recipe)) {
+                            return@transactionWithResult RecipeImportApplyResult.Invalid(
+                                "Source record '$sourceRecordId' appears with different recipe data. No rows were imported.",
+                            )
+                        }
+                        skipped++
+                        continue
+                    }
+                    incomingByIdentity[identity] = recipe
+
+                    val existingSource = existingSources.firstOrNull {
+                        it.source_name.equals(sourceName, ignoreCase = true) && it.source_record_id == sourceRecordId
+                    }
+                    if (existingSource != null) {
+                        val existingVariant = existingVariants[existingSource.variant_id]
+                            ?: return@transactionWithResult RecipeImportApplyResult.Invalid("An existing source record points to a missing recipe.")
+                        val existingLines = queries.selectRecipeIngredients(existingVariant.id).executeAsList().map {
+                            RecipeIngredientDraft(it.canonical_name, it.amount_value, it.amount_unit, it.preparation, it.optional != 0L)
+                        }
+                        if (!sameImportedRecipe(
+                                recipe,
+                                existingVariant.title,
+                                existingVariant.instructions,
+                                existingVariant.servings,
+                                runCatching { RecipeStyle.valueOf(existingVariant.style) }.getOrDefault(RecipeStyle.OTHER),
+                                existingLines,
+                            )
+                        ) {
+                            return@transactionWithResult RecipeImportApplyResult.Invalid(
+                                "Source record '$sourceRecordId' was already imported with different content. No rows were imported.",
+                            )
+                        }
+                        skipped++
+                    } else {
+                        prepared += recipe to sourceRecordId
+                    }
+                }
+
+                val familyIdsByGroup = existingFamilyByGroup.mapValuesTo(mutableMapOf()) { it.value.value }
+                var imported = 0
+                for ((recipe, sourceRecordId) in prepared) {
+                    val familyId = familyIdsByGroup[recipe.familyGroupKey] ?: newUuidV7(nowMillis + imported).also { id ->
+                        queries.insertRecipeFamily(id, recipe.familyName, nowMillis)
+                        writeRevision(id, "COCKTAIL_FAMILY", memberId, nowMillis, jsonObject("name" to jsonString(recipe.familyName)))
+                        familyIdsByGroup[recipe.familyGroupKey] = id
+                    }
+                    val cleanLines = recipe.ingredientLines.map { line ->
+                        line.copy(name = line.name.trim(), unit = line.unit?.trim()?.takeIf(String::isNotEmpty), preparation = line.preparation?.trim()?.takeIf(String::isNotEmpty))
+                    }
+                    val variantId = newUuidV7(nowMillis + imported + 10)
+                    queries.insertRecipeVariant(variantId, familyId, recipe.title.trim(), recipe.instructions.trim(), "", recipe.servings, recipe.style.name, nowMillis)
+                    val uniqueIngredientNames = cleanLines.map(RecipeIngredientDraft::name).distinctBy { it.lowercase() }
+                    uniqueIngredientNames.forEachIndexed { index, name ->
+                        queries.insertIngredientIgnore(newUuidV7(nowMillis + imported + index + 100), name, "Other", nowMillis)
+                    }
+                    val ingredientIds = uniqueIngredientNames.associate { name -> name.lowercase() to queries.selectIngredientsByName(name).executeAsOne() }
+                    cleanLines.forEachIndexed { index, line ->
+                        queries.insertRecipeIngredient(
+                            id = newUuidV7(nowMillis + imported + index + 500),
+                            variant_id = variantId,
+                            ingredient_id = ingredientIds.getValue(line.name.lowercase()),
+                            amount_value = line.amount,
+                            amount_unit = line.unit,
+                            preparation = line.preparation,
+                            optional = if (line.optional) 1L else 0L,
+                            sort_order = index.toLong(),
+                        )
+                    }
+                    val ingredientPayload = "[${cleanLines.joinToString(",") { line ->
+                        jsonObject(
+                            "name" to jsonString(line.name),
+                            "amount" to (line.amount?.toString() ?: "null"),
+                            "unit" to (line.unit?.let(::jsonString) ?: "null"),
+                            "preparation" to (line.preparation?.let(::jsonString) ?: "null"),
+                            "optional" to line.optional.toString(),
+                        )
+                    }}]"
+                    val revisionId = writeRevision(
+                        variantId,
+                        "RECIPE_VARIANT",
+                        memberId,
+                        nowMillis,
+                        jsonObject(
+                            "familyId" to jsonString(familyId),
+                            "title" to jsonString(recipe.title.trim()),
+                            "instructions" to jsonString(recipe.instructions.trim()),
+                            "style" to jsonString(recipe.style.name),
+                            "servings" to recipe.servings.toString(),
+                            "ingredients" to ingredientPayload,
+                        ),
+                    )
+                    queries.updateRecipeVariantRevision(revisionId, variantId)
+                    queries.insertRecipeSource(
+                        newUuidV7(nowMillis + imported + 900),
+                        variantId,
+                        sourceName,
+                        sourceRecordId,
+                        provenance.sourceUrl?.trim()?.takeIf(String::isNotEmpty),
+                        licenseName,
+                        attribution,
+                        "Mapped by the household from a user-provided file; recipe fields were normalized for CocktAIls.",
+                        nowMillis,
+                    )
+                    imported++
+                }
+                RecipeImportApplyResult.Applied(imported, skipped)
+            }
+        } catch (exception: Exception) {
+            RecipeImportApplyResult.Invalid("Import was rolled back: ${exception.message ?: "database validation failed"}.")
+        }
+    }
 
     private fun createRecipeLines(
         title: String,
@@ -698,6 +853,45 @@ private fun jsonString(value: String): String = buildString {
 }
 
 private fun nullableJsonString(value: String?): String = value?.let(::jsonString) ?: "null"
+
+private fun contentImportSourceId(sourceName: String, recipe: StagedRecipeImport): String {
+    val parts = buildList {
+        add(sourceName.trim().lowercase())
+        add(recipe.title.trim())
+        add(recipe.instructions.trim())
+        add(recipe.servings.toString())
+        add(recipe.style.name)
+        recipe.ingredientLines.forEach { line ->
+            add(line.name.trim())
+            add(line.amount?.toString().orEmpty())
+            add(line.unit.orEmpty())
+            add(line.optional.toString())
+            add(line.preparation.orEmpty())
+        }
+    }
+    val canonical = parts.joinToString("") { "${it.length}#$it" }
+    var hash = -3750763034362895579L
+    canonical.encodeToByteArray().forEach { byte ->
+        hash = (hash xor (byte.toInt() and 0xff).toLong()) * 1099511628211L
+    }
+    return "content-v1-${hash.toString(16)}"
+}
+
+private fun sameImportedRecipe(first: StagedRecipeImport, second: StagedRecipeImport): Boolean =
+    sameImportedRecipe(first, second.title, second.instructions, second.servings, second.style, second.ingredientLines)
+
+private fun sameImportedRecipe(
+    staged: StagedRecipeImport,
+    title: String,
+    instructions: String,
+    servings: Double,
+    style: RecipeStyle,
+    ingredientLines: List<RecipeIngredientDraft>,
+): Boolean = staged.title.trim() == title.trim() &&
+    staged.instructions.trim() == instructions.trim() &&
+    staged.servings == servings &&
+    staged.style == style &&
+    staged.ingredientLines == ingredientLines
 
 private fun favoriteRecordId(memberId: String, familyId: String): String =
     "${memberId.length}#$memberId${familyId.length}#$familyId"

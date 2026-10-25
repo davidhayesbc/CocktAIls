@@ -2,9 +2,9 @@
 
 ## Decision
 
-The eight-record text-only IBA candidate is suitable for a separately licensed **review pack** once the listed source-history check is complete. It is **not included in the app or repository yet**. The research verifies the extractor's pinned license and each row against archived source-page content, but does not finish the page-history audit needed by the project inclusion policy.
+The eight-record text-only IBA candidate has a bounded public source-history review, but is **not included in the app or repository**. Catalog-pack creation is deferred/outside Phase 1. If it is considered later, keep the factual ingredient/amount subset separate under CC BY-SA 3.0 with the attribution and modification manifest below. This is a practical, scoped review, not a blanket legal-clearance claim.
 
-This is a bounded hold on one candidate pack, not a reason to block manual recipes, household imports, editing, or recipe discovery.
+The review supports factual ingredient lists and measures with newly authored concise methods. Avoid images, copied explanatory prose, and verbatim methods whose authorship/redistribution scope is uncertain.
 
 ## Evidence already reviewed
 
@@ -29,6 +29,14 @@ This is a bounded hold on one candidate pack, not a reason to block manual recip
 
 The candidate is only these eight CSV rows. Do not add other IBA records, images, or scraped site material under this review.
 
-## Remaining inclusion check
+## Revision-history findings
 
-Review the revision history for each linked Wikipedia page and confirm the selected recipe text was contributed under terms compatible with the proposed CC BY-SA 3.0 pack. The supplied audit notes that live history/API requests were cache-missed and this review is incomplete. Until then, do not create or bundle the data pack. If that check cannot be completed, use a source with clearer record-level redistribution evidence instead.
+The public histories for all eight pinned revisions were reviewed through their oldest visible entries (20 history pages total), along with current talk pages and the Martini archive. The review found no additional restrictive notice affecting the factual ingredient and amount fields. Specific context:
+
+- Old fashioned revision 108862767 (2007) says the ingredients/directions in the infobox came from the IBA; this does not identify a separate IBA license for that text.
+- Negroni revision 108835279 removes material about the drink's origin; the reviewed change concerns biography/history prose, not the selected infobox fields.
+- Martini retains its infobox after the public post-removal revision 920158546. The earlier suppressed diff was not retrieved.
+- Whiskey sour revision 286304679 records a split pointing to the Wikipedia “Sour (cocktail)” ancestry.
+- The archived 2023 page footer states CC BY-SA 3.0. The current footer's later 4.0 notice does not replace the archived notice for these pinned revisions.
+
+For any future pack, retain only the eight factual ingredient/amount rows; write concise methods anew; include the article links, page revision IDs, contributor/extractor attribution, pinned repository commit, CC BY-SA 3.0 notice, and explicit normalization/modification notes. No images or verbatim explanatory/history text. The residual Martini suppressed-diff uncertainty and the general limits of a bounded public-source review mean this is not a guarantee about every jurisdiction or rights claim. Do not broaden the reviewed candidate under this result; use a source with clearer record-level redistribution evidence for additions.

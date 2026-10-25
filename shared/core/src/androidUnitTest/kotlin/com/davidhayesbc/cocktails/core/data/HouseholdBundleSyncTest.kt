@@ -3,6 +3,12 @@ package com.davidhayesbc.cocktails.core.data
 import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import com.davidhayesbc.cocktails.core.interchange.BundleDecodeResult
 import com.davidhayesbc.cocktails.core.interchange.HouseholdBundleCodec
+import com.davidhayesbc.cocktails.core.interchange.RecipeImportApplyResult
+import com.davidhayesbc.cocktails.core.interchange.RecipeImportMapping
+import com.davidhayesbc.cocktails.core.interchange.RecipeImportProvenance
+import com.davidhayesbc.cocktails.core.interchange.RecipeTableParseResult
+import com.davidhayesbc.cocktails.core.interchange.parseRecipeImportTable
+import com.davidhayesbc.cocktails.core.interchange.previewRecipeImport
 import com.davidhayesbc.cocktails.core.model.IngredientId
 import com.davidhayesbc.cocktails.core.model.InventoryLevel
 import com.davidhayesbc.cocktails.core.model.RecipeIngredientDraft
@@ -19,6 +25,91 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 class HouseholdBundleSyncTest {
+    @Test
+    fun genericRecipeImportRequiresExplicitFamilyLinkAndIsIdempotentWithProvenance() {
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        CocktailsDatabase.Schema.create(driver)
+        val database = CocktailsDatabase(driver)
+        val repository = LocalCocktailRepository(database)
+        repository.initialize(10)
+        assertTrue(repository.addRecipe("Daiquiri", listOf("White rum", "Lime"), "House method", RecipeStyle.SOUR, nowMillis = 20))
+        val originalFamily = repository.recipeFamilies().single().familyId
+        val parsed = assertIs<RecipeTableParseResult.Valid>(parseRecipeImportTable(
+            """title,ingredients,family,source_id,yield,style,instructions
+Daiquiri,"Rum | 60 | ml; Lime | 25 | ml",Daiquiri,book-1,2,SOUR,Shake""",
+            "book.csv",
+        )).table
+        val mapping = RecipeImportMapping("title", "ingredients", "instructions", "yield", "style", "family", "source_id")
+        val preview = previewRecipeImport(parsed, mapping, RecipeImportProvenance("Test book", "https://example.test", "CC BY 4.0", "Recipe author"))
+        assertTrue(preview.canApply)
+        assertEquals(1, repository.recipeFamilies().size)
+        val groupKey = preview.recipes.single().familyGroupKey
+
+        val first = assertIs<RecipeImportApplyResult.Applied>(repository.applyRecipeImport(preview,
+            RecipeImportProvenance("Test book", "https://example.test", "CC BY 4.0", "Recipe author"),
+            mapOf(groupKey to originalFamily), 30))
+        assertEquals(1, first.imported)
+        assertEquals(0, first.skippedDuplicates)
+        assertEquals(1, repository.recipeFamilies().size)
+        val sourceRecord = database.householdQueries.selectAllSourcesForBundle().executeAsList().single { it.source_record_id == "book-1" }
+        val imported = repository.recipes().single { it.id.value == sourceRecord.variant_id }
+        assertEquals(originalFamily, imported.familyId)
+        assertEquals(2.0, imported.servings)
+        assertEquals(listOf("ml", "ml"), imported.ingredients.map { it.unit })
+        val source = database.householdQueries.selectRecipeSourcesForVariant(imported.id.value).executeAsOne()
+        assertEquals("book-1", source.source_record_id)
+        assertEquals("CC BY 4.0", source.license_name)
+        assertEquals("Recipe author", source.attribution)
+
+        val repeated = assertIs<RecipeImportApplyResult.Applied>(repository.applyRecipeImport(preview,
+            RecipeImportProvenance("Test book", "https://example.test", "CC BY 4.0", "Recipe author"),
+            mapOf(groupKey to originalFamily), 40))
+        assertEquals(0, repeated.imported)
+        assertEquals(1, repeated.skippedDuplicates)
+
+        val backup = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(repository.exportHouseholdBundle(50))).bundle
+        val partnerDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        CocktailsDatabase.Schema.create(partnerDriver)
+        val partnerDatabase = CocktailsDatabase(partnerDriver)
+        val partner = LocalCocktailRepository(partnerDatabase)
+        partner.initialize(60)
+        val backupPreview = assertIs<ImportPreviewResult.Valid>(partner.previewHouseholdBundle(backup)).preview
+        assertIs<ImportApplyResult.Applied>(partner.applyHouseholdBundle(backup, backupPreview, emptyMap(), 70))
+        val partnerSource = partnerDatabase.householdQueries.selectAllSourcesForBundle().executeAsList().single { it.source_record_id == "book-1" }
+        assertEquals("Test book", partnerSource.source_name)
+        assertEquals("CC BY 4.0", partnerSource.license_name)
+        val partnerVariant = partner.recipes().single { it.id.value == partnerSource.variant_id }
+        assertEquals(listOf("ml", "ml"), partnerVariant.ingredients.map { it.unit })
+        partnerDriver.close()
+        driver.close()
+    }
+
+    @Test
+    fun changedSourceRecordRejectsWholeRecipeImportBatchWithoutPartialWrites() {
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        CocktailsDatabase.Schema.create(driver)
+        val database = CocktailsDatabase(driver)
+        val repository = LocalCocktailRepository(database)
+        repository.initialize(10)
+        val provenance = RecipeImportProvenance("Personal CSV", licenseName = "Personal notes", attribution = "Me")
+        fun stage(csv: String) = previewRecipeImport(
+            assertIs<RecipeTableParseResult.Valid>(parseRecipeImportTable(csv, "recipes.csv")).table,
+            RecipeImportMapping("title", "ingredients", sourceRecordIdField = "id"), provenance,
+        )
+        val original = stage("""title,ingredients,id
+Martini,"Gin | 60 | ml",stable-1""")
+        assertTrue(original.canApply)
+        assertIs<RecipeImportApplyResult.Applied>(repository.applyRecipeImport(original, provenance, emptyMap(), 20))
+        val changedAndNew = stage("""title,ingredients,id
+Martini,"Vodka | 60 | ml",stable-1
+New drink,"Rum | 45 | ml",new-2""")
+        assertTrue(changedAndNew.canApply)
+        assertIs<RecipeImportApplyResult.Invalid>(repository.applyRecipeImport(changedAndNew, provenance, emptyMap(), 30))
+        assertEquals(1, repository.recipes().size)
+        assertEquals("Gin", repository.recipes().single().ingredients.single().name)
+        driver.close()
+    }
+
     @Test
     fun concurrentRecipeEditsRemainReviewableAndMergedRevisionKeepsBothParents() {
         val leftDatabase = database()
