@@ -60,6 +60,9 @@ CREATE TABLE ingredient_product (
     brand TEXT,
     product_name TEXT NOT NULL,
     barcode TEXT,
+    photo_mime_type TEXT,
+    photo_data BLOB,
+    photo_sha256 TEXT,
     created_at INTEGER NOT NULL
 );
 
@@ -210,7 +213,8 @@ UPDATE inventory_item SET level = ?, updated_at = ?, updated_by_member_id = ?
 WHERE location_id = ? AND ingredient_id = ?;
 
 selectPantryForLocation:
-SELECT ingredient.id AS ingredient_id, ingredient.canonical_name, ingredient.category, inventory_item.level
+SELECT ingredient.id AS ingredient_id, ingredient.canonical_name, ingredient.category, inventory_item.level,
+       (SELECT photo_data FROM ingredient_product WHERE ingredient_id = ingredient.id ORDER BY created_at LIMIT 1) AS photo_data
 FROM inventory_item
 JOIN ingredient ON ingredient.id = inventory_item.ingredient_id
 WHERE inventory_item.location_id = ?
@@ -291,6 +295,9 @@ ORDER BY recipe_ingredient.sort_order;
 
 updateRecipeVariantDraft:
 UPDATE recipe_variant SET title = ?, instructions = ?, servings = ?, style = ?, revision_id = ? WHERE id = ?;
+
+updateRecipeVariantWithFamily:
+UPDATE recipe_variant SET family_id = ?, title = ?, instructions = ?, servings = ?, style = ?, revision_id = ? WHERE id = ?;
 
 selectRecipeSourcesForVariant:
 SELECT id, source_name, source_record_id, source_url, license_name, attribution, modifications, imported_at
@@ -382,7 +389,15 @@ selectAllIngredientsForBundle:
 SELECT id, canonical_name, category, created_at FROM ingredient;
 
 selectAllProductsForBundle:
-SELECT id, ingredient_id, brand, product_name, barcode, created_at FROM ingredient_product;
+SELECT id, ingredient_id, brand, product_name, barcode, photo_mime_type, photo_data, photo_sha256, created_at FROM ingredient_product;
+
+selectProductForIngredient:
+SELECT id, ingredient_id, brand, product_name, barcode, photo_mime_type, photo_data, photo_sha256, created_at
+FROM ingredient_product WHERE ingredient_id = ? ORDER BY created_at LIMIT 1;
+
+selectProductById:
+SELECT id, ingredient_id, brand, product_name, barcode, photo_mime_type, photo_data, photo_sha256, created_at
+FROM ingredient_product WHERE id = ?;
 
 selectAllInventoryForBundle:
 SELECT id, location_id, ingredient_id, level, updated_at, updated_by_member_id FROM inventory_item;
@@ -458,6 +473,9 @@ WHERE barcode IS NOT NULL;
 
 updateProduct:
 UPDATE ingredient_product SET ingredient_id = ?, brand = ?, product_name = ?, barcode = ? WHERE id = ?;
+
+updateProductPhoto:
+UPDATE ingredient_product SET photo_mime_type = ?, photo_data = ?, photo_sha256 = ? WHERE id = ?;
 
 insertInventoryBundleIgnore:
 INSERT OR IGNORE INTO inventory_item(id, location_id, ingredient_id, level, updated_at, updated_by_member_id) VALUES (?, ?, ?, ?, ?, ?);

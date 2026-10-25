@@ -2,10 +2,18 @@ package com.davidhayesbc.cocktails.android.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
+import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -46,6 +54,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -76,6 +85,9 @@ import com.davidhayesbc.cocktails.core.interchange.RecipeImportTable
 import com.davidhayesbc.cocktails.core.interchange.RecipeTableParseResult
 import com.davidhayesbc.cocktails.core.interchange.parseRecipeImportTable
 import com.davidhayesbc.cocktails.core.interchange.previewRecipeImport
+import com.davidhayesbc.cocktails.core.interchange.hasSameRecipeFormulation
+import com.davidhayesbc.cocktails.core.interchange.isProductPhotoJpeg
+import com.davidhayesbc.cocktails.core.interchange.MAX_PRODUCT_PHOTO_BYTES
 import com.davidhayesbc.cocktails.core.model.HomeLocation
 import com.davidhayesbc.cocktails.core.model.CocktailFamilyId
 import com.davidhayesbc.cocktails.core.model.InventoryLevel
@@ -93,6 +105,7 @@ import com.davidhayesbc.cocktails.core.model.ShopSuggestion
 import com.davidhayesbc.cocktails.core.model.MemberProfile
 import com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup
 import com.davidhayesbc.cocktails.core.model.RecipeCard
+import com.davidhayesbc.cocktails.core.model.RecipeVariantId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -105,12 +118,76 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.ByteArrayOutputStream
+import java.io.ByteArrayInputStream
 
 private enum class Page(val label: String) {
     MAKE("Make"),
     MY_BAR("My Bar"),
     RECIPES("Recipes"),
     MORE("More"),
+}
+
+private const val MAX_SELECTED_PHOTO_BYTES = 20 * 1024 * 1024
+private const val MAX_PRODUCT_PHOTO_DIMENSION = 1440
+
+/** Reads only the user-selected URI and re-encodes pixels, which removes embedded metadata. */
+private fun readAndCompressProductPhoto(context: Context, uri: Uri): ByteArray {
+    val sourceBytes = context.contentResolver.openInputStream(uri)?.use { input ->
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(16 * 1024)
+        var total = 0
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            total += count
+            require(total <= MAX_SELECTED_PHOTO_BYTES) { "The selected image is larger than 20 MiB." }
+            output.write(buffer, 0, count)
+        }
+        output.toByteArray()
+    } ?: error("Could not read the selected image.")
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(sourceBytes, 0, sourceBytes.size, bounds)
+    require(bounds.outWidth > 0 && bounds.outHeight > 0) { "The selected file is not a supported image." }
+    var sampleSize = 1
+    while (maxOf(bounds.outWidth, bounds.outHeight) / sampleSize > MAX_PRODUCT_PHOTO_DIMENSION * 2) sampleSize *= 2
+    val bitmap = BitmapFactory.decodeByteArray(sourceBytes, 0, sourceBytes.size, BitmapFactory.Options().apply {
+        inSampleSize = sampleSize
+        inPreferredConfig = Bitmap.Config.ARGB_8888
+    }) ?: error("The selected image could not be decoded.")
+    val orientation = runCatching {
+        ExifInterface(ByteArrayInputStream(sourceBytes)).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+    }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+    val transform = Matrix().apply {
+        when (orientation) {
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> setScale(-1f, 1f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> setRotate(180f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> setScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> { setRotate(90f); postScale(-1f, 1f) }
+            ExifInterface.ORIENTATION_ROTATE_90 -> setRotate(90f)
+            ExifInterface.ORIENTATION_TRANSVERSE -> { setRotate(270f); postScale(-1f, 1f) }
+            ExifInterface.ORIENTATION_ROTATE_270 -> setRotate(270f)
+        }
+    }
+    var prepared = if (orientation == ExifInterface.ORIENTATION_NORMAL || orientation == ExifInterface.ORIENTATION_UNDEFINED) bitmap else {
+        Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, transform, true).also { if (it !== bitmap) bitmap.recycle() }
+    }
+    val scale = minOf(1.0, MAX_PRODUCT_PHOTO_DIMENSION.toDouble() / maxOf(prepared.width, prepared.height))
+    if (scale < 1.0) {
+        val resized = Bitmap.createScaledBitmap(prepared, (prepared.width * scale).toInt().coerceAtLeast(1), (prepared.height * scale).toInt().coerceAtLeast(1), true)
+        if (resized !== prepared) prepared.recycle()
+        prepared = resized
+    }
+    try {
+        for (quality in listOf(82, 74, 66, 58, 50)) {
+            val output = ByteArrayOutputStream()
+            prepared.compress(Bitmap.CompressFormat.JPEG, quality, output)
+            val result = output.toByteArray()
+            if (result.size <= MAX_PRODUCT_PHOTO_BYTES && isProductPhotoJpeg(result)) return result
+        }
+    } finally {
+        prepared.recycle()
+    }
+    error("The compressed image exceeds the 1 MiB photo limit.")
 }
 
 private sealed interface LocationAction {
@@ -145,6 +222,8 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var showBarcodeScanner by remember { mutableStateOf(false) }
     var barcodeInput by remember { mutableStateOf("") }
     var barcodePermissionMessage by remember { mutableStateOf<String?>(null) }
+    var selectedProductPhoto by remember { mutableStateOf<ByteArray?>(null) }
+    var productPhotoMessage by remember { mutableStateOf<String?>(null) }
     var showAddRecipe by remember { mutableStateOf(false) }
     var recipeToEdit by remember { mutableStateOf<RecipeDetail?>(null) }
     var showAddLocation by remember { mutableStateOf(false) }
@@ -253,6 +332,22 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                         }
                     }
                 }.onFailure { shareMessage = "Recipe preview failed: ${it.message ?: "file could not be read"}" }
+            }
+        }
+    }
+
+    val productPhotoLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) {
+            coroutineScope.launch {
+                runCatching { withContext(Dispatchers.IO) { readAndCompressProductPhoto(context, uri) } }
+                    .onSuccess {
+                        selectedProductPhoto = it
+                        productPhotoMessage = "Photo ready · ${it.size / 1024} KiB · resized and metadata removed on this phone."
+                    }
+                    .onFailure {
+                        selectedProductPhoto = null
+                        productPhotoMessage = "Photo could not be prepared: ${it.message ?: "choose a smaller image"}"
+                    }
             }
         }
     }
@@ -539,10 +634,14 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         AddIngredientDialog(
             barcode = barcodeInput,
             barcodeMessage = barcodePermissionMessage,
+            productPhotoBytes = selectedProductPhoto,
+            productPhotoMessage = productPhotoMessage,
             onBarcodeChanged = { barcodeInput = it; barcodePermissionMessage = null },
             onScanBarcode = ::beginBarcodeScan,
-            onDismiss = { showAddIngredient = false; barcodeInput = ""; barcodePermissionMessage = null },
-            onSave = { name, category, level, barcode, brand, productName ->
+            onPickPhoto = { productPhotoLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+            onRemovePhoto = { selectedProductPhoto = null; productPhotoMessage = null },
+            onDismiss = { showAddIngredient = false; barcodeInput = ""; barcodePermissionMessage = null; selectedProductPhoto = null; productPhotoMessage = null },
+            onSave = { name, category, level, barcode, brand, productName, productPhoto ->
                 val saved = repository.addIngredient(
                     name = name,
                     category = category,
@@ -552,17 +651,22 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     barcode = barcode,
                     brand = brand,
                     productName = productName,
+                    productPhotoJpeg = productPhoto,
                 )
                 if (saved) {
                     refreshPantry()
                     showAddIngredient = false
                     barcodeInput = ""
                     barcodePermissionMessage = null
+                    selectedProductPhoto = null
+                    productPhotoMessage = null
                     null
                 } else if (barcode.isNotBlank() && normalizeGtinForLookup(barcode) == null) {
                     "That isn't a valid UPC or EAN barcode. Edit it or clear the field to save the ingredient without a product code."
                 } else if (barcode.isNotBlank()) {
                     "This barcode is already linked to a different ingredient. Edit it or clear the field to save the ingredient without it."
+                } else if (productPhoto != null) {
+                    "The label photo could not be attached. Remove it or choose a different image and try again."
                 } else {
                     "Enter an ingredient name before saving."
                 }
@@ -593,7 +697,10 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             onSave = { title, ingredientLines, instructions, servings, style, familyId ->
                 val now = System.currentTimeMillis()
                 val saved = recipeToEdit?.let { current ->
-                    repository.editRecipeVariant(current.id, title, ingredientLines, instructions, servings, style, now)
+                    repository.editRecipeVariant(
+                        current.id, title, ingredientLines, instructions, servings, style, now,
+                        familyId?.let(::CocktailFamilyId),
+                    )
                 } ?: repository.addRecipeLines(
                     title = title, ingredientLines = ingredientLines, instructions = instructions, style = style,
                     existingFamilyId = familyId?.let(::CocktailFamilyId), servings = servings, nowMillis = now,
@@ -692,14 +799,15 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             fileName = stagedRecipeFileName,
             table = table,
             existingFamilies = recipeFamilies,
+            existingRecipes = recipes,
             onCancel = {
                 stagedRecipeTable = null
                 shareMessage = "Recipe import canceled. Your data was not changed."
             },
-            onApply = { preview, provenance, familyAssociations ->
+            onApply = { preview, provenance, familyAssociations, existingVariantAssociations ->
                 coroutineScope.launch {
                     when (val result = withContext(Dispatchers.IO) {
-                        repository.applyRecipeImport(preview, provenance, familyAssociations, System.currentTimeMillis())
+                        repository.applyRecipeImport(preview, provenance, familyAssociations, System.currentTimeMillis(), existingVariantAssociations)
                     }) {
                         is com.davidhayesbc.cocktails.core.interchange.RecipeImportApplyResult.Invalid -> shareMessage = result.reason
                         is com.davidhayesbc.cocktails.core.interchange.RecipeImportApplyResult.Applied -> {
@@ -863,6 +971,9 @@ private fun MyBarScreen(
 @Composable
 private fun PantryRow(entry: PantryEntry, onLevelSelected: (PantryEntry, InventoryLevel) -> Unit) {
     var menuExpanded by remember { mutableStateOf(false) }
+    val photo = remember(entry.photoData) {
+        entry.photoData?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
+    }
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -873,9 +984,14 @@ private fun PantryRow(entry: PantryEntry, onLevelSelected: (PantryEntry, Invento
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(entry.name, style = MaterialTheme.typography.titleMedium)
-                Text(entry.category, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (photo != null) {
+                    Image(photo, contentDescription = "${entry.name} product photo", modifier = Modifier.height(52.dp))
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(entry.name, style = MaterialTheme.typography.titleMedium)
+                    Text(entry.category, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
             Column(horizontalAlignment = Alignment.End) {
                 TextButton(onClick = { menuExpanded = true }) { Text(entry.level.label) }
@@ -899,10 +1015,14 @@ private fun PantryRow(entry: PantryEntry, onLevelSelected: (PantryEntry, Invento
 private fun AddIngredientDialog(
     barcode: String,
     barcodeMessage: String?,
+    productPhotoBytes: ByteArray?,
+    productPhotoMessage: String?,
     onBarcodeChanged: (String) -> Unit,
     onScanBarcode: () -> Unit,
+    onPickPhoto: () -> Unit,
+    onRemovePhoto: () -> Unit,
     onDismiss: () -> Unit,
-    onSave: (String, String, InventoryLevel, String, String?, String?) -> String?,
+    onSave: (String, String, InventoryLevel, String, String?, String?, ByteArray?) -> String?,
 ) {
     var name by remember { mutableStateOf("") }
     var brand by remember { mutableStateOf("") }
@@ -950,8 +1070,17 @@ private fun AddIngredientDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                OutlinedButton(onClick = onPickPhoto, modifier = Modifier.fillMaxWidth()) {
+                    Text(if (productPhotoBytes == null) "Add optional bottle label photo" else "Replace bottle label photo")
+                }
+                if (productPhotoBytes != null) {
+                    TextButton(onClick = onRemovePhoto) { Text("Remove selected photo") }
+                }
+                if (productPhotoMessage != null) {
+                    Text(productPhotoMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 Text(
-                    "No product lookup is required. Camera frames are processed on this phone and aren't saved or sent. Confirmed barcodes and ingredient links stay local and are included in household backups.",
+                    "Photos are optional and picked locally. They are resized, re-encoded without EXIF metadata, and included in household backups only when you select them. No photo service or product lookup is used.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -991,7 +1120,7 @@ private fun AddIngredientDialog(
         },
         confirmButton = {
             Button(
-                onClick = { saveError = onSave(name, category, level, barcode, brand.takeIf(String::isNotBlank), productName.takeIf(String::isNotBlank)) },
+                onClick = { saveError = onSave(name, category, level, barcode, brand.takeIf(String::isNotBlank), productName.takeIf(String::isNotBlank), productPhotoBytes) },
                 enabled = name.isNotBlank(),
             ) { Text("Save") }
         },
@@ -1287,19 +1416,18 @@ private fun AddRecipeDialog(
                 OutlinedTextField(servings, { servings = it; error = null }, label = { Text("Original servings") }, singleLine = true, modifier = Modifier.testTag("recipe-servings"))
                 if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
                 OutlinedTextField(instructions, { instructions = it }, label = { Text("Method (optional)") }, minLines = 2)
-                if (initialRecipe == null) {
-                    TextButton(onClick = { familyMenu = true }) {
-                        val familyName = families.firstOrNull { it.familyId.value == familyId }?.name
-                        Text(if (familyName == null) "New cocktail family" else "Version of $familyName  ▾")
-                    }
-                    DropdownMenu(expanded = familyMenu, onDismissRequest = { familyMenu = false }) {
+                TextButton(onClick = { familyMenu = true }) {
+                    val familyName = families.firstOrNull { it.familyId.value == familyId }?.name
+                    Text(if (initialRecipe == null && familyName == null) "New cocktail family" else "Family: ${familyName ?: "Select family"}  ▾")
+                }
+                DropdownMenu(expanded = familyMenu, onDismissRequest = { familyMenu = false }) {
+                    if (initialRecipe == null) {
                         DropdownMenuItem(text = { Text("New family (keep separate)") }, onClick = { familyId = null; familyMenu = false })
-                        families.forEach { family ->
-                            DropdownMenuItem(text = { Text("Add as a version of ${family.name}") }, onClick = { familyId = family.familyId.value; familyMenu = false })
-                        }
                     }
-                } else {
-                    Text("Family: ${families.firstOrNull { it.familyId.value == familyId }?.name ?: "Unknown"}; use Duplicate to create another version.")
+                    families.forEach { family ->
+                        val action = if (initialRecipe == null) "Add as a version of" else "Move to"
+                        DropdownMenuItem(text = { Text("$action ${family.name}") }, onClick = { familyId = family.familyId.value; familyMenu = false })
+                    }
                 }
                 TextButton(onClick = { styleMenu = true }) { Text("Style: ${style.label} ▾") }
                 DropdownMenu(expanded = styleMenu, onDismissRequest = { styleMenu = false }) {
@@ -1388,8 +1516,9 @@ private fun RecipeFileImportDialog(
     fileName: String,
     table: RecipeImportTable,
     existingFamilies: List<RecipeCard>,
+    existingRecipes: List<RecipeDetail>,
     onCancel: () -> Unit,
-    onApply: (RecipeImportPreview, RecipeImportProvenance, Map<String, CocktailFamilyId>) -> Unit,
+    onApply: (RecipeImportPreview, RecipeImportProvenance, Map<String, CocktailFamilyId>, Map<Int, RecipeVariantId>) -> Unit,
 ) {
     var titleField by remember(table) { mutableStateOf(table.headers.firstOrNull { it.contains("title", true) || it.contains("name", true) }.orEmpty()) }
     var ingredientsField by remember(table) { mutableStateOf(table.headers.firstOrNull { it.contains("ingredient", true) }.orEmpty()) }
@@ -1403,6 +1532,7 @@ private fun RecipeFileImportDialog(
     var license by remember { mutableStateOf("") }
     var attribution by remember { mutableStateOf("") }
     var associations by remember(table) { mutableStateOf<Map<String, CocktailFamilyId>>(emptyMap()) }
+    var variantAssociations by remember(table) { mutableStateOf<Map<Int, RecipeVariantId>>(emptyMap()) }
     val mapping = RecipeImportMapping(
         titleField = titleField,
         ingredientsField = ingredientsField,
@@ -1451,10 +1581,31 @@ private fun RecipeFileImportDialog(
                     }
                 }
                 Text("Preview", style = MaterialTheme.typography.titleMedium)
-                preview.recipes.take(8).forEach { recipe ->
-                    Text("${recipe.title} · ${recipe.ingredientLines.size} ingredients · yield ${recipe.servings}", style = MaterialTheme.typography.bodySmall)
+                if (preview.canApply && existingRecipes.isNotEmpty()) {
+                    Text("For equivalent formulations from another source, choose the existing variant explicitly. No match is made from a title alone.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                if (preview.recipes.size > 8) Text("…and ${preview.recipes.size - 8} more", style = MaterialTheme.typography.bodySmall)
+                preview.recipes.forEach { recipe ->
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("${recipe.title} · ${recipe.ingredientLines.size} ingredients · yield ${recipe.servings}", style = MaterialTheme.typography.bodySmall)
+                        val compatible = existingRecipes.filter { candidate ->
+                            hasSameRecipeFormulation(
+                                recipe,
+                                candidate.servings,
+                                candidate.style,
+                                candidate.ingredients.map { RecipeIngredientDraft(it.name, it.amount, it.unit, it.preparation, it.optional) },
+                            )
+                        }
+                        if (compatible.isNotEmpty()) {
+                            ExistingVariantAssociationPicker(
+                                recipeTitle = recipe.title,
+                                candidates = compatible,
+                                families = existingFamilies,
+                                selected = variantAssociations[recipe.rowNumber],
+                                onSelected = { value -> variantAssociations = if (value == null) variantAssociations - recipe.rowNumber else variantAssociations + (recipe.rowNumber to value) },
+                            )
+                        }
+                    }
+                }
                 preview.errors.forEach { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 if (preview.errors.isEmpty() && preview.recipes.isNotEmpty()) {
                     Text("No data is written until you choose Import. Cancel leaves the household unchanged.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1462,10 +1613,40 @@ private fun RecipeFileImportDialog(
             }
         },
         confirmButton = {
-            Button(enabled = preview.canApply, onClick = { onApply(preview, provenance, associations) }) { Text("Import ${preview.recipes.size} recipes") }
+            Button(enabled = preview.canApply, onClick = { onApply(preview, provenance, associations, variantAssociations) }) { Text("Import ${preview.recipes.size} recipes") }
         },
         dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
     )
+}
+
+@Composable
+private fun ExistingVariantAssociationPicker(
+    recipeTitle: String,
+    candidates: List<RecipeDetail>,
+    families: List<RecipeCard>,
+    selected: RecipeVariantId?,
+    onSelected: (RecipeVariantId?) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Column {
+        OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+            val selectedRecipe = candidates.firstOrNull { it.id == selected }
+            val familyName = selectedRecipe?.familyId?.let { id -> families.firstOrNull { it.familyId == id }?.name }
+            Text("Source match · ${selectedRecipe?.let { "${it.title} · ${familyName ?: "family"}" } ?: "Create a separate variant"} ▾")
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(text = { Text("Create a separate $recipeTitle variant") }, onClick = { onSelected(null); expanded = false })
+            candidates.forEach { candidate ->
+                DropdownMenuItem(
+                    text = {
+                        val familyName = families.firstOrNull { it.familyId == candidate.familyId }?.name ?: "Unknown family"
+                        Text("${candidate.title} · $familyName · ${candidate.ingredients.joinToString { ingredient -> "${ingredient.name} ${ingredient.amount ?: ""}${ingredient.unit.orEmpty()}" }}")
+                    },
+                    onClick = { onSelected(candidate.id); expanded = false },
+                )
+            }
+        }
+    }
 }
 
 @Composable

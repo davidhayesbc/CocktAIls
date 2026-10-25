@@ -28,6 +28,14 @@ import com.davidhayesbc.cocktails.core.interchange.RecipeImportApplyResult
 import com.davidhayesbc.cocktails.core.interchange.RecipeImportPreview
 import com.davidhayesbc.cocktails.core.interchange.RecipeImportProvenance
 import com.davidhayesbc.cocktails.core.interchange.StagedRecipeImport
+import com.davidhayesbc.cocktails.core.interchange.hasSameRecipeFormulation
+import com.davidhayesbc.cocktails.core.interchange.MAX_PRODUCT_PHOTO_BYTES
+import com.davidhayesbc.cocktails.core.interchange.isProductPhotoJpeg
+import com.davidhayesbc.cocktails.core.interchange.photoSha256
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 class LocalCocktailRepository(private val database: CocktailsDatabase) {
     private val queries = database.householdQueries
@@ -240,6 +248,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         provenance: RecipeImportProvenance,
         existingFamilyByGroup: Map<String, CocktailFamilyId>,
         nowMillis: Long,
+        existingVariantByRow: Map<Int, RecipeVariantId> = emptyMap(),
     ): RecipeImportApplyResult {
         if (!preview.canApply) return RecipeImportApplyResult.Invalid("Fix every row and provenance error before importing.")
         val sourceName = provenance.sourceName.trim()
@@ -250,6 +259,9 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         }
         if (existingFamilyByGroup.keys.any { key -> preview.recipes.none { it.familyGroupKey == key } }) {
             return RecipeImportApplyResult.Invalid("A selected cocktail-family association does not match this import preview.")
+        }
+        if (existingVariantByRow.keys.any { row -> preview.recipes.none { it.rowNumber == row } }) {
+            return RecipeImportApplyResult.Invalid("A selected recipe match no longer exists in this import preview.")
         }
 
         return try {
@@ -263,7 +275,13 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
 
                 val existingSources = queries.selectAllSourcesForBundle().executeAsList()
                 val existingVariants = queries.selectAllVariantsForBundle().executeAsList().associateBy { it.id }
-                val prepared = mutableListOf<Pair<StagedRecipeImport, String>>()
+                val activeVariants = existingVariants.values.filter {
+                    queries.selectTombstone(it.id, "RECIPE_VARIANT").executeAsOneOrNull() == null
+                }.associateBy { it.id }
+                if (existingVariantByRow.values.any { it.value !in activeVariants }) {
+                    return@transactionWithResult RecipeImportApplyResult.Invalid("A selected existing recipe is no longer available. Refresh the import preview.")
+                }
+                val prepared = mutableListOf<Triple<StagedRecipeImport, String, String?>>()
                 val incomingByIdentity = mutableMapOf<String, StagedRecipeImport>()
                 var skipped = 0
 
@@ -289,10 +307,15 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                     if (existingSource != null) {
                         val existingVariant = existingVariants[existingSource.variant_id]
                             ?: return@transactionWithResult RecipeImportApplyResult.Invalid("An existing source record points to a missing recipe.")
-                        val existingLines = queries.selectRecipeIngredients(existingVariant.id).executeAsList().map {
-                            RecipeIngredientDraft(it.canonical_name, it.amount_value, it.amount_unit, it.preparation, it.optional != 0L)
-                        }
-                        if (!sameImportedRecipe(
+                        val selectedExistingVariant = existingVariantByRow[recipe.rowNumber]?.value
+                        val storedFingerprint = importFingerprintFromSourceNotes(existingSource.modifications)
+                        val contentUnchanged = if (storedFingerprint != null) {
+                            storedFingerprint == recipeImportFingerprint(recipe)
+                        } else {
+                            val existingLines = queries.selectRecipeIngredients(existingVariant.id).executeAsList().map {
+                                RecipeIngredientDraft(it.canonical_name, it.amount_value, it.amount_unit, it.preparation, it.optional != 0L)
+                            }
+                            sameImportedRecipe(
                                 recipe,
                                 existingVariant.title,
                                 existingVariant.instructions,
@@ -300,20 +323,55 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                                 runCatching { RecipeStyle.valueOf(existingVariant.style) }.getOrDefault(RecipeStyle.OTHER),
                                 existingLines,
                             )
-                        ) {
+                        }
+                        if (!contentUnchanged || (selectedExistingVariant != null && selectedExistingVariant != existingVariant.id)) {
                             return@transactionWithResult RecipeImportApplyResult.Invalid(
                                 "Source record '$sourceRecordId' was already imported with different content. No rows were imported.",
                             )
                         }
                         skipped++
                     } else {
-                        prepared += recipe to sourceRecordId
+                        val selectedExistingVariant = existingVariantByRow[recipe.rowNumber]?.value
+                        if (selectedExistingVariant != null) {
+                            val target = activeVariants.getValue(selectedExistingVariant)
+                            val selectedFamily = existingFamilyByGroup[recipe.familyGroupKey]?.value
+                            if (selectedFamily != null && selectedFamily != target.family_id) {
+                                return@transactionWithResult RecipeImportApplyResult.Invalid(
+                                    "The selected recipe and family belong to different groups. Choose one association or clear the family mapping.",
+                                )
+                            }
+                            val existingLines = queries.selectRecipeIngredients(target.id).executeAsList().map {
+                                RecipeIngredientDraft(it.canonical_name, it.amount_value, it.amount_unit, it.preparation, it.optional != 0L)
+                            }
+                            val targetStyle = runCatching { RecipeStyle.valueOf(target.style) }.getOrDefault(RecipeStyle.OTHER)
+                            if (!hasSameRecipeFormulation(recipe, target.servings, targetStyle, existingLines)) {
+                                return@transactionWithResult RecipeImportApplyResult.Invalid(
+                                    "The selected existing recipe has a different measured formulation. No rows were imported.",
+                                )
+                            }
+                        }
+                        prepared += Triple(recipe, sourceRecordId, selectedExistingVariant)
                     }
                 }
 
                 val familyIdsByGroup = existingFamilyByGroup.mapValuesTo(mutableMapOf()) { it.value.value }
                 var imported = 0
-                for ((recipe, sourceRecordId) in prepared) {
+                for ((recipe, sourceRecordId, existingVariantId) in prepared) {
+                    if (existingVariantId != null) {
+                        queries.insertRecipeSource(
+                            newUuidV7(nowMillis + imported + 900),
+                            existingVariantId,
+                            sourceName,
+                            sourceRecordId,
+                            provenance.sourceUrl?.trim()?.takeIf(String::isNotEmpty),
+                            licenseName,
+                            attribution,
+                            importedRecipeSourceNotes(recipe),
+                            nowMillis,
+                        )
+                        imported++
+                        continue
+                    }
                     val familyId = familyIdsByGroup[recipe.familyGroupKey] ?: newUuidV7(nowMillis + imported).also { id ->
                         queries.insertRecipeFamily(id, recipe.familyName, nowMillis)
                         writeRevision(id, "COCKTAIL_FAMILY", memberId, nowMillis, jsonObject("name" to jsonString(recipe.familyName)))
@@ -373,11 +431,13 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                         provenance.sourceUrl?.trim()?.takeIf(String::isNotEmpty),
                         licenseName,
                         attribution,
-                        "Mapped by the household from a user-provided file; recipe fields were normalized for CocktAIls.",
+                        importedRecipeSourceNotes(recipe),
                         nowMillis,
                     )
                     imported++
                 }
+                // Preserve the ability to create a valid backup after the transaction commits.
+                bundleStore.export(nowMillis)
                 RecipeImportApplyResult.Applied(imported, skipped)
             }
         } catch (exception: Exception) {
@@ -475,6 +535,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         servings: Double,
         style: RecipeStyle,
         nowMillis: Long,
+        targetFamilyId: CocktailFamilyId? = null,
     ): Boolean {
         val existing = recipes().firstOrNull { it.id == variantId } ?: return false
         val cleanTitle = title.trim()
@@ -495,6 +556,9 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         var edited = false
         database.transaction {
             if (queries.selectTombstone(variantId.value, "RECIPE_VARIANT").executeAsOneOrNull() != null) return@transaction
+            val familyId = targetFamilyId?.value ?: existing.familyId.value
+            val activeFamilyIds = queries.selectRecipeFamilies().executeAsList().mapTo(mutableSetOf()) { it.family_id }
+            if (familyId !in activeFamilyIds) return@transaction
             cleanLines.map(RecipeIngredientDraft::name).distinctBy { it.lowercase() }.forEachIndexed { index, name ->
                 queries.insertIngredientIgnore(newUuidV7(nowMillis + index + 1), name, "Other", nowMillis)
             }
@@ -534,7 +598,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                 memberId,
                 nowMillis,
                 jsonObject(
-                    "familyId" to jsonString(existing.familyId.value),
+                    "familyId" to jsonString(familyId),
                     "title" to jsonString(cleanTitle),
                     "instructions" to jsonString(cleanInstructions),
                     "style" to jsonString(style.name),
@@ -542,7 +606,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                     "ingredients" to ingredientPayload,
                 ),
             )
-            queries.updateRecipeVariantDraft(cleanTitle, cleanInstructions, servings, style.name, revisionId, variantId.value)
+            queries.updateRecipeVariantWithFamily(familyId, cleanTitle, cleanInstructions, servings, style.name, revisionId, variantId.value)
             edited = true
         }
         return edited
@@ -688,6 +752,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                 name = it.canonical_name,
                 category = it.category,
                 level = InventoryLevel.valueOf(it.level),
+                photoData = it.photo_data,
             )
         }
 
@@ -700,6 +765,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         barcode: String? = null,
         brand: String? = null,
         productName: String? = null,
+        productPhotoJpeg: ByteArray? = null,
     ): Boolean {
         val cleanedName = name.trim()
         val cleanedCategory = category.trim().ifEmpty { "Other" }
@@ -707,6 +773,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         val originalBarcode = barcode?.trim()?.takeIf(String::isNotEmpty)
         val normalizedBarcode = originalBarcode?.let(::normalizeGtinForLookup)
         if (originalBarcode != null && normalizedBarcode == null) return false
+        if (productPhotoJpeg != null && (productPhotoJpeg.size > MAX_PRODUCT_PHOTO_BYTES || !isProductPhotoJpeg(productPhotoJpeg))) return false
         val cleanedBrand = brand?.trim()?.takeIf(String::isNotEmpty)
         val cleanedProductName = productName?.trim()?.takeIf(String::isNotEmpty) ?: cleanedName
 
@@ -738,19 +805,27 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             writeRevision(ingredientId, "INGREDIENT", memberId, nowMillis, jsonObject("name" to jsonString(cleanedName), "category" to jsonString(cleanedCategory)))
             writeInventory(locationId, ingredientId, level, memberId, nowMillis)
 
-            if (originalBarcode != null) {
-                val productId = matchingProduct?.id ?: newUuidV7(nowMillis + 1)
-                if (matchingProduct == null) {
-                    queries.insertProductIgnore(productId, ingredientId, cleanedBrand, cleanedProductName, originalBarcode, nowMillis)
+            if (originalBarcode != null || productPhotoJpeg != null) {
+                val existingProduct = matchingProduct?.let { queries.selectProductById(it.id).executeAsOneOrNull() }
+                    ?: queries.selectProductForIngredient(ingredientId).executeAsOneOrNull()
+                val productId = existingProduct?.id ?: newUuidV7(nowMillis + 1)
+                val productBarcode = originalBarcode ?: existingProduct?.barcode
+                if (existingProduct == null) {
+                    queries.insertProductIgnore(productId, ingredientId, cleanedBrand, cleanedProductName, productBarcode, nowMillis)
                 }
-                queries.updateProduct(ingredientId, cleanedBrand, cleanedProductName, originalBarcode, productId)
+                queries.updateProduct(ingredientId, cleanedBrand ?: existingProduct?.brand, cleanedProductName, productBarcode, productId)
+                if (productPhotoJpeg != null) {
+                    queries.updateProductPhoto("image/jpeg", productPhotoJpeg, photoSha256(productPhotoJpeg), productId)
+                }
+                val storedProduct = queries.selectProductById(productId).executeAsOne()
                 val productPayload = jsonObject(
                     "id" to jsonString(productId),
                     "ingredientId" to jsonString(ingredientId),
                     "brand" to nullableJsonString(cleanedBrand),
                     "productName" to jsonString(cleanedProductName),
-                    "barcode" to jsonString(originalBarcode),
-                    "createdAt" to (matchingProduct?.created_at?.toString() ?: nowMillis.toString()),
+                    "barcode" to (storedProduct.barcode?.let(::jsonString) ?: "null"),
+                    "photoSha256" to (storedProduct.photo_sha256?.let(::jsonString) ?: "null"),
+                    "createdAt" to storedProduct.created_at.toString(),
                 )
                 writeRevision(productId, "PRODUCT", memberId, nowMillis, productPayload)
             }
@@ -861,6 +936,7 @@ private fun contentImportSourceId(sourceName: String, recipe: StagedRecipeImport
         add(recipe.instructions.trim())
         add(recipe.servings.toString())
         add(recipe.style.name)
+        add(recipe.familyName.trim().lowercase())
         recipe.ingredientLines.forEach { line ->
             add(line.name.trim())
             add(line.amount?.toString().orEmpty())
@@ -875,6 +951,37 @@ private fun contentImportSourceId(sourceName: String, recipe: StagedRecipeImport
         hash = (hash xor (byte.toInt() and 0xff).toLong()) * 1099511628211L
     }
     return "content-v1-${hash.toString(16)}"
+}
+
+private fun recipeImportFingerprint(recipe: StagedRecipeImport): String = contentImportSourceId("recipe-import", recipe)
+
+private fun importedRecipeSourceNotes(recipe: StagedRecipeImport): String {
+    val ingredients = "[${recipe.ingredientLines.joinToString(",") { line ->
+        jsonObject(
+            "name" to jsonString(line.name.trim()),
+            "amount" to (line.amount?.toString() ?: "null"),
+            "unit" to (line.unit?.let(::jsonString) ?: "null"),
+            "preparation" to (line.preparation?.let(::jsonString) ?: "null"),
+            "optional" to line.optional.toString(),
+        )
+    }}]"
+    return jsonObject(
+        "importFormat" to jsonString("cocktails.recipe-file-import.v1"),
+        "importFingerprint" to jsonString(recipeImportFingerprint(recipe)),
+        "sourceTitle" to jsonString(recipe.title),
+        "sourceInstructions" to jsonString(recipe.instructions),
+        "sourceStyle" to jsonString(recipe.style.name),
+        "sourceServings" to recipe.servings.toString(),
+        "sourceFamily" to jsonString(recipe.familyName),
+        "sourceIngredients" to ingredients,
+        "normalization" to jsonString("Mapped from a user-provided file; any target-variant association was explicitly selected by the household."),
+    )
+}
+
+private fun importFingerprintFromSourceNotes(modifications: String?): String? = try {
+    modifications?.let { Json.parseToJsonElement(it).jsonObject["importFingerprint"]?.jsonPrimitive?.contentOrNull }
+} catch (_: Exception) {
+    null
 }
 
 private fun sameImportedRecipe(first: StagedRecipeImport, second: StagedRecipeImport): Boolean =

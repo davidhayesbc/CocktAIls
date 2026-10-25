@@ -14,6 +14,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 
 const val MAX_RECIPE_IMPORT_BYTES = 10 * 1024 * 1024
+const val MAX_RECIPE_IMPORT_ROWS = 500
 
 data class RecipeImportTable(
     val headers: List<String>,
@@ -64,6 +65,24 @@ data class RecipeImportPreview(
 sealed interface RecipeImportApplyResult {
     data class Applied(val imported: Int, val skippedDuplicates: Int) : RecipeImportApplyResult
     data class Invalid(val reason: String) : RecipeImportApplyResult
+}
+
+/** Strictly compares formulation fields; callers still need an explicit user selection to attach a source. */
+fun hasSameRecipeFormulation(
+    staged: StagedRecipeImport,
+    existingServings: Double,
+    existingStyle: RecipeStyle,
+    existingIngredients: List<RecipeIngredientDraft>,
+): Boolean {
+    if (staged.servings != existingServings || staged.style != existingStyle) return false
+    fun signature(line: RecipeIngredientDraft) = listOf(
+        line.name.trim().lowercase(),
+        line.amount?.toString().orEmpty(),
+        line.unit?.trim()?.lowercase().orEmpty(),
+        line.preparation?.trim()?.lowercase().orEmpty(),
+        line.optional.toString(),
+    ).joinToString("\u0000")
+    return staged.ingredientLines.map(::signature).sorted() == existingIngredients.map(::signature).sorted()
 }
 
 /** Parses untrusted user-provided CSV or an array of JSON recipe objects without touching storage. */
@@ -190,10 +209,12 @@ private fun parseCsvTable(contents: String): RecipeTableParseResult {
                 else -> cell.append(character)
             }
         }
+        if (rows.size > MAX_RECIPE_IMPORT_ROWS + 1) return RecipeTableParseResult.Invalid("Recipe import exceeds the 500-row limit.")
         index++
     }
     if (quoted) return RecipeTableParseResult.Invalid("CSV ends inside a quoted field.")
     if (cell.isNotEmpty() || row.isNotEmpty() || quoteClosed) finishRow()
+    if (rows.size > MAX_RECIPE_IMPORT_ROWS + 1) return RecipeTableParseResult.Invalid("Recipe import exceeds the 500-row limit.")
     if (rows.isEmpty()) return RecipeTableParseResult.Invalid("CSV contains no header row.")
 
     val headers = rows.first().map(String::trim)
@@ -219,6 +240,7 @@ private fun parseJsonTable(contents: String): RecipeTableParseResult {
             else -> return RecipeTableParseResult.Invalid("JSON must contain recipe objects.")
         }
         if (elements.any { it !is JsonObject }) return RecipeTableParseResult.Invalid("Every JSON recipe row must be an object.")
+        if (elements.size > MAX_RECIPE_IMPORT_ROWS) return RecipeTableParseResult.Invalid("Recipe import exceeds the 500-row limit.")
         val records = elements.map { it.jsonObject }
         val headers = records.flatMap(JsonObject::keys).distinct()
         RecipeTableParseResult.Valid(RecipeImportTable(headers, records))

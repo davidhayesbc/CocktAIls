@@ -195,6 +195,7 @@ object BundleValidator {
         val inventoryNaturalKeys = mutableSetOf<String>()
         val barcodeKeys = mutableSetOf<String>()
         val recipeLineIds = mutableSetOf<String>()
+        var totalProductPhotoBytes = 0
 
         bundle.records.forEach { record ->
             fun requiredString(field: String) {
@@ -229,6 +230,25 @@ object BundleValidator {
                         val normalizedBarcode = normalizeGtinForLookup(barcode)
                         if (normalizedBarcode == null) errors += "PRODUCT ${record.id} has an invalid UPC/EAN barcode."
                         else if (!barcodeKeys.add(normalizedBarcode)) errors += "Bundle contains duplicate product barcodes."
+                    }
+                    val mimeType = record.data.optionalString("photoMimeType")
+                    val base64 = record.data.optionalString("photoBase64")
+                    val checksum = record.data.optionalString("photoSha256")
+                    if (mimeType != null || base64 != null || checksum != null) {
+                        if (mimeType != "image/jpeg" || base64 == null || checksum == null) {
+                            errors += "PRODUCT ${record.id} has incomplete photo asset metadata."
+                        } else if (base64.length > ((MAX_PRODUCT_PHOTO_BYTES + 2) / 3) * 4) {
+                            errors += "PRODUCT ${record.id} photo exceeds the per-image size limit."
+                        } else {
+                            val photo = decodePhotoBase64(base64)
+                            if (photo == null || !isProductPhotoJpeg(photo)) {
+                                errors += "PRODUCT ${record.id} photo data is malformed or exceeds the per-image size limit."
+                            } else {
+                                totalProductPhotoBytes += photo.size
+                                if (totalProductPhotoBytes > MAX_BUNDLE_PHOTO_BYTES) errors += "Bundle product photos exceed the 6 MiB total limit."
+                                if (!photoSha256(photo).equals(checksum, ignoreCase = true)) errors += "PRODUCT ${record.id} photo checksum does not match its data."
+                            }
+                        }
                     }
                 }
                 "INVENTORY_ITEM" -> {
@@ -296,6 +316,7 @@ object BundleValidator {
         if (revisionsById.size != bundle.revisions.size) errors += "Bundle contains duplicate revision IDs."
         bundle.revisions.forEach { revision ->
             if (revision.id.isBlank() || revision.recordId.isBlank()) errors += "Bundle contains a revision with an empty ID."
+            if (revision.schemaVersion != 1L) errors += "Revision ${revision.id} uses unsupported schema version ${revision.schemaVersion}."
             if (revision.authorMemberId !in memberIds) errors += "Revision ${revision.id} has an unknown author."
             if (recordsByKey[revision.recordType to revision.recordId] == null) errors += "Revision ${revision.id} has no matching record."
             revision.parentIds.forEach { parentId ->

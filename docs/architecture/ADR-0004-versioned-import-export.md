@@ -14,7 +14,7 @@ Manual transfer is acceptable for the first release, but records need a path to 
 - Import by stable record/revision IDs. Identical repeats are no-ops; new revisions extend known ancestry; divergent revisions remain as conflicts.
 - Preview counts and conflicts before applying. Validate IDs, relationships, size limits, supported versions, and checksums before committing the import transaction.
 - Treat unknown newer schema versions as unsupported and leave the local database unchanged.
-- Export photos as optional sidecar assets referenced by stable asset IDs and checksums; exclude them by default if the user chooses a compact bundle.
+- Keep optional user product photos as bounded JPEG assets on the product record. Include them in household JSON only when the user exports a household bundle; validate the JPEG structure, checksum, and size before applying. The Android photo picker re-encodes pixels locally to remove EXIF/XMP metadata. Current limits are 1 MiB per image and 6 MiB total photos per bundle.
 - Exclude device-specific preferences, model cache files, credentials, access tokens, and provider configuration from household bundles.
 - Provide an explicit backup/restore operation. Restore cannot replace the current database without confirmation and a recoverable backup.
 
@@ -22,5 +22,5 @@ Manual transfer is acceptable for the first release, but records need a path to 
 
 - The format can be reused by future sync clients and other platforms.
 - Import requires validation and a preview/commit boundary, which is more work than replacing a database file but safer.
-- Assets make archive creation larger; streaming and size warnings may be needed.
+- Inline base64 assets make household JSON larger; the current bundle and photo size limits bound memory and storage use.
 - Format compatibility and deterministic merge behavior need automated tests before release.

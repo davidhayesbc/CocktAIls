@@ -9,6 +9,8 @@ import com.davidhayesbc.cocktails.core.interchange.HOUSEHOLD_BUNDLE_VERSION
 import com.davidhayesbc.cocktails.core.interchange.HouseholdBundle
 import com.davidhayesbc.cocktails.core.interchange.HouseholdBundleCodec
 import com.davidhayesbc.cocktails.core.interchange.MAX_HOUSEHOLD_BUNDLE_BYTES
+import com.davidhayesbc.cocktails.core.interchange.decodePhotoBase64
+import com.davidhayesbc.cocktails.core.interchange.encodePhotoBase64
 import com.davidhayesbc.cocktails.core.model.newUuidV7
 import com.davidhayesbc.cocktails.shared.db.CocktailsDatabase
 import kotlinx.serialization.json.Json
@@ -315,7 +317,13 @@ class HouseholdBundleStore internal constructor(
             records += BundleRecord("INGREDIENT", it.id, obj("id" to str(it.id), "canonicalName" to str(it.canonical_name), "category" to str(it.category), "createdAt" to num(it.created_at)))
         }
         queries.selectAllProductsForBundle().executeAsList().forEach {
-            records += BundleRecord("PRODUCT", it.id, obj("id" to str(it.id), "ingredientId" to str(it.ingredient_id), "brand" to nullableString(it.brand), "productName" to str(it.product_name), "barcode" to nullableString(it.barcode), "createdAt" to num(it.created_at)))
+            records += BundleRecord("PRODUCT", it.id, obj(
+                "id" to str(it.id), "ingredientId" to str(it.ingredient_id), "brand" to nullableString(it.brand),
+                "productName" to str(it.product_name), "barcode" to nullableString(it.barcode),
+                "photoMimeType" to nullableString(it.photo_mime_type),
+                "photoBase64" to (it.photo_data?.let { bytes -> str(encodePhotoBase64(bytes)) } ?: JsonNull),
+                "photoSha256" to nullableString(it.photo_sha256), "createdAt" to num(it.created_at),
+            ))
         }
         queries.selectAllInventoryForBundle().executeAsList().forEach {
             records += BundleRecord("INVENTORY_ITEM", it.id, obj("id" to str(it.id), "locationId" to str(it.location_id), "ingredientId" to str(it.ingredient_id), "level" to str(it.level), "updatedAt" to num(it.updated_at), "updatedByMemberId" to str(it.updated_by_member_id)))
@@ -520,8 +528,13 @@ class HouseholdBundleStore internal constructor(
         val name = data.string("productName")
         val barcode = data.nullableString("barcode")
         val createdAt = data.long("createdAt")
+        val photoMimeType = data.nullableString("photoMimeType")
+        val photoBase64 = data.nullableString("photoBase64")
+        val photoBytes = photoBase64?.let { decodePhotoBase64(it) ?: error("Product photo is not valid base64.") }
+        val photoSha = data.nullableString("photoSha256")
         queries.insertProductIgnore(record.id, ingredientId, brand, name, barcode, createdAt)
         queries.updateProduct(ingredientId, brand, name, barcode, record.id)
+        queries.updateProductPhoto(photoMimeType, photoBytes, photoSha, record.id)
     }
 
     private fun writeInventory(record: BundleRecord) {

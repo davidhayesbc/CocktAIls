@@ -5,15 +5,71 @@ import com.davidhayesbc.cocktails.shared.db.CocktailsDatabase
 import com.davidhayesbc.cocktails.core.model.InventoryLevel
 import com.davidhayesbc.cocktails.core.model.IngredientId
 import com.davidhayesbc.cocktails.core.model.RecipeStyle
+import com.davidhayesbc.cocktails.core.interchange.photoSha256
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertContentEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class CocktailsSchemaMigrationTest {
+    private fun minimalJpegPhoto() = byteArrayOf(
+        0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 0xc0.toByte(), 0, 11, 8, 0, 1, 0, 1, 1, 1, 17, 0,
+        0xff.toByte(), 0xda.toByte(), 0, 8, 1, 1, 0, 0, 63, 0, 0, 0xff.toByte(), 0xd9.toByte(),
+    )
+
     @Test
-    fun migratesPopulatedVersionThreeDatabaseToFourAndStoresMadeEvents() {
+    fun migratesVersionFourProductAndAddsOptionalPhotoStorage() {
+        var directory: File? = File(System.getProperty("user.dir")!!)
+        var versionFour: File? = null
+        while (directory != null && versionFour == null) {
+            versionFour = sequenceOf(
+                File(directory, "shared/core/src/commonMain/sqldelight/databases/4.db"),
+                File(directory, "src/commonMain/sqldelight/databases/4.db"),
+            ).firstOrNull(File::isFile)
+            directory = directory.parentFile
+        }
+        val sourceSnapshot = versionFour ?: error("Could not find the checked-in v4 schema snapshot")
+        val migratedFile = File.createTempFile("cocktails-v4-to-v5", ".db")
+        sourceSnapshot.copyTo(migratedFile, overwrite = true)
+        val driver = JdbcSqliteDriver("jdbc:sqlite:${migratedFile.absolutePath}")
+        try {
+            driver.execute(null, "INSERT INTO household VALUES (?, ?, ?)", 3) {
+                bindString(0, "household-v4"); bindString(1, "Our Bar"); bindLong(2, 1L)
+            }
+            driver.execute(null, "INSERT INTO household_member VALUES (?, ?, ?, ?)", 4) {
+                bindString(0, "member-v4"); bindString(1, "household-v4"); bindString(2, "You"); bindLong(3, 1L)
+            }
+            driver.execute(null, "INSERT INTO household_location VALUES (?, ?, ?, ?)", 4) {
+                bindString(0, "home-v4"); bindString(1, "household-v4"); bindString(2, "Home"); bindLong(3, 1L)
+            }
+            driver.execute(null, "INSERT INTO ingredient VALUES (?, ?, ?, ?)", 4) {
+                bindString(0, "gin-v4"); bindString(1, "Gin"); bindString(2, "Spirit"); bindLong(3, 1L)
+            }
+            driver.execute(null, "INSERT INTO ingredient_product VALUES (?, ?, ?, ?, ?, ?)", 6) {
+                bindString(0, "bottle-v4"); bindString(1, "gin-v4"); bindString(2, "Brand")
+                bindString(3, "Bottle"); bindString(4, "0012345678905"); bindLong(5, 2L)
+            }
+
+            CocktailsDatabase.Schema.migrate(driver, 4, 5)
+            val database = CocktailsDatabase(driver)
+            assertEquals("0012345678905", database.householdQueries.selectProductById("bottle-v4").executeAsOne().barcode)
+            val jpeg = minimalJpegPhoto()
+            val repository = LocalCocktailRepository(database)
+            assertTrue(repository.addIngredient("Gin", "Spirit", InventoryLevel.FULL, "home-v4", 10, productPhotoJpeg = jpeg))
+            val migratedProduct = database.householdQueries.selectProductById("bottle-v4").executeAsOne()
+            assertEquals("image/jpeg", migratedProduct.photo_mime_type)
+            assertEquals(photoSha256(jpeg), migratedProduct.photo_sha256)
+            assertContentEquals(jpeg, migratedProduct.photo_data)
+        } finally {
+            driver.close()
+            migratedFile.delete()
+        }
+    }
+
+    @Test
+    fun migratesPopulatedVersionThreeDatabaseToFiveAndStoresMadeEvents() {
         var directory: File? = File(System.getProperty("user.dir")!!)
         var versionThree: File? = null
         while (directory != null && versionThree == null) {
@@ -45,7 +101,7 @@ class CocktailsSchemaMigrationTest {
                 bindString(3, "HALF"); bindLong(4, 12L); bindString(5, "member-v3")
             }
 
-            CocktailsDatabase.Schema.migrate(driver, 3, 4)
+            CocktailsDatabase.Schema.migrate(driver, 3, 5)
             val database = CocktailsDatabase(driver)
             assertEquals("stock-v3", database.householdQueries.selectInventoryId("home-v3", "gin-v3").executeAsOne())
             assertEquals("HALF", database.householdQueries.selectPantryForLocation("home-v3").executeAsOne().level)
@@ -55,6 +111,54 @@ class CocktailsSchemaMigrationTest {
             val recipeId = repository.recipes().single().id
             assertTrue(repository.markRecipeMade(recipeId, "member-v3", "home-v3", 30))
             assertEquals(recipeId, repository.recentlyMade().single().recipeId)
+        } finally {
+            driver.close()
+            migratedFile.delete()
+        }
+    }
+
+    @Test
+    fun migratesPopulatedVersionTwoDatabaseThroughCurrentSchemaWithoutLosingPantryOrAddingPhotos() {
+        var directory: File? = File(System.getProperty("user.dir")!!)
+        var versionTwo: File? = null
+        while (directory != null && versionTwo == null) {
+            versionTwo = sequenceOf(
+                File(directory, "shared/core/src/commonMain/sqldelight/databases/2.db"),
+                File(directory, "src/commonMain/sqldelight/databases/2.db"),
+            ).firstOrNull(File::isFile)
+            directory = directory.parentFile
+        }
+        val sourceSnapshot = versionTwo ?: error("Could not find the checked-in v2 schema snapshot")
+        val migratedFile = File.createTempFile("cocktails-v2-to-v4", ".db")
+        sourceSnapshot.copyTo(migratedFile, overwrite = true)
+        val driver = JdbcSqliteDriver("jdbc:sqlite:${migratedFile.absolutePath}")
+        try {
+            driver.execute(null, "INSERT INTO household VALUES (?, ?, ?)", 3) {
+                bindString(0, "household-v2"); bindString(1, "Our Bar"); bindLong(2, 1L)
+            }
+            driver.execute(null, "INSERT INTO household_member VALUES (?, ?, ?, ?)", 4) {
+                bindString(0, "member-v2"); bindString(1, "household-v2"); bindString(2, "You"); bindLong(3, 1L)
+            }
+            driver.execute(null, "INSERT INTO household_location VALUES (?, ?, ?, ?)", 4) {
+                bindString(0, "home-v2"); bindString(1, "household-v2"); bindString(2, "Home"); bindLong(3, 1L)
+            }
+            driver.execute(null, "INSERT INTO ingredient VALUES (?, ?, ?, ?)", 4) {
+                bindString(0, "gin-v2"); bindString(1, "Gin"); bindString(2, "Spirit"); bindLong(3, 1L)
+            }
+            driver.execute(null, "INSERT INTO inventory_item VALUES (?, ?, ?, ?, ?, ?)", 6) {
+                bindString(0, "stock-v2"); bindString(1, "home-v2"); bindString(2, "gin-v2")
+                bindString(3, "LOW"); bindLong(4, 2L); bindString(5, "member-v2")
+            }
+
+            CocktailsDatabase.Schema.migrate(driver, 2, 5)
+            val database = CocktailsDatabase(driver)
+            val repository = LocalCocktailRepository(database)
+            assertEquals("stock-v2", database.householdQueries.selectInventoryId("home-v2", "gin-v2").executeAsOne())
+            assertEquals("LOW", repository.pantry("home-v2").single().level.name)
+            assertTrue(repository.addRecipe("Gin Fizz", listOf("Gin"), "Shake and top", RecipeStyle.LONG, nowMillis = 10))
+            val recipe = repository.recipes().single()
+            assertTrue(repository.markRecipeMade(recipe.id, "member-v2", "home-v2", 20))
+            assertEquals(recipe.id, repository.recentlyMade().single().recipeId)
         } finally {
             driver.close()
             migratedFile.delete()
@@ -89,7 +193,7 @@ class CocktailsSchemaMigrationTest {
         }
         driver.execute(null, "PRAGMA user_version = 1", 0)
 
-        CocktailsDatabase.Schema.migrate(driver, 1, 3)
+        CocktailsDatabase.Schema.migrate(driver, 1, 5)
         val database = CocktailsDatabase(driver)
         val migratedPantry = database.householdQueries.selectPantryForLocation(legacyLocationId).executeAsOne()
 

@@ -52,6 +52,7 @@ data class PantryEntry(
     val name: String,
     val category: String,
     val level: InventoryLevel,
+    val photoData: ByteArray? = null,
 )
 
 data class HomeLocation(
