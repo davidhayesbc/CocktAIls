@@ -269,7 +269,8 @@ object BundleValidator {
                     reference("variantId", variantIds); requiredString("sourceName"); requiredLong("importedAt")
                 }
                 "TASTING_NOTE" -> {
-                    reference("variantId", variantIds); reference("memberId", memberIds); requiredString("note"); requiredLong("createdAt")
+                    reference("variantId", variantIds); reference("memberId", memberIds); requiredLong("createdAt")
+                    if (!record.data.hasString("note")) errors += "TASTING_NOTE ${record.id} is missing note text."
                     record.data.optionalString("locationId")?.let { if (it !in locationIds) errors += "TASTING_NOTE ${record.id} has an invalid locationId reference." }
                     val rating = record.data["rating"]
                     if (rating != null && rating != JsonNull && (rating.jsonPrimitive.longOrNull !in 1L..5L)) errors += "TASTING_NOTE ${record.id} has an invalid rating."

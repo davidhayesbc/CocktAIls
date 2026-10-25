@@ -30,6 +30,7 @@ class HouseholdBundleSyncTest {
         assertTrue(leftRepo.addRecipe("Dry Martini", listOf("Gin"), "Stir with ice", RecipeStyle.SHORT, nowMillis = 3_000))
         val recipe = leftRepo.recipes().single()
         leftRepo.addTastingNote(recipe.id, leftMember, 4, "Bright and dry", location, 4_000)
+        leftRepo.addTastingNote(recipe.id, leftMember, 4, "", location, 4_001)
         val initialText = leftRepo.exportHouseholdBundle(5_000)
         val initial = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(initialText)).bundle
 
@@ -38,6 +39,7 @@ class HouseholdBundleSyncTest {
         assertTrue(initialPreview.additions > 0)
         assertIs<ImportApplyResult.Applied>(rightRepo.applyHouseholdBundle(initial, initialPreview, emptyMap(), 7_000))
         assertEquals(listOf("Gin"), rightRepo.pantry(location).map { it.name })
+        assertTrue(rightRepo.tastingNotes(recipe.id).any { it.rating == 4 && it.note.isEmpty() })
 
         // A slow clock on the right must not make its edit disappear behind the later left timestamp.
         val ginId = left.householdQueries.selectIngredientsByName("Gin").executeAsOne()
@@ -76,7 +78,7 @@ class HouseholdBundleSyncTest {
         ))
         assertEquals(1, applied.resolvedConflicts)
         assertEquals(InventoryLevel.LOW, leftRepo.pantry(location).single().level)
-        assertEquals(setOf("Bright and dry", "Partner prefers it colder", "Dilute a little more"), leftRepo.tastingNotes(recipe.id).map { it.note }.toSet())
+        assertEquals(setOf("", "Bright and dry", "Partner prefers it colder", "Dilute a little more"), leftRepo.tastingNotes(recipe.id).map { it.note }.toSet())
 
         val mergedRevisionId = left.householdQueries.selectLatestRecordRevision(inventoryId, "INVENTORY_ITEM").executeAsOne()
         val mergeParents = left.householdQueries.selectRevisionParents(mergedRevisionId).executeAsList().toSet()
@@ -88,7 +90,7 @@ class HouseholdBundleSyncTest {
         assertTrue(reimportPreview.changes.filter { it.id == inventoryId }.all { it.kind == BundleChangeKind.UNCHANGED })
         assertIs<ImportApplyResult.Applied>(leftRepo.applyHouseholdBundle(rightBundle, reimportPreview, emptyMap(), 900_003))
         assertEquals(revisionsBeforeReimport, left.householdQueries.selectAllRevisionsForBundle().executeAsList().size)
-        assertEquals(3, leftRepo.tastingNotes(recipe.id).size)
+        assertEquals(4, leftRepo.tastingNotes(recipe.id).size)
 
     }
 
