@@ -113,6 +113,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.davidhayesbc.cocktails.android.location.ApproximateCoordinates
 import com.davidhayesbc.cocktails.android.location.requestApproximateLocation
+import com.davidhayesbc.cocktails.android.LocalDiagnostics
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -212,6 +213,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var homeLocationAreas by remember(repository) { mutableStateOf(repository.homeLocationAreas()) }
     var locationMessage by remember { mutableStateOf<String?>(null) }
     var showLocationSettings by remember { mutableStateOf(false) }
+    var showDiagnostics by remember { mutableStateOf(false) }
     var pendingLocationAction by remember { mutableStateOf<LocationAction?>(null) }
     var shopDestinationId by remember { mutableStateOf<String?>(null) }
     var shopPantry by remember { mutableStateOf(emptyList<PantryEntry>()) }
@@ -262,6 +264,13 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 }.getOrElse { "Export failed: ${it.message ?: "could not write the backup"}" }
             }
         }
+    }
+
+    val diagnosticsExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) runCatching {
+            context.contentResolver.openOutputStream(uri, "w")?.buffered()?.use { it.write(LocalDiagnostics.export().encodeToByteArray()) }
+                ?: error("Could not open the selected file for writing.")
+        }.onFailure { shareMessage = "Diagnostics export failed. The local copy is still available." }
     }
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -450,6 +459,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     }
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        LocalDiagnostics.recordEvent(if (granted) "CAMERA_PERMISSION_GRANTED" else "CAMERA_PERMISSION_DENIED")
         if (granted && showAddIngredient) {
             barcodePermissionMessage = null
             showBarcodeScanner = true
@@ -660,6 +670,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 onImportRecipes = { recipeImportLauncher.launch(arrayOf("text/csv", "application/json", "text/*", "*/*")) },
                 shareMessage = shareMessage,
                 onOpenLocationSettings = { showLocationSettings = true },
+                onOpenDiagnostics = { showDiagnostics = true },
             )
         }
     }
@@ -681,6 +692,15 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 locationMessage = "Removed the saved approximate area for this home."
             },
             onDismiss = { showLocationSettings = false },
+        )
+    }
+
+    if (showDiagnostics) {
+        DiagnosticsDialog(
+            preview = LocalDiagnostics.preview(),
+            onExport = { diagnosticsExportLauncher.launch("CocktAIls-Diagnostics.json") },
+            onClear = { LocalDiagnostics.clear(); showDiagnostics = false },
+            onDismiss = { showDiagnostics = false },
         )
     }
 
@@ -1646,6 +1666,7 @@ private fun HouseholdScreen(
     selectedMemberId: String,
     onManageMembers: () -> Unit,
     onOpenLocationSettings: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
     onExport: () -> Unit,
     onImport: () -> Unit,
     onImportRecipes: () -> Unit,
@@ -1669,9 +1690,33 @@ private fun HouseholdScreen(
         Button(onClick = onExport, modifier = Modifier.fillMaxWidth()) { Text("Export household backup") }
         OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth()) { Text("Import household backup") }
         OutlinedButton(onClick = onImportRecipes, modifier = Modifier.fillMaxWidth()) { Text("Import recipes from CSV or JSON") }
+        OutlinedButton(onClick = onOpenDiagnostics, modifier = Modifier.fillMaxWidth()) { Text("View or export diagnostics") }
         Text("Import previews never change your data. Each phone can share a backup using Nearby Share, Drive, or another file app.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (shareMessage != null) Text(shareMessage, style = MaterialTheme.typography.bodyMedium)
     }
+}
+
+@Composable
+private fun DiagnosticsDialog(preview: String, onExport: () -> Unit, onClear: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Local diagnostics") },
+        text = {
+            Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Stored only on this phone. Nothing is uploaded automatically. Export saves a file you choose to share.")
+                Text("Includes app/device version, camera event categories, and crash stack frames. Excludes recipes, household/member data, photos, barcode values, and exception messages.")
+                Text("This captures uncaught Java/Kotlin exceptions. It does not collect logcat and may not capture native crashes or ANRs.", style = MaterialTheme.typography.bodySmall)
+                Text(preview, style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = { Button(onClick = onExport) { Text("Export diagnostics") } },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onClear) { Text("Clear") }
+                TextButton(onClick = onDismiss) { Text("Done") }
+            }
+        },
+    )
 }
 
 @Composable

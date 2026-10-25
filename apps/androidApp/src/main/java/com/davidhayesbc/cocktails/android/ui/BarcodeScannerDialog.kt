@@ -33,6 +33,7 @@ import com.google.zxing.DecodeHintType
 import com.google.zxing.MultiFormatReader
 import com.google.zxing.ReaderException
 import com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup
+import com.davidhayesbc.cocktails.android.LocalDiagnostics
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -64,7 +65,9 @@ internal fun BarcodeScannerDialog(
         if (view != null) {
             previewStateObserver = Observer { streamState ->
                 if (streamState == PreviewView.StreamState.STREAMING && !disposed.get()) {
-                    scannerMessage = "Camera preview is live. Center a UPC or EAN barcode in the frame."
+                    LocalDiagnostics.recordEvent("CAMERA_PREVIEW_STREAMING")
+                    scannerMessage = if (analyzerReady.get()) "Camera preview is live. Center a UPC or EAN barcode in the frame."
+                    else "Camera preview is live. Preparing barcode reader…"
                 }
             }
             view.previewStreamState.observe(lifecycleOwner, previewStateObserver!!)
@@ -112,12 +115,14 @@ internal fun BarcodeScannerDialog(
                                             if (!disposed.get()) scannerMessage = "Camera is live and barcode frames are being analyzed."
                                         }
                                     } else if (error !is ReaderException) {
+                                        LocalDiagnostics.recordScannerFailure("BARCODE_DECODE_FAILED", error)
                                         ContextCompat.getMainExecutor(context).execute {
                                             if (!disposed.get()) scannerMessage = "Scanner error. You can enter the code manually instead."
                                         }
                                     }
                                 }
-                        } catch (_: Exception) {
+                        } catch (failure: Exception) {
+                            LocalDiagnostics.recordScannerFailure("CAMERA_FRAME_FAILED", failure)
                             ContextCompat.getMainExecutor(context).execute {
                                 if (!disposed.get()) scannerMessage = "Camera frame couldn't be read. Close the scanner or enter the code manually."
                             }
@@ -128,6 +133,7 @@ internal fun BarcodeScannerDialog(
                     provider?.unbindAll()
                     provider?.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, useCase)
                 }.onFailure {
+                    LocalDiagnostics.recordScannerFailure("CAMERA_START_FAILED", it)
                     if (!disposed.get()) scannerMessage = "Camera couldn't start. Close this scanner and enter the barcode manually."
                 }
             }, ContextCompat.getMainExecutor(context))
@@ -140,6 +146,8 @@ internal fun BarcodeScannerDialog(
             analysisExecutor.shutdownNow()
         }
     }
+
+    androidx.compose.runtime.LaunchedEffect(Unit) { LocalDiagnostics.recordEvent("CAMERA_SCAN_OPENED") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
