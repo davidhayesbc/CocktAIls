@@ -12,9 +12,12 @@ concurrency:
 
 jobs:
   validate-dispatch:
-    name: Require a trusted main-branch dispatch
+    name: Require trusted main dispatch and exact-SHA Android CI success
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 35
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: Reject non-main refs
         shell: bash
@@ -24,6 +27,39 @@ jobs:
             echo '::error::Preview releases can only be dispatched from the trusted main branch.'
             exit 1
           fi
+
+      - name: Wait for successful Android CI on this exact commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 1800))
+          while (( SECONDS < deadline )); do
+            response="$(gh api \
+              -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/android-ci.yml/runs" \
+              -f "head_sha=$GITHUB_SHA" \
+              -f 'event=push' \
+              -f 'per_page=100')"
+            result="$(python3 -c 'import json,sys; d=json.load(sys.stdin); runs=[r for r in d.get("workflow_runs",[]) if r.get("head_sha")==sys.argv[1] and r.get("event")=="push"]; runs.sort(key=lambda r:r.get("run_number",0),reverse=True); print((runs[0].get("status","")+" "+runs[0].get("conclusion","")+" "+str(runs[0].get("html_url",""))) if runs else "missing")' "$GITHUB_SHA" <<< "$response")"
+            if [[ "$result" == missing ]]; then
+              echo "Android CI has not started for $GITHUB_SHA; checking again."
+            else
+              read -r run_status conclusion run_url <<< "$result"
+              if [[ "$run_status" == completed ]]; then
+                if [[ "$conclusion" == success ]]; then
+                  echo "Verified successful Android CI run: $run_url"
+                  exit 0
+                fi
+                echo "::error::Android CI for $GITHUB_SHA completed with '$conclusion': $run_url"
+                exit 1
+              fi
+              echo "Android CI for $GITHUB_SHA is '$run_status'; waiting."
+            fi
+            sleep 20
+          done
+          echo "::error::No successful completed Android CI run for exact commit $GITHUB_SHA within 30 minutes."
+          exit 1
 
   prepare-preview:
     name: Verify and sign the preview APK
@@ -156,6 +192,14 @@ jobs:
           name: CocktAIls-signed-preview-${{ github.run_number }}-${{ github.sha }}
           path: ${{ runner.temp }}/preview-release
 
+      - name: Install Android APK verification tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager_path="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          if [[ ! -x "$sdkmanager_path" ]]; then sdkmanager_path="$(command -v sdkmanager)"; fi
+          "$sdkmanager_path" --sdk_root="$ANDROID_HOME" --install 'build-tools;36.0.0'
+
       - name: Create the public prerelease
         id: publish
         shell: bash
@@ -164,22 +208,88 @@ jobs:
           RELEASE_TAG: preview-v0.1.0-${{ github.run_number }}-${{ github.sha }}
         run: |
           set -euo pipefail
+          api="repos/$GITHUB_REPOSITORY"
+          tag_ref="$RUNNER_TEMP/release-tag-ref.json"
+          tag_error="$RUNNER_TEMP/release-tag-error.txt"
+          if gh api "$api/git/ref/tags/$RELEASE_TAG" > "$tag_ref" 2> "$tag_error"; then
+            object_type="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["object"]["type"])' "$tag_ref")"
+            object_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["object"]["sha"])' "$tag_ref")"
+            if [[ "$object_type" == tag ]]; then
+              object_sha="$(gh api "$api/git/tags/$object_sha" --jq '.object.sha')"
+            fi
+            if [[ "$object_sha" != "$GITHUB_SHA" ]]; then
+              echo "::error::Existing tag $RELEASE_TAG resolves to $object_sha, not this workflow's commit $GITHUB_SHA. Refusing to move it."
+              exit 1
+            fi
+          elif ! grep -q 'HTTP 404' "$tag_error"; then
+            cat "$tag_error"
+            echo '::error::Could not safely determine whether the preview tag already exists.'
+            exit 1
+          fi
+
+          build_tools="$ANDROID_HOME/build-tools/36.0.0"
+          existing_release="$RUNNER_TEMP/existing-release"
+          mkdir -p "$existing_release"
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease,url,body,assets > "$RUNNER_TEMP/release-verification.json" 2> "$RUNNER_TEMP/release-view-error.txt"; then
+            python3 - "$RUNNER_TEMP/release-verification.json" "$GITHUB_SHA" <<'PY'
+          import json, sys
+          release = json.load(open(sys.argv[1]))
+          if not release.get('isPrerelease') or f"Source commit: {sys.argv[2]}" not in release.get('body', ''):
+              raise SystemExit('Existing release is not the expected prerelease for this exact source commit')
+          assets = {asset['name'] for asset in release['assets']}
+          required = {'CocktAIls-preview.apk', 'SHA256SUMS.txt', 'RELEASE_NOTES.md'}
+          if not required.issubset(assets):
+              raise SystemExit('Existing release is missing required downloadable assets')
+          PY
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern 'CocktAIls-preview.apk' --pattern 'SHA256SUMS.txt' --pattern 'RELEASE_NOTES.md' \
+              --dir "$existing_release"
+            (cd "$existing_release" && sha256sum --check SHA256SUMS.txt)
+            existing_cert="$("$build_tools/apksigner" verify --verbose --print-certs "$existing_release/CocktAIls-preview.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 | tr '[:upper:]' '[:lower:]')"
+            expected_cert="$(sed -n 's/^Signing certificate SHA-256: //p' "$RUNNER_TEMP/preview-release/RELEASE_NOTES.md" | head -n 1 | tr '[:upper:]' '[:lower:]')"
+            existing_source="$(sed -n 's/^Source commit: //p' "$existing_release/RELEASE_NOTES.md" | head -n 1)"
+            [[ -n "$existing_cert" && "$existing_cert" == "$expected_cert" && "$existing_source" == "$GITHUB_SHA" ]] || {
+              echo '::error::Existing release APK signature or source commit does not match the freshly verified preview.'
+              exit 1
+            }
+            echo "Verified existing preview release without replacing assets: $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["url"])' "$RUNNER_TEMP/release-verification.json")"
+            exit 0
+          elif ! grep -q 'HTTP 404' "$RUNNER_TEMP/release-view-error.txt"; then
+            cat "$RUNNER_TEMP/release-view-error.txt"
+            echo '::error::Could not safely determine whether the preview release already exists.'
+            exit 1
+          fi
+
           gh release create "$RELEASE_TAG" \
             "$RUNNER_TEMP/preview-release/CocktAIls-preview.apk" \
             "$RUNNER_TEMP/preview-release/SHA256SUMS.txt" \
+            "$RUNNER_TEMP/preview-release/RELEASE_NOTES.md" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "CocktAIls Preview $RELEASE_TAG" \
             --notes-file "$RUNNER_TEMP/preview-release/RELEASE_NOTES.md" \
             --prerelease
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --json isPrerelease,url,assets > "$RUNNER_TEMP/release-verification.json"
-          python3 - "$RUNNER_TEMP/release-verification.json" <<'PY'
+            --json isPrerelease,url,body,assets > "$RUNNER_TEMP/release-verification.json"
+          python3 - "$RUNNER_TEMP/release-verification.json" "$GITHUB_SHA" <<'PY'
           import json, sys
           release = json.load(open(sys.argv[1]))
+          if not release.get('isPrerelease') or f"Source commit: {sys.argv[2]}" not in release.get('body', ''):
+              raise SystemExit('Published release metadata does not match this source commit')
           assets = {asset['name'] for asset in release['assets']}
-          if not release['isPrerelease'] or 'CocktAIls-preview.apk' not in assets:
-              raise SystemExit('Prerelease verification failed: missing prerelease flag or APK asset.')
+          required = {'CocktAIls-preview.apk', 'SHA256SUMS.txt', 'RELEASE_NOTES.md'}
+          if not required.issubset(assets):
+              raise SystemExit('Published release is missing required downloadable assets')
           print('Verified public prerelease URL:', release['url'])
           print('Verified assets:', ', '.join(sorted(assets)))
           PY
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'CocktAIls-preview.apk' --pattern 'SHA256SUMS.txt' --pattern 'RELEASE_NOTES.md' \
+            --dir "$existing_release"
+          (cd "$existing_release" && sha256sum --check SHA256SUMS.txt)
+          actual_cert="$("$build_tools/apksigner" verify --verbose --print-certs "$existing_release/CocktAIls-preview.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 | tr '[:upper:]' '[:lower:]')"
+          expected_cert="$(sed -n 's/^Signing certificate SHA-256: //p' "$RUNNER_TEMP/preview-release/RELEASE_NOTES.md" | head -n 1 | tr '[:upper:]' '[:lower:]')"
+          [[ -n "$actual_cert" && "$actual_cert" == "$expected_cert" ]] || {
+            echo '::error::Published APK certificate verification failed.'
+            exit 1
+          }

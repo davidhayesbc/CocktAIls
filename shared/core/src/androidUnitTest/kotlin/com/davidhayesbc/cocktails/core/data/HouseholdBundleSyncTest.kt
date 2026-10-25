@@ -410,6 +410,34 @@ class HouseholdBundleSyncTest {
         targetDriver.close()
     }
 
+    @Test
+    fun automaticHomeAreasPersistLocallyAndStayOutOfHouseholdBackups() {
+        val database = database()
+        val repository = LocalCocktailRepository(database)
+        repository.initialize(10)
+        val homeId = repository.locations().single().id
+
+        assertTrue(repository.setHomeLocationArea(homeId, 37.123456, -122.987654, 350.0))
+        repository.setAutomaticHomeSelectionEnabled(true)
+        repository.setAutomaticHomeSelectionOverridden(true)
+
+        val reopenedRepository = LocalCocktailRepository(database)
+        assertTrue(reopenedRepository.automaticHomeSelectionEnabled())
+        assertTrue(reopenedRepository.automaticHomeSelectionOverridden())
+        assertEquals(350.0, reopenedRepository.homeLocationAreas().single().radiusMeters)
+        assertEquals(false, reopenedRepository.setHomeLocationArea(homeId, 91.0, 0.0, 350.0))
+        assertEquals(false, reopenedRepository.setHomeLocationArea(homeId, 0.0, 0.0, 10.0))
+
+        val backup = reopenedRepository.exportHouseholdBundle(20)
+        assertFalse(backup.contains("home_area:"))
+        assertFalse(backup.contains("automatic_home_selection"))
+        assertFalse(backup.contains("37.123456"))
+        assertFalse(backup.contains("-122.987654"))
+
+        reopenedRepository.setAutomaticHomeSelectionEnabled(false)
+        assertFalse(reopenedRepository.automaticHomeSelectionOverridden())
+    }
+
     private fun database(): CocktailsDatabase {
         val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
         CocktailsDatabase.Schema.create(driver)

@@ -16,6 +16,7 @@ This is a snapshot of implementation and verification, not a release-readiness c
 - Recipe entry now accepts measured ingredient lines and an original yield; the detail view scales known quantities for a selected serving count. Quantity/yield persistence is covered by a two-database bundle round-trip test.
 - Recipe variants can be edited without replacing immutable revision history or stable ingredient-line IDs, duplicated within their existing family, and merged after divergent two-device edits. Duplicate variants retain source attribution and measured yields.
 - Family favorites are member-attributed household records. Removal writes a tombstone, divergent changes enter conflict review, and stale backups cannot restore a removed favorite. Recently made events are persisted, attributed to member/location, and transferred in household bundles.
+- Optional foreground location selection uses one approximate coarse fix while the app is open. Users save a private radius for each home on this phone; overlapping/no-match areas never guess, and a manual home change pauses automatic switching until resumed. The selected home and override survive process recreation. At the shop snapshots its destination and pantry for the whole session.
 - The eight-record Wikipedia/IBA candidate has a bounded source review in [CATALOG_DATA_REVIEW.md](CATALOG_DATA_REVIEW.md). No recipe data is bundled until the remaining source-page history check is complete.
 - No credentials, model providers, or network service are required for the app's current workflows.
 
@@ -33,8 +34,8 @@ This is a snapshot of implementation and verification, not a release-readiness c
 | 8 | Partial | Device-only preferences stay in a separate table; export tests verify API-key/coordinate/radius canaries are omitted. |
 | 9 | Partial | Household bundle staging, preview, cancel-without-writes, validation, and atomic commit are implemented. Generic recipe CSV/JSON field mapping remains. |
 | 10 | Partial | Manual recipes are separate by default; users can explicitly associate a variant with a family. Source-aware duplicate detection and reversible import associations are pending. |
-| 11 | Partial | Manual home override is persisted and tested. Opt-in foreground location permission, on-device home matching, ambiguity handling, and permission-path device tests are pending. |
-| 12 | Partial | Offline spirit unlock ranking counts distinct newly makeable families and has unit coverage. Shop-specific fixed destination selection and full Pixel validation remain. |
+| 11 | Partial | Opt-in coarse foreground permission, on-device per-home radius matching, ambiguity/no-match handling, persisted manual override, privacy exclusions, and a denied-permission manual-selector instrumentation test are implemented. That new emulator test is pending exact-SHA CI; physical Pixel permission/recreation checks remain. |
+| 12 | Partial | Offline spirit unlock ranking counts distinct newly makeable families and has unit coverage. At the shop snapshots the selected destination and pantry for the session. Full Pixel validation remains. |
 | 13 | Partial | Household export excludes local preferences; regression coverage checks credential, coordinate, and radius canaries. |
 
 ## Remaining Phase 1 work
@@ -42,11 +43,10 @@ This is a snapshot of implementation and verification, not a release-readiness c
 1. Complete generic recipe CSV/JSON interchange with staging, field mapping, provenance review, and idempotent commits; household JSON exchange is implemented.
 2. Add robust tombstone-vs-edit conflict tests, validate import behavior for all record types and malformed/large bundles, and retain the tested skewed-clock two-device conflict path.
 3. Add remaining discovery/history polish: recent-drink date display and favorite a specific variant if needed. Family favorites, recent-made events, edit/duplicate, measured entry, serving scaling, and missing-ingredient filters are implemented. Keep source association explicit and reversible.
-4. Add location permission and foreground home selection with persisted manual override; keep the At the shop destination fixed for the shop session.
-5. Add barcode scan capture with an always-available manual path. Any external lookup requires a separate coverage, privacy, and license review.
-6. Finish the candidate page-revision history review in [CATALOG_DATA_REVIEW.md](CATALOG_DATA_REVIEW.md) before adding its separately licensed pack. Do not bundle other sources under that review.
-7. Validate migrations from every supported database version, export/import failure rollback, and clock-skew/large-bundle cases. Populated v1-to-v3 and v3-to-v4 migrations are directly tested; the SQLDelight migration verifier did not finish in its bounded run because its object-diff worker remained in recursive comparison.
-8. Run usability checks on Pixel 10 Pro and Pixel 8, including denied/ambiguous location, large font, dark theme, and long content. The hosted headless emulator test covers offline recipe entry and activity recreation; it does not replace physical-device checks.
-9. Check shared iOS framework linking on macOS/Xcode before building the future SwiftUI client. No iOS application shell or iOS runtime validation exists yet.
+4. Add barcode scan capture with an always-available manual path. Any external lookup requires a separate coverage, privacy, and license review.
+5. Finish the candidate page-revision history review in [CATALOG_DATA_REVIEW.md](CATALOG_DATA_REVIEW.md) before adding its separately licensed pack. Do not bundle other sources under that review.
+6. Validate migrations from every supported database version, export/import failure rollback, and clock-skew/large-bundle cases. Populated v1-to-v3 and v3-to-v4 migrations are directly tested; the SQLDelight migration verifier did not finish in its bounded run because its object-diff worker remained in recursive comparison.
+7. Run usability checks on Pixel 10 Pro and Pixel 8, including denied/ambiguous location, large font, dark theme, and long content. The hosted headless emulator test covers offline recipe entry and activity recreation; it does not replace physical-device checks.
+8. Check shared iOS framework linking on macOS/Xcode before building the future SwiftUI client. No iOS application shell or iOS runtime validation exists yet.
 
 AI provider integration, shipping a model, a catalog dataset, hosted sync, and an iOS release remain outside Phase 1. The assistant provider boundary remains a later optional feature; neither the Codex subscription nor an OpenAI API credential is assumed.

@@ -20,6 +20,7 @@ import com.davidhayesbc.cocktails.core.model.RecipeVariant
 import com.davidhayesbc.cocktails.core.model.ShopSuggestion
 import com.davidhayesbc.cocktails.core.model.MemberProfile
 import com.davidhayesbc.cocktails.core.matching.rankSpiritUnlocks
+import com.davidhayesbc.cocktails.core.matching.HomeLocationArea
 import com.davidhayesbc.cocktails.core.model.newUuidV7
 import com.davidhayesbc.cocktails.core.interchange.HouseholdBundle
 
@@ -63,6 +64,52 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
 
     fun setPreferredHomeId(locationId: String) {
         queries.setPreferredHome(locationId)
+    }
+
+    fun automaticHomeSelectionEnabled(): Boolean = localPreference(AUTO_HOME_SELECTION_KEY) == "true"
+
+    fun setAutomaticHomeSelectionEnabled(enabled: Boolean) {
+        setLocalPreference(AUTO_HOME_SELECTION_KEY, enabled.toString())
+        if (!enabled) setLocalPreference(AUTO_HOME_SELECTION_OVERRIDE_KEY, "false")
+    }
+
+    fun automaticHomeSelectionOverridden(): Boolean = localPreference(AUTO_HOME_SELECTION_OVERRIDE_KEY) == "true"
+
+    fun setAutomaticHomeSelectionOverridden(overridden: Boolean) {
+        setLocalPreference(AUTO_HOME_SELECTION_OVERRIDE_KEY, overridden.toString())
+    }
+
+    fun homeLocationAreas(): List<HomeLocationArea> = locations().mapNotNull { location ->
+        val latitude = localPreference(homeAreaKey(location.id, "latitude"))?.toDoubleOrNull()
+        val longitude = localPreference(homeAreaKey(location.id, "longitude"))?.toDoubleOrNull()
+        val radius = localPreference(homeAreaKey(location.id, "radius"))?.toDoubleOrNull()
+        if (latitude == null || longitude == null || radius == null) null
+        else HomeLocationArea(location.id, latitude, longitude, radius)
+    }
+
+    fun setHomeLocationArea(locationId: String, latitude: Double, longitude: Double, radiusMeters: Double): Boolean {
+        if (locations().none { it.id == locationId }) return false
+        if (!latitude.isFinite() || latitude !in -90.0..90.0) return false
+        if (!longitude.isFinite() || longitude !in -180.0..180.0) return false
+        if (!radiusMeters.isFinite() || radiusMeters !in MIN_HOME_RADIUS_METERS..MAX_HOME_RADIUS_METERS) return false
+        setLocalPreference(homeAreaKey(locationId, "latitude"), latitude.toString())
+        setLocalPreference(homeAreaKey(locationId, "longitude"), longitude.toString())
+        setLocalPreference(homeAreaKey(locationId, "radius"), radiusMeters.toString())
+        return true
+    }
+
+    fun clearHomeLocationArea(locationId: String) {
+        listOf("latitude", "longitude", "radius").forEach { removeLocalPreference(homeAreaKey(locationId, it)) }
+    }
+
+    fun localPreference(key: String): String? = queries.selectLocalPreference(key).executeAsOneOrNull()
+
+    fun setLocalPreference(key: String, value: String) {
+        queries.setLocalPreference(key, value)
+    }
+
+    fun removeLocalPreference(key: String) {
+        queries.deleteLocalPreference(key)
     }
 
     fun members(): List<MemberProfile> {
@@ -582,6 +629,13 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         return revisionId
     }
 }
+
+private const val AUTO_HOME_SELECTION_KEY = "automatic_home_selection"
+private const val AUTO_HOME_SELECTION_OVERRIDE_KEY = "automatic_home_selection_overridden"
+private const val MIN_HOME_RADIUS_METERS = 50.0
+private const val MAX_HOME_RADIUS_METERS = 10_000.0
+
+private fun homeAreaKey(locationId: String, coordinate: String): String = "home_area:$locationId:$coordinate"
 
 private fun jsonObject(vararg fields: Pair<String, String>): String =
     fields.joinToString(prefix = "{", postfix = "}") { (name, encodedValue) -> "${jsonString(name)}:$encodedValue" }

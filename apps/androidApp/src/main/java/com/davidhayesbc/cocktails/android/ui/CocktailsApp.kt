@@ -1,7 +1,10 @@
 package com.davidhayesbc.cocktails.android.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -33,6 +36,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -45,7 +49,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.davidhayesbc.cocktails.core.data.LocalCocktailRepository
+import com.davidhayesbc.cocktails.core.matching.HomeLocationArea
+import com.davidhayesbc.cocktails.core.matching.HomeLocationMatch
+import com.davidhayesbc.cocktails.core.matching.matchHomeLocation
 import com.davidhayesbc.cocktails.core.data.ImportApplyResult
 import com.davidhayesbc.cocktails.core.data.ImportPreviewResult
 import com.davidhayesbc.cocktails.core.data.HouseholdImportPreview
@@ -75,6 +86,8 @@ import com.davidhayesbc.cocktails.core.model.RecipeCard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.davidhayesbc.cocktails.android.location.ApproximateCoordinates
+import com.davidhayesbc.cocktails.android.location.requestApproximateLocation
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -90,6 +103,12 @@ private enum class Page(val label: String) {
     MORE("More"),
 }
 
+private sealed interface LocationAction {
+    data object EnableAutomaticSelection : LocationAction
+    data object ResumeAutomaticSelection : LocationAction
+    data class SaveHomeArea(val locationId: String, val radiusMeters: Double) : LocationAction
+}
+
 @Composable
 fun CocktailsApp(repository: LocalCocktailRepository) {
     val context = LocalContext.current
@@ -99,6 +118,14 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var selectedLocationId by remember(repository) {
         mutableStateOf(repository.preferredHomeId()?.takeIf { preferred -> locations.any { it.id == preferred } } ?: locations.firstOrNull()?.id.orEmpty())
     }
+    var automaticHomeSelectionEnabled by remember(repository) { mutableStateOf(repository.automaticHomeSelectionEnabled()) }
+    var automaticHomeSelectionOverridden by remember(repository) { mutableStateOf(repository.automaticHomeSelectionOverridden()) }
+    var homeLocationAreas by remember(repository) { mutableStateOf(repository.homeLocationAreas()) }
+    var locationMessage by remember { mutableStateOf<String?>(null) }
+    var showLocationSettings by remember { mutableStateOf(false) }
+    var pendingLocationAction by remember { mutableStateOf<LocationAction?>(null) }
+    var shopDestinationId by remember { mutableStateOf<String?>(null) }
+    var shopPantry by remember { mutableStateOf(emptyList<PantryEntry>()) }
     var selectedMemberId by remember(repository) {
         mutableStateOf(repository.preferredMemberId()?.takeIf { preferred -> members.any { it.id == preferred } } ?: members.firstOrNull()?.id.orEmpty())
     }
@@ -186,9 +213,15 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         pantry = if (selectedLocationId.isEmpty()) emptyList() else repository.pantry(selectedLocationId)
     }
 
-    fun selectHome(locationId: String) {
+    fun selectHome(locationId: String, automatic: Boolean = false) {
         selectedLocationId = locationId
         repository.setPreferredHomeId(locationId)
+        pantry = if (locationId.isEmpty()) emptyList() else repository.pantry(locationId)
+        if (!automatic && automaticHomeSelectionEnabled) {
+            repository.setAutomaticHomeSelectionOverridden(true)
+            automaticHomeSelectionOverridden = true
+            locationMessage = "Automatic home selection is paused after your manual choice."
+        }
     }
 
     fun selectMember(memberId: String) {
@@ -208,6 +241,94 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         selectedRecipe = null
     }
 
+    fun updateAutomaticHomeSelection() {
+        if (!automaticHomeSelectionEnabled || automaticHomeSelectionOverridden || showShop) return
+        if (context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            locationMessage = "Location access is off. Keeping ${locations.firstOrNull { it.id == selectedLocationId }?.name ?: "your selected home"}."
+            return
+        }
+        requestApproximateLocation(context) { coordinates ->
+            if (!automaticHomeSelectionEnabled || repository.automaticHomeSelectionOverridden() || showShop) return@requestApproximateLocation
+            if (coordinates == null) {
+                locationMessage = "Couldn't get an approximate location. Keeping your selected home."
+                return@requestApproximateLocation
+            }
+            when (val match = matchHomeLocation(coordinates.latitude, coordinates.longitude, repository.homeLocationAreas())) {
+                is HomeLocationMatch.Matched -> {
+                    val matchedHome = repository.locations().firstOrNull { it.id == match.locationId }
+                    if (matchedHome == null) return@requestApproximateLocation
+                    if (selectedLocationId != matchedHome.id) selectHome(matchedHome.id, automatic = true)
+                    locationMessage = "Using ${matchedHome.name} from this phone's approximate location."
+                }
+                is HomeLocationMatch.Ambiguous -> locationMessage = "Your approximate location matches more than one home. Choose a home manually."
+                HomeLocationMatch.NoMatch -> locationMessage = "Outside your saved home areas. Keeping your selected home."
+            }
+        }
+    }
+
+    fun performLocationAction(action: LocationAction) {
+        when (action) {
+            LocationAction.EnableAutomaticSelection,
+            LocationAction.ResumeAutomaticSelection -> {
+                repository.setAutomaticHomeSelectionEnabled(true)
+                repository.setAutomaticHomeSelectionOverridden(false)
+                automaticHomeSelectionEnabled = true
+                automaticHomeSelectionOverridden = false
+                locationMessage = "Checking this phone's approximate location while the app is open."
+                updateAutomaticHomeSelection()
+            }
+            is LocationAction.SaveHomeArea -> requestApproximateLocation(context) { coordinates ->
+                if (coordinates == null) {
+                    locationMessage = "Couldn't get an approximate location. Your saved area was not changed."
+                } else if (repository.setHomeLocationArea(action.locationId, coordinates.latitude, coordinates.longitude, action.radiusMeters)) {
+                    homeLocationAreas = repository.homeLocationAreas()
+                    val homeName = locations.firstOrNull { it.id == action.locationId }?.name ?: "Home"
+                    locationMessage = "Saved this phone's approximate area for $homeName."
+                } else {
+                    locationMessage = "The home area was invalid and wasn't saved."
+                }
+            }
+        }
+    }
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val action = pendingLocationAction
+        pendingLocationAction = null
+        if (granted && action != null) performLocationAction(action)
+        else if (!granted) locationMessage = "Location permission wasn't granted. Manual home selection still works."
+    }
+
+    fun beginLocationAction(action: LocationAction) {
+        if (context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            performLocationAction(action)
+        } else {
+            pendingLocationAction = action
+            locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
+    }
+
+    fun disableAutomaticHomeSelection() {
+        repository.setAutomaticHomeSelectionEnabled(false)
+        automaticHomeSelectionEnabled = false
+        automaticHomeSelectionOverridden = false
+        locationMessage = "Automatic home selection is off. Your selected home stays unchanged."
+    }
+
+    fun openShop() {
+        shopDestinationId = selectedLocationId
+        shopPantry = if (selectedLocationId.isEmpty()) emptyList() else repository.pantry(selectedLocationId)
+        showShop = true
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, automaticHomeSelectionEnabled, automaticHomeSelectionOverridden) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) updateAutomaticHomeSelection()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -216,6 +337,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                         selected = selectedPage == page && !showShop,
                         onClick = {
                             showShop = false
+                            shopDestinationId = null
                             selectedPage = page
                         },
                         icon = { Text(page.label.take(1)) },
@@ -228,22 +350,23 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         when {
             showShop -> ShopScreen(
                 modifier = Modifier.padding(contentPadding),
-                location = locations.firstOrNull { it.id == selectedLocationId },
-                pantry = pantry,
-                recommendations = repository.shopSuggestions(pantry),
-                onBack = { showShop = false },
+                location = locations.firstOrNull { it.id == shopDestinationId },
+                pantry = shopPantry,
+                recommendations = repository.shopSuggestions(shopPantry),
+                onBack = { showShop = false; shopDestinationId = null },
             )
             selectedPage == Page.MAKE -> MakeScreen(
                 modifier = Modifier.padding(contentPadding),
                 locations = locations,
                 selectedLocationId = selectedLocationId,
                 onLocationSelected = ::selectHome,
+                locationMessage = locationMessage,
                 pantry = pantry,
                 onAddIngredients = {
                     selectedPage = Page.MY_BAR
                     showAddIngredient = true
                 },
-                onOpenShop = { showShop = true },
+                onOpenShop = ::openShop,
                 recipes = recipes,
                 onBrowseRecipes = { selectedPage = Page.RECIPES },
             )
@@ -264,7 +387,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     )
                     refreshPantry()
                 },
-                onOpenShop = { showShop = true },
+                onOpenShop = ::openShop,
             )
             selectedPage == Page.RECIPES -> if (selectedRecipe == null) RecipeBrowser(
                 modifier = Modifier.padding(contentPadding),
@@ -317,8 +440,29 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 onExport = { exportLauncher.launch("CocktAIls-Household-Backup.json") },
                 onImport = { importLauncher.launch(arrayOf("application/json", "text/json", "*/*")) },
                 shareMessage = shareMessage,
+                onOpenLocationSettings = { showLocationSettings = true },
             )
         }
+    }
+
+    if (showLocationSettings) {
+        HomeLocationSettingsDialog(
+            locations = locations,
+            areas = homeLocationAreas,
+            automaticEnabled = automaticHomeSelectionEnabled,
+            manuallyOverridden = automaticHomeSelectionOverridden,
+            statusMessage = locationMessage,
+            onEnableAutomatic = { beginLocationAction(LocationAction.EnableAutomaticSelection) },
+            onResumeAutomatic = { beginLocationAction(LocationAction.ResumeAutomaticSelection) },
+            onDisableAutomatic = ::disableAutomaticHomeSelection,
+            onSetHomeArea = { locationId, radius -> beginLocationAction(LocationAction.SaveHomeArea(locationId, radius)) },
+            onRemoveHomeArea = { locationId ->
+                repository.clearHomeLocationArea(locationId)
+                homeLocationAreas = repository.homeLocationAreas()
+                locationMessage = "Removed the saved approximate area for this home."
+            },
+            onDismiss = { showLocationSettings = false },
+        )
     }
 
     if (showAddIngredient) {
@@ -449,6 +593,7 @@ private fun MakeScreen(
     locations: List<HomeLocation>,
     selectedLocationId: String,
     onLocationSelected: (String) -> Unit,
+    locationMessage: String?,
     pantry: List<PantryEntry>,
     onAddIngredients: () -> Unit,
     onOpenShop: () -> Unit,
@@ -471,13 +616,19 @@ private fun MakeScreen(
         ) {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                 Text("YOUR BAR", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                TextButton(onClick = { locationMenuExpanded = true }) {
+                TextButton(
+                    onClick = { locationMenuExpanded = true },
+                    modifier = Modifier.testTag("home-location-selector"),
+                ) {
                     Text("${locations.firstOrNull { it.id == selectedLocationId }?.name ?: "Choose a home"}  ▾", style = MaterialTheme.typography.titleMedium)
                 }
                 DropdownMenu(expanded = locationMenuExpanded, onDismissRequest = { locationMenuExpanded = false }) {
                     locations.forEach { location ->
                         DropdownMenuItem(text = { Text(location.name) }, onClick = { onLocationSelected(location.id); locationMenuExpanded = false })
                     }
+                }
+                if (locationMessage != null) {
+                    Text(locationMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -1032,6 +1183,7 @@ private fun HouseholdScreen(
     members: List<MemberProfile>,
     selectedMemberId: String,
     onManageMembers: () -> Unit,
+    onOpenLocationSettings: () -> Unit,
     onExport: () -> Unit,
     onImport: () -> Unit,
     shareMessage: String?,
@@ -1046,6 +1198,10 @@ private fun HouseholdScreen(
         OutlinedButton(onClick = onManageMembers) {
             Text("Member · ${members.firstOrNull { it.id == selectedMemberId }?.name ?: "Choose a member"}  ▾")
         }
+        Text("Location", style = MaterialTheme.typography.titleLarge)
+        OutlinedButton(onClick = onOpenLocationSettings, modifier = Modifier.fillMaxWidth()) {
+            Text("Automatic home selection")
+        }
         Text("Manual sharing", style = MaterialTheme.typography.titleLarge)
         Button(onClick = onExport, modifier = Modifier.fillMaxWidth()) { Text("Export household backup") }
         OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth()) { Text("Import household backup") }
@@ -1053,6 +1209,106 @@ private fun HouseholdScreen(
         if (shareMessage != null) Text(shareMessage, style = MaterialTheme.typography.bodyMedium)
     }
 }
+
+@Composable
+private fun HomeLocationSettingsDialog(
+    locations: List<HomeLocation>,
+    areas: List<HomeLocationArea>,
+    automaticEnabled: Boolean,
+    manuallyOverridden: Boolean,
+    statusMessage: String?,
+    onEnableAutomatic: () -> Unit,
+    onResumeAutomatic: () -> Unit,
+    onDisableAutomatic: () -> Unit,
+    onSetHomeArea: (String, Double) -> Unit,
+    onRemoveHomeArea: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Location selection") },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    "Approximate location is checked while CocktAIls is open. We don't request precise or background access. Saved home areas stay on this phone and aren't included in household backups.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                when {
+                    !automaticEnabled -> Button(onClick = onEnableAutomatic, modifier = Modifier.fillMaxWidth()) {
+                        Text("Enable automatic home selection")
+                    }
+                    manuallyOverridden -> {
+                        Text("Automatic selection is paused after your manual home choice.")
+                        Button(onClick = onResumeAutomatic, modifier = Modifier.fillMaxWidth()) { Text("Resume automatic selection") }
+                        TextButton(onClick = onDisableAutomatic) { Text("Turn off automatic selection") }
+                    }
+                    else -> {
+                        Text("Automatic selection is on while the app is open.")
+                        TextButton(onClick = onDisableAutomatic) { Text("Turn off automatic selection") }
+                    }
+                }
+                Text("Set a private area for each home", style = MaterialTheme.typography.titleMedium)
+                locations.forEach { location ->
+                    HomeLocationAreaEditor(
+                        location = location,
+                        area = areas.firstOrNull { it.locationId == location.id },
+                        onSetArea = { radius -> onSetHomeArea(location.id, radius) },
+                        onRemoveArea = { onRemoveHomeArea(location.id) },
+                    )
+                }
+                if (statusMessage != null) {
+                    Text(statusMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+    )
+}
+
+@Composable
+private fun HomeLocationAreaEditor(
+    location: HomeLocation,
+    area: HomeLocationArea?,
+    onSetArea: (Double) -> Unit,
+    onRemoveArea: () -> Unit,
+) {
+    var radiusInput by remember(location.id, area?.radiusMeters) {
+        mutableStateOf((area?.radiusMeters ?: DEFAULT_HOME_RADIUS_METERS).toInt().toString())
+    }
+    val radius = radiusInput.toDoubleOrNull()
+    val radiusIsValid = radius != null && radius.isFinite() && radius in MIN_HOME_RADIUS_METERS..MAX_HOME_RADIUS_METERS
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(location.name, style = MaterialTheme.typography.titleSmall)
+        Text(
+            if (area == null) "No area saved on this phone yet." else "Saved area · ${area.radiusMeters.toInt()} m radius",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            value = radiusInput,
+            onValueChange = { radiusInput = it },
+            label = { Text("Match radius (meters)") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            singleLine = true,
+            isError = !radiusIsValid,
+            supportingText = { Text("Choose ${MIN_HOME_RADIUS_METERS.toInt()}–${MAX_HOME_RADIUS_METERS.toInt()} meters") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Button(onClick = { onSetArea(radius!!) }, enabled = radiusIsValid, modifier = Modifier.fillMaxWidth()) {
+            Text("Set this phone's current area for ${location.name}")
+        }
+        if (area != null) TextButton(onClick = onRemoveArea) { Text("Forget this phone's area") }
+    }
+}
+
+private const val MIN_HOME_RADIUS_METERS = 50.0
+private const val MAX_HOME_RADIUS_METERS = 10_000.0
+private const val DEFAULT_HOME_RADIUS_METERS = 250.0
 
 @Composable
 private fun HouseholdImportDialog(

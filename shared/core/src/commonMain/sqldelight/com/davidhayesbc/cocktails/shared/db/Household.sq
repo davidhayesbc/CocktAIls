@@ -192,6 +192,9 @@ SELECT preference_value FROM local_preference WHERE preference_key = ?;
 setLocalPreference:
 INSERT OR REPLACE INTO local_preference(preference_key, preference_value) VALUES (?, ?);
 
+deleteLocalPreference:
+DELETE FROM local_preference WHERE preference_key = ?;
+
 insertIngredientIgnore:
 INSERT OR IGNORE INTO ingredient(id, canonical_name, category, created_at) VALUES (?, ?, ?, ?);
 
