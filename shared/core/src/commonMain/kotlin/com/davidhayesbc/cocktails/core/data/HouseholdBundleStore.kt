@@ -265,6 +265,7 @@ class HouseholdBundleStore internal constructor(
                     writeTastingNote(record.withRevision(mergeRevision?.id))
                 }
                 chosen.filter { it.type == "FAVORITE" }.forEach(::writeFavorite)
+                chosen.filter { it.type == "DRINK_EVENT" }.forEach(::writeDrinkEvent)
                 selectedRecords.values.filter { it.type == "COCKTAIL_FAMILY" }.forEach { record ->
                     queries.deleteAliasesForFamily(record.id)
                     writeAliases(record)
@@ -277,7 +278,7 @@ class HouseholdBundleStore internal constructor(
                             ?: error("Deleted record ${record.id} is missing its selected tombstone.")
                         queries.deleteTombstone(record.id)
                         queries.insertTombstoneBundle(record.id, record.type, selectedTombstone.revisionId, selectedTombstone.deletedAt)
-                    } else if (record.type == "RECIPE_VARIANT" || record.type == "COCKTAIL_FAMILY") {
+                    } else if (record.type == "RECIPE_VARIANT" || record.type == "COCKTAIL_FAMILY" || record.type == "FAVORITE") {
                         queries.deleteTombstone(record.id)
                     }
                 }
@@ -358,6 +359,12 @@ class HouseholdBundleStore internal constructor(
         queries.selectAllFavoritesForBundle().executeAsList().forEach {
             records += BundleRecord("FAVORITE", compositeFavoriteId(it.member_id, it.family_id), obj(
                 "memberId" to str(it.member_id), "familyId" to str(it.family_id), "createdAt" to num(it.created_at),
+            ))
+        }
+        queries.selectAllDrinkEventsForBundle().executeAsList().forEach {
+            records += BundleRecord("DRINK_EVENT", it.id, obj(
+                "id" to str(it.id), "variantId" to str(it.variant_id), "memberId" to str(it.member_id),
+                "locationId" to nullableString(it.location_id), "madeAt" to num(it.made_at), "revisionId" to nullableString(it.revision_id),
             ))
         }
         val parentsByRevision = queries.selectAllRevisionParentsForBundle().executeAsList().groupBy { it.revision_id }
@@ -592,6 +599,18 @@ class HouseholdBundleStore internal constructor(
         val createdAt = data.long("createdAt")
         queries.insertFavoriteIgnore(memberId, familyId, createdAt)
         queries.updateFavorite(createdAt, memberId, familyId)
+    }
+
+    private fun writeDrinkEvent(record: BundleRecord) {
+        val data = record.data
+        queries.insertDrinkEventBundleIgnore(
+            record.id, data.string("variantId"), data.string("memberId"), data.nullableString("locationId"),
+            data.long("madeAt"), data.nullableString("revisionId"),
+        )
+        queries.updateDrinkEventBundle(
+            data.string("variantId"), data.string("memberId"), data.nullableString("locationId"), data.long("madeAt"),
+            data.nullableString("revisionId"), record.id,
+        )
     }
 
     private fun writeRevision(revision: BundleRevision) {

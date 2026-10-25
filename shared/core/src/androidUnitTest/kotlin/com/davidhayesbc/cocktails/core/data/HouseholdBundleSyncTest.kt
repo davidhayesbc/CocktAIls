@@ -7,6 +7,7 @@ import com.davidhayesbc.cocktails.core.model.IngredientId
 import com.davidhayesbc.cocktails.core.model.InventoryLevel
 import com.davidhayesbc.cocktails.core.model.RecipeIngredientDraft
 import com.davidhayesbc.cocktails.core.model.RecipeStyle
+import com.davidhayesbc.cocktails.core.model.RecipeVariantId
 import com.davidhayesbc.cocktails.shared.db.CocktailsDatabase
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -17,6 +18,130 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 class HouseholdBundleSyncTest {
+    @Test
+    fun concurrentRecipeEditsRemainReviewableAndMergedRevisionKeepsBothParents() {
+        val leftDatabase = database()
+        val rightDatabase = database()
+        val left = LocalCocktailRepository(leftDatabase)
+        val right = LocalCocktailRepository(rightDatabase)
+        left.initialize(100)
+        assertTrue(left.addRecipeLines(
+            title = "Martini",
+            ingredientLines = listOf(RecipeIngredientDraft("Gin", 60.0, "ml"), RecipeIngredientDraft("Vermouth", 10.0, "ml")),
+            instructions = "Stir.", style = RecipeStyle.SHORT, servings = 1.0, nowMillis = 200,
+        ))
+        val original = left.recipes().single()
+        val originalRevision = leftDatabase.householdQueries.selectLatestRecordRevision(original.id.value, "RECIPE_VARIANT").executeAsOne()
+        val originalPayload = leftDatabase.householdQueries.selectRevisionPayload(originalRevision).executeAsOne()
+        val originalGinLineId = leftDatabase.householdQueries.selectAllRecipeIngredientsForBundle().executeAsList()
+            .single { it.variant_id == original.id.value && it.ingredient_id == original.ingredients.first().ingredientId.value }.id
+        val baseline = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(left.exportHouseholdBundle(300))).bundle
+        right.initialize(400)
+        val importPreview = assertIs<ImportPreviewResult.Valid>(right.previewHouseholdBundle(baseline)).preview
+        assertIs<ImportApplyResult.Applied>(right.applyHouseholdBundle(baseline, importPreview, emptyMap(), 500))
+
+        assertTrue(left.editRecipeVariant(
+            original.id, "Dry Martini", listOf(RecipeIngredientDraft("Gin", 75.0, "ml"), RecipeIngredientDraft("Vermouth", 5.0, "ml")),
+            "Stir until very cold.", 1.0, RecipeStyle.SHORT, 600,
+        ))
+        assertTrue(right.editRecipeVariant(
+            original.id, "Shaken Martini", listOf(RecipeIngredientDraft("Gin", 60.0, "ml"), RecipeIngredientDraft("Vermouth", 15.0, "ml")),
+            "Shake with ice.", 2.0, RecipeStyle.LONG, 700,
+        ))
+
+        val incoming = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(right.exportHouseholdBundle(800))).bundle
+        val preview = assertIs<ImportPreviewResult.Valid>(left.previewHouseholdBundle(incoming)).preview
+        val conflict = preview.conflicts.single { it.type == "RECIPE_VARIANT" && it.id == original.id.value }
+        val merged = buildJsonObject {
+            conflict.local!!.data.forEach { (key, value) -> put(key, value) }
+            put("title", "Dry Martini (partner method)")
+            put("instructions", "Stir, then shake once to chill.")
+        }
+        assertIs<ImportApplyResult.Applied>(left.applyHouseholdBundle(
+            incoming, preview, mapOf(conflict.key to ConflictResolution(ConflictChoice.MERGE_FIELDS, merged, false)), 900,
+        ))
+
+        val result = left.recipes().single()
+        assertEquals("Dry Martini (partner method)", result.title)
+        assertEquals("Stir, then shake once to chill.", result.instructions)
+        assertEquals(1.0, result.servings)
+        assertEquals(listOf(75.0, 5.0), result.ingredients.map { it.amount })
+        assertEquals(original.familyId, result.familyId)
+        assertEquals(originalGinLineId, leftDatabase.householdQueries.selectAllRecipeIngredientsForBundle().executeAsList()
+            .single { it.variant_id == original.id.value && it.ingredient_id == original.ingredients.first().ingredientId.value }.id)
+        assertEquals(originalPayload, leftDatabase.householdQueries.selectRevisionPayload(originalRevision).executeAsOne())
+        val mergedRevision = leftDatabase.householdQueries.selectLatestRecordRevision(original.id.value, "RECIPE_VARIANT").executeAsOne()
+        assertEquals(setOf(conflict.localHeadIds.single(), conflict.incomingHeadIds.single()), leftDatabase.householdQueries.selectRevisionParents(mergedRevision).executeAsList().toSet())
+    }
+
+    @Test
+    fun duplicatingRecipeKeepsMeasurementsFamilyAndSourceAttribution() {
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        CocktailsDatabase.Schema.create(driver)
+        val database = CocktailsDatabase(driver)
+        val repository = LocalCocktailRepository(database)
+        repository.initialize(1_000)
+        assertTrue(repository.addRecipeLines(
+            title = "House Martini", ingredientLines = listOf(RecipeIngredientDraft("Gin", 50.0, "ml", optional = true)),
+            instructions = "Stir gently.", style = RecipeStyle.SHORT, servings = 2.0, nowMillis = 2_000,
+        ))
+        val original = repository.recipes().single()
+        database.householdQueries.insertRecipeSource("source-row", original.id.value, "Example book", "record-1", "https://example.test/recipe", "CC BY 4.0", "Author", "normalized measures", 2_100)
+
+        val duplicateId = repository.duplicateRecipeVariant(original.id, 3_000)!!
+        val duplicate = repository.recipes().single { it.id == duplicateId }
+        assertTrue(duplicate.id != original.id)
+        assertEquals(original.familyId, duplicate.familyId)
+        assertEquals("House Martini (copy)", duplicate.title)
+        assertEquals(original.instructions, duplicate.instructions)
+        assertEquals(original.servings, duplicate.servings)
+        assertEquals(original.ingredients.map { it.name to it.amount }, duplicate.ingredients.map { it.name to it.amount })
+        assertEquals("Example book", database.householdQueries.selectRecipeSourcesForVariant(duplicateId.value).executeAsOne().source_name)
+        driver.close()
+    }
+
+    @Test
+    fun favoriteRemovalUsesAConflictVisibleTombstoneAgainstStaleBackup() {
+        val leftDatabase = database()
+        val rightDatabase = database()
+        val left = LocalCocktailRepository(leftDatabase)
+        val right = LocalCocktailRepository(rightDatabase)
+        left.initialize(10)
+        assertTrue(left.addRecipe("Negroni", listOf("Gin"), "Stir.", RecipeStyle.BITTER, nowMillis = 20))
+        val familyId = left.recipes().single().familyId
+        val memberId = left.members().single().id
+        assertTrue(left.setFamilyFavorite(memberId, familyId, true, 30))
+        val originalBackup = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(left.exportHouseholdBundle(40))).bundle
+        right.initialize(50)
+        val importPreview = assertIs<ImportPreviewResult.Valid>(right.previewHouseholdBundle(originalBackup)).preview
+        assertIs<ImportApplyResult.Applied>(right.applyHouseholdBundle(originalBackup, importPreview, emptyMap(), 60))
+        assertTrue(right.isFamilyFavorite(memberId, familyId))
+        assertTrue(right.setFamilyFavorite(memberId, familyId, false, 65))
+        assertTrue(right.setFamilyFavorite(memberId, familyId, true, 66))
+        val concurrentFavoriteBackup = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(right.exportHouseholdBundle(67))).bundle
+
+        assertTrue(left.setFamilyFavorite(memberId, familyId, false, 70))
+        assertFalse(left.isFamilyFavorite(memberId, familyId))
+        val stalePreview = assertIs<ImportPreviewResult.Valid>(left.previewHouseholdBundle(concurrentFavoriteBackup)).preview
+        val favoriteConflict = stalePreview.conflicts.single { it.type == "FAVORITE" }
+        assertTrue(favoriteConflict.localDeleted)
+        assertFalse(favoriteConflict.incomingDeleted)
+        assertIs<ImportApplyResult.Applied>(left.applyHouseholdBundle(
+            concurrentFavoriteBackup,
+            stalePreview,
+            mapOf(favoriteConflict.key to ConflictResolution(ConflictChoice.KEEP_LOCAL)),
+            80,
+        ))
+        assertFalse(left.isFamilyFavorite(memberId, familyId))
+        val oldBackupPreview = assertIs<ImportPreviewResult.Valid>(left.previewHouseholdBundle(originalBackup)).preview
+        assertTrue(oldBackupPreview.conflicts.none { it.type == "FAVORITE" })
+        assertIs<ImportApplyResult.Applied>(left.applyHouseholdBundle(originalBackup, oldBackupPreview, emptyMap(), 85))
+        assertFalse(left.isFamilyFavorite(memberId, familyId))
+        val archivedBackup = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(left.exportHouseholdBundle(90))).bundle
+        assertTrue(archivedBackup.tombstones.any { it.recordType == "FAVORITE" })
+        assertEquals(1, archivedBackup.records.count { it.type == "FAVORITE" })
+    }
+
     @Test
     fun twoDatabasesPreserveSkewedConcurrentEditsAndMergeBothParents() {
         val left = database()
@@ -269,6 +394,8 @@ class HouseholdBundleSyncTest {
             servings = 2.0,
             nowMillis = 20,
         ))
+        val sourceRecipe = source.recipes().single()
+        assertTrue(source.markRecipeMade(sourceRecipe.id, source.members().single().id, source.locations().single().id, 25))
 
         val bundle = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(source.exportHouseholdBundle(30))).bundle
         val preview = assertIs<ImportPreviewResult.Valid>(target.previewHouseholdBundle(bundle)).preview
@@ -277,6 +404,8 @@ class HouseholdBundleSyncTest {
         assertEquals(2.0, recipe.servings)
         assertEquals(listOf(60.0, 25.0), recipe.ingredients.map { it.amount })
         assertEquals(listOf("ml", "ml"), recipe.ingredients.map { it.unit })
+        assertEquals("Gimlet", target.recentlyMade().single().title)
+        assertEquals(25L, target.recentlyMade().single().madeAt)
         sourceDriver.close()
         targetDriver.close()
     }

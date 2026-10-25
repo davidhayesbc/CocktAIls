@@ -84,6 +84,7 @@ data class RecipeLine(
     val amount: Double?,
     val unit: String?,
     val optional: Boolean,
+    val preparation: String? = null,
 )
 
 data class RecipeIngredientDraft(
@@ -102,4 +103,13 @@ data class TastingNote(
     val rating: Int?,
     val note: String,
     val createdAt: Long,
+)
+
+data class RecentDrink(
+    val eventId: String,
+    val recipeId: RecipeVariantId,
+    val title: String,
+    val madeBy: String,
+    val madeAt: Long,
+    val locationName: String?,
 )

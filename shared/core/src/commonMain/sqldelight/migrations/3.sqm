@@ -1,0 +1,8 @@
+CREATE TABLE drink_event (
+    id TEXT NOT NULL PRIMARY KEY,
+    variant_id TEXT NOT NULL REFERENCES recipe_variant(id),
+    member_id TEXT NOT NULL REFERENCES household_member(id),
+    location_id TEXT REFERENCES household_location(id),
+    made_at INTEGER NOT NULL,
+    revision_id TEXT REFERENCES record_revision(id)
+);

@@ -42,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.davidhayesbc.cocktails.core.data.LocalCocktailRepository
@@ -62,6 +63,7 @@ import com.davidhayesbc.cocktails.core.model.PantryEntry
 import com.davidhayesbc.cocktails.core.model.RecipeDetail
 import com.davidhayesbc.cocktails.core.model.RecipeStyle
 import com.davidhayesbc.cocktails.core.model.RecipeIngredientDraft
+import com.davidhayesbc.cocktails.core.model.RecentDrink
 import com.davidhayesbc.cocktails.core.matching.RecipeAvailabilityFilter
 import com.davidhayesbc.cocktails.core.matching.countMissingRequiredIngredients
 import com.davidhayesbc.cocktails.core.matching.matchesMissingCount
@@ -104,12 +106,16 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var showShop by remember { mutableStateOf(false) }
     var showAddIngredient by remember { mutableStateOf(false) }
     var showAddRecipe by remember { mutableStateOf(false) }
+    var recipeToEdit by remember { mutableStateOf<RecipeDetail?>(null) }
     var showAddLocation by remember { mutableStateOf(false) }
     var showAddMember by remember { mutableStateOf(false) }
     var selectedRecipe by remember { mutableStateOf<RecipeDetail?>(null) }
     var showAddNote by remember { mutableStateOf(false) }
     var recipes by remember { mutableStateOf(repository.recipes()) }
     var recipeFamilies by remember { mutableStateOf(repository.recipeFamilies()) }
+    var recentDrinks by remember { mutableStateOf(repository.recentlyMade()) }
+    var favoritesVersion by remember { mutableStateOf(0) }
+    val favoriteFamilyIds = remember(repository, selectedMemberId, favoritesVersion) { repository.favoriteFamilyIds(selectedMemberId) }
     var pantry by remember { mutableStateOf(emptyList<PantryEntry>()) }
     var shareMessage by remember { mutableStateOf<String?>(null) }
     var stagedBundle by remember { mutableStateOf<HouseholdBundle?>(null) }
@@ -195,6 +201,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         members = repository.members()
         recipes = repository.recipes()
         recipeFamilies = repository.recipeFamilies()
+        recentDrinks = repository.recentlyMade()
         selectedLocationId = repository.preferredHomeId()?.takeIf { id -> locations.any { it.id == id } } ?: locations.firstOrNull()?.id.orEmpty()
         selectedMemberId = repository.preferredMemberId()?.takeIf { id -> members.any { it.id == id } } ?: members.firstOrNull()?.id.orEmpty()
         refreshPantry()
@@ -263,14 +270,38 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 modifier = Modifier.padding(contentPadding),
                 recipes = recipes,
                 pantry = pantry,
-                onAddRecipe = { showAddRecipe = true },
+                favoriteFamilyIds = favoriteFamilyIds,
+                recentDrinks = recentDrinks,
+                onAddRecipe = { recipeToEdit = null; showAddRecipe = true },
                 onSelectRecipe = { selectedRecipe = it },
+                onOpenRecent = { id -> selectedRecipe = recipes.firstOrNull { it.id == id } },
+                onToggleFavorite = { familyId, favorite ->
+                    if (repository.setFamilyFavorite(selectedMemberId, familyId, favorite, System.currentTimeMillis())) favoritesVersion++
+                },
             ) else RecipeDetailScreen(
                 modifier = Modifier.padding(contentPadding),
                 recipe = selectedRecipe!!,
                 notes = repository.tastingNotes(selectedRecipe!!.id),
+                isFavorite = selectedRecipe!!.familyId in favoriteFamilyIds,
+                onToggleFavorite = {
+                    val newValue = selectedRecipe!!.familyId !in favoriteFamilyIds
+                    if (repository.setFamilyFavorite(selectedMemberId, selectedRecipe!!.familyId, newValue, System.currentTimeMillis())) favoritesVersion++
+                },
                 onBack = { selectedRecipe = null },
                 onAddNote = { showAddNote = true },
+                onMarkMade = {
+                    if (repository.markRecipeMade(selectedRecipe!!.id, selectedMemberId, selectedLocationId.ifEmpty { null }, System.currentTimeMillis())) {
+                        recentDrinks = repository.recentlyMade()
+                    }
+                },
+                onEdit = { recipeToEdit = selectedRecipe; showAddRecipe = true },
+                onDuplicate = {
+                    repository.duplicateRecipeVariant(selectedRecipe!!.id, System.currentTimeMillis())?.let { duplicateId ->
+                        recipes = repository.recipes()
+                        recipeFamilies = repository.recipeFamilies()
+                        selectedRecipe = recipes.firstOrNull { it.id == duplicateId }
+                    }
+                },
                 onArchive = {
                     repository.archiveRecipeVariant(selectedRecipe!!.id, System.currentTimeMillis())
                     recipes = repository.recipes()
@@ -311,21 +342,22 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
 
     if (showAddRecipe) {
         AddRecipeDialog(
-            onDismiss = { showAddRecipe = false },
+            onDismiss = { showAddRecipe = false; recipeToEdit = null },
             families = recipeFamilies,
+            initialRecipe = recipeToEdit,
             onSave = { title, ingredientLines, instructions, servings, style, familyId ->
-                val saved = repository.addRecipeLines(
-                    title = title,
-                    ingredientLines = ingredientLines,
-                    instructions = instructions,
-                    style = style,
-                    existingFamilyId = familyId?.let(::CocktailFamilyId),
-                    servings = servings,
-                    nowMillis = System.currentTimeMillis(),
+                val now = System.currentTimeMillis()
+                val saved = recipeToEdit?.let { current ->
+                    repository.editRecipeVariant(current.id, title, ingredientLines, instructions, servings, style, now)
+                } ?: repository.addRecipeLines(
+                    title = title, ingredientLines = ingredientLines, instructions = instructions, style = style,
+                    existingFamilyId = familyId?.let(::CocktailFamilyId), servings = servings, nowMillis = now,
                 )
                 if (saved) {
                     recipes = repository.recipes()
                     recipeFamilies = repository.recipeFamilies()
+                    recipeToEdit?.let { edited -> selectedRecipe = recipes.firstOrNull { it.id == edited.id } }
+                    recipeToEdit = null
                     showAddRecipe = false
                 }
                 saved
@@ -703,16 +735,22 @@ private fun RecipeBrowser(
     modifier: Modifier,
     recipes: List<RecipeDetail>,
     pantry: List<PantryEntry>,
+    favoriteFamilyIds: Set<CocktailFamilyId>,
+    recentDrinks: List<RecentDrink>,
     onAddRecipe: () -> Unit,
     onSelectRecipe: (RecipeDetail) -> Unit,
+    onOpenRecent: (com.davidhayesbc.cocktails.core.model.RecipeVariantId) -> Unit,
+    onToggleFavorite: (CocktailFamilyId, Boolean) -> Unit,
 ) {
     var search by remember { mutableStateOf("") }
     var selectedStyle by remember { mutableStateOf<RecipeStyle?>(null) }
     var availabilityFilter by remember { mutableStateOf(RecipeAvailabilityFilter.ANY) }
+    var favoritesOnly by remember { mutableStateOf(false) }
     val availableIngredients = pantry.filter { it.level != InventoryLevel.OUT }.map { it.ingredientId }.toSet()
     fun missingCount(recipe: RecipeDetail) = countMissingRequiredIngredients(recipe.ingredients, availableIngredients)
     val matching = recipes.filter { recipe ->
-        (selectedStyle == null || recipe.style == selectedStyle) &&
+        (!favoritesOnly || recipe.familyId in favoriteFamilyIds) &&
+            (selectedStyle == null || recipe.style == selectedStyle) &&
             availabilityFilter.matchesMissingCount(missingCount(recipe)) &&
             (search.isBlank() || recipe.title.contains(search, ignoreCase = true) || recipe.ingredients.any { it.name.contains(search, true) })
     }
@@ -731,6 +769,7 @@ private fun RecipeBrowser(
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
             FilterChip(selected = selectedStyle == null, onClick = { selectedStyle = null }, label = { Text("All styles") })
+            FilterChip(selected = favoritesOnly, onClick = { favoritesOnly = !favoritesOnly }, label = { Text("★ Favorites") })
             RecipeAvailabilityFilter.entries.forEach { filter ->
                 FilterChip(
                     selected = availabilityFilter == filter,
@@ -754,11 +793,23 @@ private fun RecipeBrowser(
             Text("No recipes match these filters.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (recentDrinks.isNotEmpty()) {
+                    item { Text("Recently made", style = MaterialTheme.typography.titleLarge) }
+                    items(recentDrinks.take(5), key = { "recent-${it.eventId}" }) { recent ->
+                        TextButton(onClick = { onOpenRecent(recent.recipeId) }) {
+                            val location = recent.locationName?.let { " · $it" }.orEmpty()
+                            Text("${recent.title} · ${recent.madeBy}$location")
+                        }
+                    }
+                }
                 families.forEach { (_, variants) ->
                     item(key = variants.first().familyId.value) {
                         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                             Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text(variants.first().title, style = MaterialTheme.typography.titleMedium)
+                                TextButton(onClick = { onToggleFavorite(variants.first().familyId, variants.first().familyId !in favoriteFamilyIds) }) {
+                                    Text(if (variants.first().familyId in favoriteFamilyIds) "★ Favorite" else "☆ Add favorite")
+                                }
                                 if (variants.size > 1) Text("${variants.size} versions", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                                 Text(
                                     variants.minOf(::missingCount).let { if (it == 0) "Ready to make" else "Missing $it ingredient${if (it == 1) "" else "s"}" },
@@ -784,8 +835,13 @@ private fun RecipeDetailScreen(
     modifier: Modifier,
     recipe: RecipeDetail,
     notes: List<TastingNote>,
+    isFavorite: Boolean,
+    onToggleFavorite: () -> Unit,
     onBack: () -> Unit,
     onAddNote: () -> Unit,
+    onMarkMade: () -> Unit,
+    onEdit: () -> Unit,
+    onDuplicate: () -> Unit,
     onArchive: () -> Unit,
 ) {
     var confirmArchive by remember(recipe.id) { mutableStateOf(false) }
@@ -794,6 +850,14 @@ private fun RecipeDetailScreen(
         item { TextButton(onClick = onBack) { Text("‹  Recipes") } }
         item { Text(recipe.title, style = MaterialTheme.typography.headlineMedium) }
         item { Text(recipe.style.label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary) }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                TextButton(onClick = onToggleFavorite) { Text(if (isFavorite) "★ Favorite" else "☆ Favorite") }
+                TextButton(onClick = onEdit) { Text("Edit") }
+                TextButton(onClick = onDuplicate) { Text("Duplicate") }
+                TextButton(onClick = onMarkMade) { Text("✓ Made it") }
+            }
+        }
         item {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Servings", style = MaterialTheme.typography.titleMedium)
@@ -852,12 +916,16 @@ private fun parseRecipeIngredientDrafts(text: String): List<RecipeIngredientDraf
     if (entries.isEmpty()) return null
     return entries.map { raw ->
         val parts = raw.split('|').map(String::trim)
-        if (parts.size !in 1..3 || parts.first().isBlank()) return null
+        if (parts.size !in 1..5 || parts.first().isBlank()) return null
         if (parts.size == 1) RecipeIngredientDraft(parts.first())
         else {
-            val amount = parts[1].toDoubleOrNull()?.takeIf { it.isFinite() && it > 0.0 } ?: return null
+            val amountText = parts.getOrNull(1).orEmpty()
+            val amount = if (amountText.isBlank()) null else amountText.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0.0 } ?: return null
             val unit = parts.getOrNull(2)?.takeIf(String::isNotBlank)
-            RecipeIngredientDraft(parts.first(), amount, unit)
+            val preparation = parts.getOrNull(3)?.takeIf(String::isNotBlank)
+            val optionalText = parts.getOrNull(4)?.lowercase().orEmpty()
+            if (optionalText.isNotEmpty() && optionalText !in setOf("optional", "true", "yes")) return null
+            RecipeIngredientDraft(parts.first(), amount, unit, preparation, optionalText.isNotEmpty())
         }
     }
 }
@@ -866,39 +934,50 @@ private fun parseRecipeIngredientDrafts(text: String): List<RecipeIngredientDraf
 private fun AddRecipeDialog(
     onDismiss: () -> Unit,
     families: List<RecipeCard>,
+    initialRecipe: RecipeDetail? = null,
     onSave: (String, List<RecipeIngredientDraft>, String, Double, RecipeStyle, String?) -> Boolean,
 ) {
-    var title by remember { mutableStateOf("") }
-    var ingredients by remember { mutableStateOf("") }
-    var instructions by remember { mutableStateOf("") }
-    var servings by remember { mutableStateOf("1") }
-    var style by remember { mutableStateOf(RecipeStyle.OTHER) }
+    var title by remember(initialRecipe?.id) { mutableStateOf(initialRecipe?.title.orEmpty()) }
+    var ingredients by remember(initialRecipe?.id) {
+        mutableStateOf(initialRecipe?.ingredients.orEmpty().joinToString("\n") { line ->
+            if (line.amount == null && line.unit == null && line.preparation == null && !line.optional) line.name
+            else listOf(line.name, line.amount?.toString().orEmpty(), line.unit.orEmpty(), line.preparation.orEmpty(), if (line.optional) "optional" else "")
+                .joinToString(" | ").trimEnd { it == ' ' || it == '|' }
+        })
+    }
+    var instructions by remember(initialRecipe?.id) { mutableStateOf(initialRecipe?.instructions.orEmpty()) }
+    var servings by remember(initialRecipe?.id) { mutableStateOf(initialRecipe?.servings?.toString() ?: "1") }
+    var style by remember(initialRecipe?.id) { mutableStateOf(initialRecipe?.style ?: RecipeStyle.OTHER) }
     var styleMenu by remember { mutableStateOf(false) }
-    var familyId by remember { mutableStateOf<String?>(null) }
+    var familyId by remember(initialRecipe?.id) { mutableStateOf(initialRecipe?.familyId?.value) }
     var familyMenu by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add a recipe") },
+        title = { Text(if (initialRecipe == null) "Add a recipe" else "Edit recipe") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(title, { title = it }, label = { Text("Drink name") }, singleLine = true)
-                OutlinedTextField(ingredients, { ingredients = it; error = null }, label = { Text("Ingredient · name | amount | unit (amount optional)") }, minLines = 3)
-                OutlinedTextField(servings, { servings = it; error = null }, label = { Text("Original servings") }, singleLine = true)
+            Column(
+                modifier = Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(title, { title = it }, label = { Text("Drink name") }, singleLine = true, modifier = Modifier.testTag("recipe-title"))
+                OutlinedTextField(ingredients, { ingredients = it; error = null }, label = { Text("Ingredient · name | amount | unit | prep | optional") }, minLines = 3, modifier = Modifier.testTag("recipe-ingredients"))
+                OutlinedTextField(servings, { servings = it; error = null }, label = { Text("Original servings") }, singleLine = true, modifier = Modifier.testTag("recipe-servings"))
                 if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
                 OutlinedTextField(instructions, { instructions = it }, label = { Text("Method (optional)") }, minLines = 2)
-                TextButton(onClick = { familyMenu = true }) {
-                    val familyName = families.firstOrNull { it.familyId.value == familyId }?.name
-                    Text(if (familyName == null) "New cocktail family" else "Version of $familyName  ▾")
-                }
-                DropdownMenu(expanded = familyMenu, onDismissRequest = { familyMenu = false }) {
-                    DropdownMenuItem(text = { Text("New family (keep separate)") }, onClick = { familyId = null; familyMenu = false })
-                    families.forEach { family ->
-                        DropdownMenuItem(
-                            text = { Text("Add as a version of ${family.name}") },
-                            onClick = { familyId = family.familyId.value; familyMenu = false },
-                        )
+                if (initialRecipe == null) {
+                    TextButton(onClick = { familyMenu = true }) {
+                        val familyName = families.firstOrNull { it.familyId.value == familyId }?.name
+                        Text(if (familyName == null) "New cocktail family" else "Version of $familyName  ▾")
                     }
+                    DropdownMenu(expanded = familyMenu, onDismissRequest = { familyMenu = false }) {
+                        DropdownMenuItem(text = { Text("New family (keep separate)") }, onClick = { familyId = null; familyMenu = false })
+                        families.forEach { family ->
+                            DropdownMenuItem(text = { Text("Add as a version of ${family.name}") }, onClick = { familyId = family.familyId.value; familyMenu = false })
+                        }
+                    }
+                } else {
+                    Text("Family: ${families.firstOrNull { it.familyId.value == familyId }?.name ?: "Unknown"}; use Duplicate to create another version.")
                 }
                 TextButton(onClick = { styleMenu = true }) { Text("Style: ${style.label} ▾") }
                 DropdownMenu(expanded = styleMenu, onDismissRequest = { styleMenu = false }) {
@@ -913,7 +992,7 @@ private fun AddRecipeDialog(
                 onClick = {
                     val parsed = parseRecipeIngredientDrafts(ingredients)
                     val parsedServings = servings.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0.0 }
-                    if (parsed == null) error = "Enter each ingredient as a name, or name | amount | unit. Amounts must be positive numbers."
+                    if (parsed == null) error = "Enter each ingredient as a name or name | amount | unit | prep | optional. Amounts must be positive numbers."
                     else if (parsedServings == null) error = "Servings must be a positive number."
                     else if (!onSave(title, parsed, instructions, parsedServings, style, familyId)) error = "Check the recipe details and try again."
                 },

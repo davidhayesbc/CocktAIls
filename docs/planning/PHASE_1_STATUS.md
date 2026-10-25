@@ -4,8 +4,8 @@ This is a snapshot of implementation and verification, not a release-readiness c
 
 ## Delivered foundation
 
-- Android debug app and Kotlin Multiplatform shared core are in place; Android CI compiles the common metadata, runs shared-core tests and lint, builds the debug APK, and uploads it as a 30-day Actions artifact.
-- SQLDelight schema v3 migrates a populated v1 pantry without changing its existing IDs or stock levels. Tests cover the v1-to-v3 migration, canonical UUIDv7 generation, family-level shop unlock counting, recipe-family explicit association, tasting-note author attribution, and revision payload/parent links.
+- Android debug app and Kotlin Multiplatform shared core are in place; Android CI compiles common metadata, runs shared-core tests and lint, builds the debug APK, and uploads it as a 30-day Actions artifact. A headless Android SDK emulator test for offline recipe entry and activity-recreation persistence is configured; its first hosted run is pending.
+- SQLDelight schema v4 migrates a populated v3 pantry without changing its IDs or stock levels. Tests also cover v1-to-v3 migration, canonical UUIDv7 generation, family-level shop unlock counting, recipe-family explicit association, tasting-note author attribution, and revision payload/parent links.
 - Household recipe variants can now be archived with an immutable deletion revision and tombstone. Archived variants stay in storage/history and disappear from browse results; repeated archive attempts do not create another deletion.
 - Versioned household JSON backups can be written/read with Android's document picker. Import is size/schema/reference checked, staged for preview, cancelable without writes, and committed in one database transaction. Device-local preferences and provider/coordinate settings are excluded.
 - Import conflict review compares revision ancestry, never relies on device timestamps, supports keep-local/use-backup/field merge, and writes a merge revision with both branch heads as parents. Reimporting an older branch after merge does not roll back the selected result.
@@ -13,17 +13,20 @@ This is a snapshot of implementation and verification, not a release-readiness c
 - Local household and member profiles, multiple homes, per-home approximate inventory, persisted manual home/member choices, recipe entry, grouped variants, style filters, tasting notes, and the initial At the shop spirit ranking are implemented.
 - Recipe discovery now filters by what is on hand, exactly one missing required ingredient, or up to two missing required ingredients. Optional lines do not block availability and repeated use of one ingredient counts once.
 - Recipe entry now accepts measured ingredient lines and an original yield; the detail view scales known quantities for a selected serving count. Quantity/yield persistence is covered by a two-database bundle round-trip test.
-- Recipe catalog remains empty by design pending record-level rights review. No credentials, model providers, or network service are required for the app's current workflows.
+- Recipe variants can be edited without replacing immutable revision history or stable ingredient-line IDs, duplicated within their existing family, and merged after divergent two-device edits. Duplicate variants retain source attribution and measured yields.
+- Family favorites are member-attributed household records. Removal writes a tombstone, divergent changes enter conflict review, and stale backups cannot restore a removed favorite. Recently made events are persisted, attributed to member/location, and transferred in household bundles.
+- The eight-record Wikipedia/IBA candidate has a bounded source review in [CATALOG_DATA_REVIEW.md](CATALOG_DATA_REVIEW.md). No recipe data is bundled until the remaining source-page history check is complete.
+- No credentials, model providers, or network service are required for the app's current workflows.
 
 ## Acceptance criteria
 
 | # | State | Evidence or remaining work |
 |---|---|---|
-| 1 | Partial | Offline-capable local storage, homes, pantry, measured recipe entry and scaling, availability, missing-one/two filters, and notes exist. Favorites and airplane-mode device validation remain. |
-| 2 | Partial | Versioned household JSON export/import is implemented with preview, cancel, size/reference validation, transactional stale-preview protection, combined-size validation, and an Android file-picker flow. Photo transfer and generic recipe CSV/JSON mapping remain. |
-| 3 | Partial | Revision-ancestry conflicts, explicit resolution, field merge, two-parent revisions, stale-import tombstone preservation, and an edit racing the commit boundary are tested. Tombstone-vs-concurrent-edit resolution remains. |
+| 1 | Partial | Offline-capable storage, manual recipe entry/edit/duplicate, favorites, recent-made history, scaling, availability filters, notes, and sync are implemented. Hosted emulator execution is pending; physical Pixel usability checks remain. |
+| 2 | Partial | Versioned household JSON export/import includes recipes, sources, notes, favorites, and recent-made events with preview, cancel, size/reference validation, and atomic apply. Photo transfer and generic recipe CSV/JSON mapping remain. |
+| 3 | Partial | Revision-ancestry conflicts, explicit resolution, field merge, two-parent recipe-edit revisions, favorite-removal tombstones, stale-import tombstone preservation, and edit-at-commit race are tested. Concurrent archive-vs-edit UX remains. |
 | 4 | Partial | Member-attributed tasting notes round-trip across two independent databases in the sync regression test. Device-level multi-user usability remains unverified. |
-| 5 | Partial | Duplicate reimport and stale branch no-rollback behavior are tested. Broader fast-forward/tombstone/import-history fixtures remain. |
+| 5 | Partial | Duplicate reimport, stale branch no-rollback, favorite removal, and recent-made event exchange are tested. Broader fast-forward/tombstone/import-history fixtures remain. |
 | 6 | Not implemented | Barcode capture, local barcode storage, product association, and offline manual fallback are pending. |
 | 7 | Partial | The app has no AI dependency. Provider configuration, disclosure, request limits, structured validation, and save-as-draft behavior are pending. |
 | 8 | Partial | Device-only preferences stay in a separate table; export tests verify API-key/coordinate/radius canaries are omitted. |
@@ -37,12 +40,12 @@ This is a snapshot of implementation and verification, not a release-readiness c
 
 1. Complete generic recipe CSV/JSON interchange with staging, field mapping, provenance review, and idempotent commits; household JSON exchange is implemented.
 2. Add robust tombstone-vs-edit conflict tests, validate import behavior for all record types and malformed/large bundles, and retain the tested skewed-clock two-device conflict path.
-3. Add missing recipe CRUD and discovery functions: edit/duplicate, favorites, and recent drinks. Measured entry, serving scaling, and missing-ingredient filters are implemented. Keep source association explicit and reversible.
+3. Add remaining discovery/history polish: recent-drink date display and favorite a specific variant if needed. Family favorites, recent-made events, edit/duplicate, measured entry, serving scaling, and missing-ingredient filters are implemented. Keep source association explicit and reversible.
 4. Add location permission and foreground home selection with persisted manual override; keep the At the shop destination fixed for the shop session.
 5. Add barcode scan capture with an always-available manual path. Any external lookup requires a separate coverage, privacy, and license review.
-6. Finish source-by-source recipe attribution and redistribution review before adding a bundled catalog.
-7. Validate migration from every supported database version, export/import failure rollback, and clock-skew/large-bundle cases.
-8. Run usability checks on Pixel 10 Pro and Pixel 8 or representative emulators, including airplane mode, denied/ambiguous location, large font, dark theme, and long content. Current cloud validation is build/test/lint only; no emulator/device UI run has been completed.
+6. Finish the candidate page-revision history review in [CATALOG_DATA_REVIEW.md](CATALOG_DATA_REVIEW.md) before adding its separately licensed pack. Do not bundle other sources under that review.
+7. Validate migrations from every supported database version, export/import failure rollback, and clock-skew/large-bundle cases. Populated v1-to-v3 and v3-to-v4 migrations are directly tested; the SQLDelight migration verifier did not finish in its bounded run because its object-diff worker remained in recursive comparison.
+8. Run usability checks on Pixel 10 Pro and Pixel 8, including denied/ambiguous location, large font, dark theme, and long content. A hosted headless emulator test now covers offline recipe entry and activity recreation; its first run is pending and does not replace physical-device checks.
 9. Check shared iOS framework linking on macOS/Xcode before building the future SwiftUI client. No iOS application shell or iOS runtime validation exists yet.
 
 AI provider integration, shipping a model, a catalog dataset, hosted sync, and an iOS release remain outside Phase 1. The assistant provider boundary remains a later optional feature; neither the Codex subscription nor an OpenAI API credential is assumed.

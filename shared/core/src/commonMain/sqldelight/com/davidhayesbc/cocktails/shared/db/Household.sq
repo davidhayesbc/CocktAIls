@@ -144,6 +144,15 @@ CREATE TABLE favorite (
     PRIMARY KEY(member_id, family_id)
 );
 
+CREATE TABLE drink_event (
+    id TEXT NOT NULL PRIMARY KEY,
+    variant_id TEXT NOT NULL REFERENCES recipe_variant(id),
+    member_id TEXT NOT NULL REFERENCES household_member(id),
+    location_id TEXT REFERENCES household_location(id),
+    made_at INTEGER NOT NULL,
+    revision_id TEXT REFERENCES record_revision(id)
+);
+
 insertHousehold:
 INSERT OR IGNORE INTO household(id, name, created_at) VALUES (?, ?, ?);
 
@@ -271,11 +280,52 @@ ORDER BY recipe_variant.title COLLATE NOCASE;
 
 selectRecipeIngredients:
 SELECT ingredient.id AS ingredient_id, ingredient.canonical_name, recipe_ingredient.amount_value, recipe_ingredient.amount_unit,
-       recipe_ingredient.optional
+       recipe_ingredient.preparation, recipe_ingredient.optional
 FROM recipe_ingredient
 JOIN ingredient ON ingredient.id = recipe_ingredient.ingredient_id
 WHERE recipe_ingredient.variant_id = ?
 ORDER BY recipe_ingredient.sort_order;
+
+updateRecipeVariantDraft:
+UPDATE recipe_variant SET title = ?, instructions = ?, servings = ?, style = ?, revision_id = ? WHERE id = ?;
+
+selectRecipeSourcesForVariant:
+SELECT id, source_name, source_record_id, source_url, license_name, attribution, modifications, imported_at
+FROM recipe_source WHERE variant_id = ? ORDER BY imported_at, id;
+
+insertRecipeSource:
+INSERT INTO recipe_source(id, variant_id, source_name, source_record_id, source_url, license_name, attribution, modifications, imported_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+selectFavorite:
+SELECT created_at FROM favorite WHERE member_id = ? AND family_id = ?;
+
+selectActiveFavoriteFamilies:
+SELECT favorite.family_id FROM favorite
+WHERE favorite.member_id = ? AND NOT EXISTS (
+    SELECT 1 FROM tombstone
+    WHERE tombstone.record_type = 'FAVORITE'
+      AND tombstone.record_id = length(favorite.member_id) || '#' || favorite.member_id || length(favorite.family_id) || '#' || favorite.family_id
+)
+ORDER BY favorite.created_at DESC, favorite.family_id;
+
+selectRecentlyMade:
+SELECT drink_event.id, drink_event.variant_id, recipe_variant.title, household_member.display_name,
+       drink_event.made_at, household_location.name AS location_name
+FROM drink_event
+JOIN recipe_variant ON recipe_variant.id = drink_event.variant_id
+JOIN household_member ON household_member.id = drink_event.member_id
+LEFT JOIN household_location ON household_location.id = drink_event.location_id
+WHERE NOT EXISTS (
+    SELECT 1 FROM tombstone
+    WHERE tombstone.record_type = 'RECIPE_VARIANT' AND tombstone.record_id = recipe_variant.id
+)
+AND NOT EXISTS (
+    SELECT 1 FROM tombstone
+    WHERE tombstone.record_type = 'COCKTAIL_FAMILY' AND tombstone.record_id = recipe_variant.family_id
+)
+ORDER BY drink_event.made_at DESC, drink_event.id DESC
+LIMIT ?;
 
 insertTastingNote:
 INSERT INTO tasting_note(id, variant_id, member_id, location_id, rating, note, created_at)
@@ -452,6 +502,23 @@ UPDATE tasting_note SET variant_id = ?, member_id = ?, location_id = ?, rating =
 
 insertFavoriteIgnore:
 INSERT OR IGNORE INTO favorite(member_id, family_id, created_at) VALUES (?, ?, ?);
+
+insertDrinkEvent:
+INSERT INTO drink_event(id, variant_id, member_id, location_id, made_at, revision_id)
+VALUES (?, ?, ?, ?, ?, ?);
+
+updateDrinkEventRevision:
+UPDATE drink_event SET revision_id = ? WHERE id = ?;
+
+selectAllDrinkEventsForBundle:
+SELECT id, variant_id, member_id, location_id, made_at, revision_id FROM drink_event;
+
+insertDrinkEventBundleIgnore:
+INSERT OR IGNORE INTO drink_event(id, variant_id, member_id, location_id, made_at, revision_id)
+VALUES (?, ?, ?, ?, ?, ?);
+
+updateDrinkEventBundle:
+UPDATE drink_event SET variant_id = ?, member_id = ?, location_id = ?, made_at = ?, revision_id = ? WHERE id = ?;
 
 updateFavorite:
 UPDATE favorite SET created_at = ? WHERE member_id = ? AND family_id = ?;

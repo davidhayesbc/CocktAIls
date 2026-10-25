@@ -14,7 +14,7 @@ jobs:
   verify-and-package:
     name: Verify shared core and package Android debug APK
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Check out source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -38,7 +38,31 @@ jobs:
           "$sdkmanager_path" --sdk_root="$ANDROID_HOME" --install \
             'platform-tools' \
             'platforms;android-36' \
-            'build-tools;36.0.0'
+            'build-tools;36.0.0' \
+            'emulator' \
+            'system-images;android-35;default;x86_64'
+
+      - name: Start Android SDK emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/cocktails-avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          printf 'no\n' | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd \
+            --force --name cocktails-ci --package 'system-images;android-35;default;x86_64' --device pixel_2
+          "$ANDROID_HOME/emulator/emulator" -avd cocktails-ci -no-window -no-audio -no-boot-anim \
+            -gpu swiftshader_indirect -accel auto -no-snapshot -no-metrics > "$RUNNER_TEMP/cocktails-emulator.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/cocktails-emulator.pid"
+          "$ANDROID_HOME/platform-tools/adb" wait-for-device
+          for attempt in $(seq 1 90); do
+            if [[ "$("$ANDROID_HOME/platform-tools/adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == "1" ]]; then
+              "$ANDROID_HOME/platform-tools/adb" shell svc wifi disable
+              exit 0
+            fi
+            sleep 2
+          done
+          cat "$RUNNER_TEMP/cocktails-emulator.log"
+          exit 1
 
       - name: Set build identity
         if: github.event_name != 'pull_request'
@@ -46,7 +70,7 @@ jobs:
         run: echo "COCKTAILS_VERSION_NAME=0.1.0-ci.${GITHUB_RUN_NUMBER}+${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
       - name: Run shared-core tests and build Android APK
-        run: ./gradlew --no-daemon :shared:core:compileCommonMainKotlinMetadata :shared:core:testDebugUnitTest :apps:androidApp:lintDebug :shared:core:lintDebug :apps:androidApp:assembleDebug
+        run: ./gradlew --no-daemon :shared:core:compileCommonMainKotlinMetadata :shared:core:testDebugUnitTest :apps:androidApp:connectedDebugAndroidTest :apps:androidApp:lintDebug :shared:core:lintDebug :apps:androidApp:assembleDebug
 
       - name: Upload debug APK artifact
         if: github.event_name != 'pull_request'

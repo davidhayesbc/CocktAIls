@@ -10,6 +10,7 @@ import com.davidhayesbc.cocktails.core.model.RecipeCard
 import com.davidhayesbc.cocktails.core.model.RecipeDetail
 import com.davidhayesbc.cocktails.core.model.RecipeLine
 import com.davidhayesbc.cocktails.core.model.RecipeIngredientDraft
+import com.davidhayesbc.cocktails.core.model.RecentDrink
 import com.davidhayesbc.cocktails.core.model.RecipeStyle
 import com.davidhayesbc.cocktails.core.model.RecipeVariantId
 import com.davidhayesbc.cocktails.core.model.TastingNote
@@ -104,6 +105,41 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         RecipeCard(CocktailFamilyId(it.family_id), it.canonical_name, it.variant_count.toInt())
     }
 
+    fun favoriteFamilyIds(memberId: String): Set<CocktailFamilyId> =
+        queries.selectActiveFavoriteFamilies(memberId).executeAsList().mapTo(mutableSetOf(), ::CocktailFamilyId)
+
+    fun isFamilyFavorite(memberId: String, familyId: CocktailFamilyId): Boolean = familyId in favoriteFamilyIds(memberId)
+
+    /** Favorites are household records; removal is a tombstone so stale backups cannot restore them. */
+    fun setFamilyFavorite(memberId: String, familyId: CocktailFamilyId, favorite: Boolean, nowMillis: Long): Boolean {
+        if (members().none { it.id == memberId } || recipeFamilies().none { it.familyId == familyId }) return false
+        if (isFamilyFavorite(memberId, familyId) == favorite) return true
+        val recordId = favoriteRecordId(memberId, familyId.value)
+        val createdAt = queries.selectFavorite(memberId, familyId.value).executeAsOneOrNull() ?: nowMillis
+        database.transaction {
+            val revisionId = writeRevision(
+                recordId,
+                "FAVORITE",
+                memberId,
+                nowMillis,
+                jsonObject(
+                    "memberId" to jsonString(memberId),
+                    "familyId" to jsonString(familyId.value),
+                    "createdAt" to createdAt.toString(),
+                    "deleted" to favorite.not().toString(),
+                ),
+            )
+            if (favorite) {
+                queries.insertFavoriteIgnore(memberId, familyId.value, createdAt)
+                queries.deleteTombstone(recordId)
+            } else {
+                queries.insertFavoriteIgnore(memberId, familyId.value, createdAt)
+                queries.insertTombstone(recordId, "FAVORITE", revisionId, nowMillis)
+            }
+        }
+        return true
+    }
+
     fun recipes(): List<RecipeDetail> = queries.selectRecipeVariants().executeAsList().map { row ->
         RecipeDetail(
             id = RecipeVariantId(row.variant_id),
@@ -114,7 +150,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             servings = row.servings,
             style = RecipeStyle.valueOf(row.style),
             ingredients = queries.selectRecipeIngredients(row.variant_id).executeAsList().map {
-                RecipeLine(IngredientId(it.ingredient_id), it.canonical_name, it.amount_value, it.amount_unit, it.optional != 0L)
+                RecipeLine(IngredientId(it.ingredient_id), it.canonical_name, it.amount_value, it.amount_unit, it.optional != 0L, it.preparation)
             },
         )
     }
@@ -144,15 +180,27 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         existingFamilyId: CocktailFamilyId? = null,
         servings: Double = 1.0,
         nowMillis: Long,
-    ): Boolean {
+    ): Boolean = createRecipeLines(title, ingredientLines, instructions, style, existingFamilyId, servings, nowMillis) != null
+
+    private fun createRecipeLines(
+        title: String,
+        ingredientLines: List<RecipeIngredientDraft>,
+        instructions: String,
+        style: RecipeStyle,
+        existingFamilyId: CocktailFamilyId?,
+        servings: Double,
+        nowMillis: Long,
+        copySourcesFromVariant: String? = null,
+    ): RecipeVariantId? {
         val cleanTitle = title.trim()
         val cleanLines = ingredientLines.map { line ->
             line.copy(name = line.name.trim(), unit = line.unit?.trim()?.takeIf(String::isNotEmpty), preparation = line.preparation?.trim()?.takeIf(String::isNotEmpty))
         }.filter { it.name.isNotEmpty() }
         if (cleanTitle.isEmpty() || cleanLines.isEmpty() || !servings.isFinite() || servings <= 0.0 ||
             cleanLines.any { it.amount != null && (!it.amount.isFinite() || it.amount <= 0.0) }
-        ) return false
+        ) return null
         val cleanIngredients = cleanLines.map(RecipeIngredientDraft::name).distinctBy { it.lowercase() }
+        var createdId: String? = null
         database.transaction {
             val householdId = queries.selectFirstHousehold().executeAsOne().id
             val memberId = preferredMemberId() ?: queries.selectFirstMember(householdId).executeAsOne().id
@@ -161,6 +209,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                 writeRevision(it, "COCKTAIL_FAMILY", memberId, nowMillis, jsonObject("name" to jsonString(cleanTitle)))
             }
             val variantId = newUuidV7(nowMillis)
+            createdId = variantId
             queries.insertRecipeVariant(variantId, familyId, cleanTitle, instructions.trim(), "", servings, style.name, nowMillis)
             cleanIngredients.forEachIndexed { index, name ->
                 queries.insertIngredientIgnore(newUuidV7(nowMillis + index + 1), name, "Other", nowMillis)
@@ -202,8 +251,116 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                 ),
             )
             queries.updateRecipeVariantRevision(revisionId, variantId)
+            copySourcesFromVariant?.let { sourceVariantId ->
+                queries.selectRecipeSourcesForVariant(sourceVariantId).executeAsList().forEachIndexed { index, source ->
+                    queries.insertRecipeSource(
+                        newUuidV7(nowMillis + index + 500), variantId, source.source_name, source.source_record_id,
+                        source.source_url, source.license_name, source.attribution, source.modifications, source.imported_at,
+                    )
+                }
+            }
         }
-        return true
+        return createdId?.let(::RecipeVariantId)
+    }
+
+    /** Edits the current recipe variant in place while retaining its prior immutable revision. */
+    fun editRecipeVariant(
+        variantId: RecipeVariantId,
+        title: String,
+        ingredientLines: List<RecipeIngredientDraft>,
+        instructions: String,
+        servings: Double,
+        style: RecipeStyle,
+        nowMillis: Long,
+    ): Boolean {
+        val existing = recipes().firstOrNull { it.id == variantId } ?: return false
+        val cleanTitle = title.trim()
+        val cleanInstructions = instructions.trim()
+        val cleanLines = ingredientLines.map { line ->
+            line.copy(
+                name = line.name.trim(),
+                unit = line.unit?.trim()?.takeIf(String::isNotEmpty),
+                preparation = line.preparation?.trim()?.takeIf(String::isNotEmpty),
+            )
+        }.filter { it.name.isNotEmpty() }
+        if (cleanTitle.isEmpty() || cleanLines.isEmpty() || !servings.isFinite() || servings <= 0.0 ||
+            cleanLines.any { it.amount != null && (!it.amount.isFinite() || it.amount <= 0.0) }
+        ) return false
+
+        val householdId = queries.selectFirstHousehold().executeAsOne().id
+        val memberId = preferredMemberId() ?: queries.selectFirstMember(householdId).executeAsOne().id
+        var edited = false
+        database.transaction {
+            if (queries.selectTombstone(variantId.value, "RECIPE_VARIANT").executeAsOneOrNull() != null) return@transaction
+            cleanLines.map(RecipeIngredientDraft::name).distinctBy { it.lowercase() }.forEachIndexed { index, name ->
+                queries.insertIngredientIgnore(newUuidV7(nowMillis + index + 1), name, "Other", nowMillis)
+            }
+            val ingredientIds = cleanLines.map(RecipeIngredientDraft::name).distinctBy { it.lowercase() }
+                .associate { name -> name.lowercase() to queries.selectIngredientsByName(name).executeAsOne() }
+            val availableLineIds = queries.selectAllRecipeIngredientsForBundle().executeAsList()
+                .filter { it.variant_id == variantId.value }
+                .groupBy { it.ingredient_id }
+                .mapValues { (_, rows) -> rows.map { it.id }.toMutableList() }
+            queries.deleteRecipeIngredientsForVariant(variantId.value)
+            cleanLines.forEachIndexed { index, line ->
+                val ingredientId = ingredientIds.getValue(line.name.lowercase())
+                val existingLineId = availableLineIds[ingredientId]?.removeFirstOrNull()
+                queries.insertRecipeIngredient(
+                    id = existingLineId ?: newUuidV7(nowMillis + index + 100),
+                    variant_id = variantId.value,
+                    ingredient_id = ingredientId,
+                    amount_value = line.amount,
+                    amount_unit = line.unit,
+                    preparation = line.preparation,
+                    optional = if (line.optional) 1L else 0L,
+                    sort_order = index.toLong(),
+                )
+            }
+            val ingredientPayload = "[${cleanLines.joinToString(",") { line ->
+                jsonObject(
+                    "name" to jsonString(line.name),
+                    "amount" to (line.amount?.toString() ?: "null"),
+                    "unit" to (line.unit?.let(::jsonString) ?: "null"),
+                    "preparation" to (line.preparation?.let(::jsonString) ?: "null"),
+                    "optional" to line.optional.toString(),
+                )
+            }}]"
+            val revisionId = writeRevision(
+                variantId.value,
+                "RECIPE_VARIANT",
+                memberId,
+                nowMillis,
+                jsonObject(
+                    "familyId" to jsonString(existing.familyId.value),
+                    "title" to jsonString(cleanTitle),
+                    "instructions" to jsonString(cleanInstructions),
+                    "style" to jsonString(style.name),
+                    "servings" to servings.toString(),
+                    "ingredients" to ingredientPayload,
+                ),
+            )
+            queries.updateRecipeVariantDraft(cleanTitle, cleanInstructions, servings, style.name, revisionId, variantId.value)
+            edited = true
+        }
+        return edited
+    }
+
+    /** Creates a sibling variant in the same explicit cocktail family and carries source attribution forward. */
+    fun duplicateRecipeVariant(variantId: RecipeVariantId, nowMillis: Long): RecipeVariantId? {
+        val sourceRecipe = recipes().firstOrNull { it.id == variantId } ?: return null
+        val duplicateId = createRecipeLines(
+            title = "${sourceRecipe.title} (copy)",
+            ingredientLines = sourceRecipe.ingredients.map {
+                RecipeIngredientDraft(it.name, it.amount, it.unit, it.preparation, it.optional)
+            },
+            instructions = sourceRecipe.instructions,
+            style = sourceRecipe.style,
+            existingFamilyId = sourceRecipe.familyId,
+            servings = sourceRecipe.servings,
+            nowMillis = nowMillis,
+            copySourcesFromVariant = variantId.value,
+        ) ?: return null
+        return duplicateId
     }
 
     fun addTastingNote(
@@ -239,6 +396,33 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         queries.selectTastingNotes(variantId.value).executeAsList().map {
             TastingNote(it.id, it.display_name, it.rating?.toInt(), it.note, it.created_at)
         }
+
+    fun markRecipeMade(variantId: RecipeVariantId, memberId: String, locationId: String?, nowMillis: Long): Boolean {
+        if (recipes().none { it.id == variantId } || members().none { it.id == memberId }) return false
+        if (locationId != null && locations().none { it.id == locationId }) return false
+        database.transaction {
+            val eventId = newUuidV7(nowMillis)
+            queries.insertDrinkEvent(eventId, variantId.value, memberId, locationId, nowMillis, null)
+            val revisionId = writeRevision(
+                eventId,
+                "DRINK_EVENT",
+                memberId,
+                nowMillis,
+                jsonObject(
+                    "variantId" to jsonString(variantId.value),
+                    "memberId" to jsonString(memberId),
+                    "locationId" to (locationId?.let(::jsonString) ?: "null"),
+                    "madeAt" to nowMillis.toString(),
+                ),
+            )
+            queries.updateDrinkEventRevision(revisionId, eventId)
+        }
+        return true
+    }
+
+    fun recentlyMade(limit: Int = 10): List<RecentDrink> = queries.selectRecentlyMade(limit.coerceIn(1, 100).toLong()).executeAsList().map {
+        RecentDrink(it.id, RecipeVariantId(it.variant_id), it.title, it.display_name, it.made_at, it.location_name)
+    }
 
     /** Hides a household recipe variant while retaining its rows and an exportable deletion revision. */
     fun archiveRecipeVariant(variantId: RecipeVariantId, nowMillis: Long): Boolean {
@@ -421,3 +605,6 @@ private fun jsonString(value: String): String = buildString {
     }
     append('"')
 }
+
+private fun favoriteRecordId(memberId: String, familyId: String): String =
+    "${memberId.length}#$memberId${familyId.length}#$familyId"

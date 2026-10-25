@@ -5,12 +5,62 @@ import com.davidhayesbc.cocktails.shared.db.CocktailsDatabase
 import com.davidhayesbc.cocktails.core.model.InventoryLevel
 import com.davidhayesbc.cocktails.core.model.IngredientId
 import com.davidhayesbc.cocktails.core.model.RecipeStyle
+import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class CocktailsSchemaMigrationTest {
+    @Test
+    fun migratesPopulatedVersionThreeDatabaseToFourAndStoresMadeEvents() {
+        var directory: File? = File(System.getProperty("user.dir")!!)
+        var versionThree: File? = null
+        while (directory != null && versionThree == null) {
+            versionThree = sequenceOf(
+                File(directory, "shared/core/src/commonMain/sqldelight/databases/3.db"),
+                File(directory, "src/commonMain/sqldelight/databases/3.db"),
+            ).firstOrNull(File::isFile)
+            directory = directory.parentFile
+        }
+        val sourceSnapshot = versionThree ?: error("Could not find the checked-in v3 schema snapshot from ${System.getProperty("user.dir")}")
+        val migratedFile = File.createTempFile("cocktails-v3-to-v4", ".db")
+        sourceSnapshot.copyTo(migratedFile, overwrite = true)
+        val driver = JdbcSqliteDriver("jdbc:sqlite:${migratedFile.absolutePath}")
+        try {
+            driver.execute(null, "INSERT INTO household VALUES (?, ?, ?)", 3) {
+                bindString(0, "household-v3"); bindString(1, "Our Bar"); bindLong(2, 1L)
+            }
+            driver.execute(null, "INSERT INTO household_member VALUES (?, ?, ?, ?)", 4) {
+                bindString(0, "member-v3"); bindString(1, "household-v3"); bindString(2, "You"); bindLong(3, 1L)
+            }
+            driver.execute(null, "INSERT INTO household_location VALUES (?, ?, ?, ?)", 4) {
+                bindString(0, "home-v3"); bindString(1, "household-v3"); bindString(2, "Home"); bindLong(3, 1L)
+            }
+            driver.execute(null, "INSERT INTO ingredient VALUES (?, ?, ?, ?)", 4) {
+                bindString(0, "gin-v3"); bindString(1, "Gin"); bindString(2, "Spirit"); bindLong(3, 1L)
+            }
+            driver.execute(null, "INSERT INTO inventory_item VALUES (?, ?, ?, ?, ?, ?)", 6) {
+                bindString(0, "stock-v3"); bindString(1, "home-v3"); bindString(2, "gin-v3")
+                bindString(3, "HALF"); bindLong(4, 12L); bindString(5, "member-v3")
+            }
+
+            CocktailsDatabase.Schema.migrate(driver, 3, 4)
+            val database = CocktailsDatabase(driver)
+            assertEquals("stock-v3", database.householdQueries.selectInventoryId("home-v3", "gin-v3").executeAsOne())
+            assertEquals("HALF", database.householdQueries.selectPantryForLocation("home-v3").executeAsOne().level)
+
+            val repository = LocalCocktailRepository(database)
+            assertTrue(repository.addRecipe("Gin Fizz", listOf("Gin"), "Shake and top.", RecipeStyle.LONG, nowMillis = 20))
+            val recipeId = repository.recipes().single().id
+            assertTrue(repository.markRecipeMade(recipeId, "member-v3", "home-v3", 30))
+            assertEquals(recipeId, repository.recentlyMade().single().recipeId)
+        } finally {
+            driver.close()
+            migratedFile.delete()
+        }
+    }
+
     @Test
     fun migratesVersionOnePantryWithoutChangingExistingIdsOrLevels() {
         val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)

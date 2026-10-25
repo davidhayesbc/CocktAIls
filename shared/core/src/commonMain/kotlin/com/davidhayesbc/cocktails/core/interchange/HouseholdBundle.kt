@@ -167,6 +167,7 @@ object BundleValidator {
     private val recordTypes = setOf(
         "HOUSEHOLD", "MEMBER", "LOCATION", "INGREDIENT", "PRODUCT", "INVENTORY_ITEM",
         "COCKTAIL_FAMILY", "RECIPE_VARIANT", "RECIPE_SOURCE", "TASTING_NOTE", "FAVORITE",
+        "DRINK_EVENT",
     )
 
     fun validate(bundle: HouseholdBundle): List<String> {
@@ -277,6 +278,10 @@ object BundleValidator {
                 }
                 "FAVORITE" -> {
                     reference("memberId", memberIds); reference("familyId", familyIds); requiredLong("createdAt")
+                }
+                "DRINK_EVENT" -> {
+                    reference("variantId", variantIds); reference("memberId", memberIds); requiredLong("madeAt")
+                    record.data.optionalString("locationId")?.let { if (it !in locationIds) errors += "DRINK_EVENT ${record.id} has an invalid locationId reference." }
                 }
             }
             record.data.optionalString("id")?.let { if (it != record.id) errors += "${record.type} ${record.id} has a mismatched internal ID." }
