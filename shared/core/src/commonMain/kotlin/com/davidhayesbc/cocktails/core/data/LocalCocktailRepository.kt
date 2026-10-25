@@ -13,6 +13,7 @@ import com.davidhayesbc.cocktails.core.model.RecipeIngredientDraft
 import com.davidhayesbc.cocktails.core.model.RecentDrink
 import com.davidhayesbc.cocktails.core.model.RecipeStyle
 import com.davidhayesbc.cocktails.core.model.RecipeVariantId
+import com.davidhayesbc.cocktails.core.model.RecipeSourceInfo
 import com.davidhayesbc.cocktails.core.model.TastingNote
 import com.davidhayesbc.cocktails.core.model.CocktailFamily
 import com.davidhayesbc.cocktails.core.model.RecipeIngredient
@@ -36,6 +37,16 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.put
+import kotlinx.serialization.encodeToString
 
 class LocalCocktailRepository(private val database: CocktailsDatabase) {
     private val queries = database.householdQueries
@@ -212,7 +223,69 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             ingredients = queries.selectRecipeIngredients(row.variant_id).executeAsList().map {
                 RecipeLine(IngredientId(it.ingredient_id), it.canonical_name, it.amount_value, it.amount_unit, it.optional != 0L, it.preparation)
             },
+            sources = queries.selectRecipeSourcesForVariant(row.variant_id).executeAsList().map { source ->
+                val sourceNotes = parseImportedSourceNotes(source.modifications)
+                RecipeSourceInfo(
+                    id = source.id,
+                    name = source.source_name,
+                    recordId = source.source_record_id,
+                    url = source.source_url,
+                    license = source.license_name,
+                    attribution = source.attribution,
+                    linked = sourceAssociationLinked(source.modifications),
+                    canReassociate = sourceNotes != null,
+                )
+            },
         )
+    }
+
+    /** Reversible, explicit link management for a previously imported source record. */
+    fun reassociateRecipeSource(sourceId: String, targetVariantId: RecipeVariantId?, nowMillis: Long): Boolean {
+        var changed = false
+        database.transaction {
+            val source = queries.selectRecipeSourceById(sourceId).executeAsOneOrNull() ?: return@transaction
+            val targetId = targetVariantId?.value ?: source.variant_id
+            val target = recipes().firstOrNull { it.id.value == targetId } ?: return@transaction
+            val staged = parseImportedSourceNotes(source.modifications) ?: return@transaction
+            if (targetVariantId != null) {
+                val targetLines = target.ingredients.map { RecipeIngredientDraft(it.name, it.amount, it.unit, it.preparation, it.optional) }
+                if (!hasSameRecipeFormulation(staged, target.servings, target.style, targetLines)) return@transaction
+            }
+            val shouldLink = targetVariantId != null
+            val alreadyLinked = sourceAssociationLinked(source.modifications)
+            if (source.variant_id == targetId && shouldLink == alreadyLinked) {
+                changed = true
+                return@transaction
+            }
+            if (queries.selectLatestRecordRevision(source.id, "RECIPE_SOURCE").executeAsOneOrNull() == null) {
+                // Establish the pre-change link as a base revision for imports created by older app builds.
+                val memberId = preferredMemberId() ?: queries.selectFirstMember(queries.selectFirstHousehold().executeAsOne().id).executeAsOne().id
+                writeRecipeSourceRevision(source.id, memberId, nowMillis)
+            }
+            val updatedModifications = withSourceAssociationState(source.modifications, shouldLink)
+            queries.updateRecipeSourceAssociation(targetId, updatedModifications, source.id)
+            val memberId = preferredMemberId() ?: queries.selectFirstMember(queries.selectFirstHousehold().executeAsOne().id).executeAsOne().id
+            writeRecipeSourceRevision(source.id, memberId, nowMillis)
+            changed = true
+        }
+        return changed
+    }
+
+    private fun writeRecipeSourceRevision(sourceId: String, memberId: String, nowMillis: Long) {
+        val source = queries.selectRecipeSourceById(sourceId).executeAsOne()
+        val payload = jsonObject(
+            "variantId" to jsonString(source.variant_id),
+            "sourceName" to jsonString(source.source_name),
+            "sourceRecordId" to (source.source_record_id?.let(::jsonString) ?: "null"),
+            "sourceUrl" to (source.source_url?.let(::jsonString) ?: "null"),
+            "licenseName" to (source.license_name?.let(::jsonString) ?: "null"),
+            "attribution" to (source.attribution?.let(::jsonString) ?: "null"),
+            "modifications" to (source.modifications?.let(::jsonString) ?: "null"),
+            "importedAt" to source.imported_at.toString(),
+        )
+        val revisionId = writeRevision(sourceId, "RECIPE_SOURCE", memberId, nowMillis, payload)
+        queries.selectRevisionHeads(sourceId, "RECIPE_SOURCE").executeAsList()
+            .filter { it != revisionId }.forEach { queries.updateRecordRevisionParentIgnore(revisionId, it) }
     }
 
     fun addRecipe(
@@ -358,8 +431,9 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                 var imported = 0
                 for ((recipe, sourceRecordId, existingVariantId) in prepared) {
                     if (existingVariantId != null) {
+                        val sourceId = newUuidV7(nowMillis + imported + 900)
                         queries.insertRecipeSource(
-                            newUuidV7(nowMillis + imported + 900),
+                            sourceId,
                             existingVariantId,
                             sourceName,
                             sourceRecordId,
@@ -369,6 +443,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                             importedRecipeSourceNotes(recipe),
                             nowMillis,
                         )
+                        writeRecipeSourceRevision(sourceId, memberId, nowMillis)
                         imported++
                         continue
                     }
@@ -423,8 +498,9 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                         ),
                     )
                     queries.updateRecipeVariantRevision(revisionId, variantId)
+                    val sourceId = newUuidV7(nowMillis + imported + 900)
                     queries.insertRecipeSource(
-                        newUuidV7(nowMillis + imported + 900),
+                        sourceId,
                         variantId,
                         sourceName,
                         sourceRecordId,
@@ -434,6 +510,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                         importedRecipeSourceNotes(recipe),
                         nowMillis,
                     )
+                    writeRecipeSourceRevision(sourceId, memberId, nowMillis)
                     imported++
                 }
                 // Preserve the ability to create a valid backup after the transaction commits.
@@ -974,6 +1051,7 @@ private fun importedRecipeSourceNotes(recipe: StagedRecipeImport): String {
         "sourceServings" to recipe.servings.toString(),
         "sourceFamily" to jsonString(recipe.familyName),
         "sourceIngredients" to ingredients,
+        "associationState" to jsonString("LINKED"),
         "normalization" to jsonString("Mapped from a user-provided file; any target-variant association was explicitly selected by the household."),
     )
 }
@@ -982,6 +1060,57 @@ private fun importFingerprintFromSourceNotes(modifications: String?): String? = 
     modifications?.let { Json.parseToJsonElement(it).jsonObject["importFingerprint"]?.jsonPrimitive?.contentOrNull }
 } catch (_: Exception) {
     null
+}
+
+private fun parseImportedSourceNotes(modifications: String?): StagedRecipeImport? {
+    return try {
+    val notes = modifications?.let { Json.parseToJsonElement(it).jsonObject } ?: return null
+    if (notes["importFormat"]?.jsonPrimitive?.contentOrNull != "cocktails.recipe-file-import.v1") return null
+    val title = notes["sourceTitle"]?.jsonPrimitive?.contentOrNull ?: return null
+    val style = notes["sourceStyle"]?.jsonPrimitive?.contentOrNull?.let { RecipeStyle.valueOf(it) } ?: return null
+    val ingredients = notes["sourceIngredients"]?.jsonArray?.map { element ->
+        val line = element.jsonObject
+        val amountField = line["amount"] ?: return null
+        val amount = if (amountField == JsonNull) null else amountField.jsonPrimitive.doubleOrNull ?: return null
+        fun optionalText(key: String): String? {
+            val value = line[key] ?: return null
+            return if (value == JsonNull) null else value.jsonPrimitive.contentOrNull ?: return null
+        }
+        RecipeIngredientDraft(
+            name = line["name"]?.jsonPrimitive?.contentOrNull ?: return null,
+            amount = amount,
+            unit = optionalText("unit"),
+            preparation = optionalText("preparation"),
+            optional = line["optional"]?.jsonPrimitive?.booleanOrNull ?: return null,
+        )
+    } ?: return null
+    StagedRecipeImport(
+        rowNumber = 0,
+        title = title,
+        ingredientLines = ingredients,
+        instructions = notes["sourceInstructions"]?.jsonPrimitive?.contentOrNull ?: return null,
+        servings = notes["sourceServings"]?.jsonPrimitive?.doubleOrNull ?: return null,
+        style = style,
+        familyName = notes["sourceFamily"]?.jsonPrimitive?.contentOrNull ?: title,
+        familyGroupKey = "source-association",
+        sourceRecordId = null,
+    )
+} catch (_: Exception) {
+    null
+}
+}
+
+private fun sourceAssociationLinked(modifications: String?): Boolean = try {
+    modifications?.let { Json.parseToJsonElement(it).jsonObject["associationState"]?.jsonPrimitive?.contentOrNull } != "UNLINKED"
+} catch (_: Exception) { true }
+
+private fun withSourceAssociationState(modifications: String?, linked: Boolean): String {
+    val existing = try {
+        modifications?.let { Json.parseToJsonElement(it).jsonObject } ?: JsonObject(emptyMap())
+    } catch (_: Exception) {
+        buildJsonObject { modifications?.let { put("previousModifications", JsonPrimitive(it)) } }
+    }
+    return Json.encodeToString(JsonObject.serializer(), JsonObject(existing + ("associationState" to JsonPrimitive(if (linked) "LINKED" else "UNLINKED"))))
 }
 
 private fun sameImportedRecipe(first: StagedRecipeImport, second: StagedRecipeImport): Boolean =

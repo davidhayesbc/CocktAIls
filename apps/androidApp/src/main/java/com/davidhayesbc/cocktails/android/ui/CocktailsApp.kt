@@ -568,6 +568,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             ) else RecipeDetailScreen(
                 modifier = Modifier.padding(contentPadding),
                 recipe = selectedRecipe!!,
+                otherRecipes = recipes,
                 notes = repository.tastingNotes(selectedRecipe!!.id),
                 isFavorite = selectedRecipe!!.familyId in favoriteFamilyIds,
                 onToggleFavorite = {
@@ -582,6 +583,14 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     }
                 },
                 onEdit = { recipeToEdit = selectedRecipe; showAddRecipe = true },
+                onChangeSourceAssociation = { sourceId, targetId ->
+                    val selectedId = selectedRecipe!!.id
+                    if (repository.reassociateRecipeSource(sourceId, targetId, System.currentTimeMillis())) {
+                        recipes = repository.recipes()
+                        selectedRecipe = recipes.firstOrNull { it.id == selectedId }
+                        true
+                    } else false
+                },
                 onDuplicate = {
                     repository.duplicateRecipeVariant(selectedRecipe!!.id, System.currentTimeMillis())?.let { duplicateId ->
                         recipes = repository.recipes()
@@ -1285,6 +1294,7 @@ private fun RecipeBrowser(
 private fun RecipeDetailScreen(
     modifier: Modifier,
     recipe: RecipeDetail,
+    otherRecipes: List<RecipeDetail>,
     notes: List<TastingNote>,
     isFavorite: Boolean,
     onToggleFavorite: () -> Unit,
@@ -1292,10 +1302,15 @@ private fun RecipeDetailScreen(
     onAddNote: () -> Unit,
     onMarkMade: () -> Unit,
     onEdit: () -> Unit,
+    onChangeSourceAssociation: (String, RecipeVariantId?) -> Boolean,
     onDuplicate: () -> Unit,
     onArchive: () -> Unit,
 ) {
     var confirmArchive by remember(recipe.id) { mutableStateOf(false) }
+    var sourceToManage by remember(recipe.id) { mutableStateOf<com.davidhayesbc.cocktails.core.model.RecipeSourceInfo?>(null) }
+    var sourceTargetId by remember(recipe.id) { mutableStateOf(recipe.id.value) }
+    var sourceMenuExpanded by remember { mutableStateOf(false) }
+    var sourceAssociationMessage by remember(recipe.id) { mutableStateOf<String?>(null) }
     var targetServings by remember(recipe.id) { mutableStateOf(recipe.servings.coerceAtLeast(0.5)) }
     LazyColumn(modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { TextButton(onClick = onBack) { Text("‹  Recipes") } }
@@ -1328,6 +1343,25 @@ private fun RecipeDetailScreen(
             item { Text("METHOD", style = MaterialTheme.typography.labelLarge) }
             item { Text(recipe.instructions, style = MaterialTheme.typography.bodyLarge) }
         }
+        if (recipe.sources.isNotEmpty()) {
+            item { Text("SOURCES", style = MaterialTheme.typography.labelLarge) }
+            items(recipe.sources, key = { "source-${it.id}" }) { source ->
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(source.name + if (source.linked) " · linked" else " · unlinked", style = MaterialTheme.typography.titleSmall)
+                        source.recordId?.let { Text("Source record: $it", style = MaterialTheme.typography.bodySmall) }
+                        source.license?.let { Text("License: $it", style = MaterialTheme.typography.bodySmall) }
+                        source.attribution?.let { Text("Attribution: $it", style = MaterialTheme.typography.bodySmall) }
+                        if (source.canReassociate) TextButton(onClick = {
+                            sourceToManage = source
+                            sourceTargetId = recipe.id.value
+                            sourceAssociationMessage = null
+                        }) { Text(if (source.linked) "Change or unlink association" else "Associate with a recipe") }
+                        else Text("This source has no checked formulation for reassociation.", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
         item {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                 Text("Tasting notes", style = MaterialTheme.typography.titleLarge)
@@ -1356,6 +1390,46 @@ private fun RecipeDetailScreen(
                 Button(onClick = { confirmArchive = false; onArchive() }) { Text("Archive") }
             },
             dismissButton = { TextButton(onClick = { confirmArchive = false }) { Text("Keep it") } },
+        )
+    }
+    sourceToManage?.let { source ->
+        val target = otherRecipes.firstOrNull { it.id.value == sourceTargetId }
+        AlertDialog(
+            onDismissRequest = { sourceToManage = null },
+            title = { Text(if (source.linked) "Change source association" else "Associate this source") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("${source.name}${source.recordId?.let { " · $it" } ?: ""}")
+                    OutlinedButton(onClick = { sourceMenuExpanded = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text("${target?.title ?: "Choose a recipe"} ▾")
+                    }
+                    DropdownMenu(expanded = sourceMenuExpanded, onDismissRequest = { sourceMenuExpanded = false }) {
+                        otherRecipes.forEach { candidate ->
+                            DropdownMenuItem(
+                                text = { Text(candidate.title) },
+                                onClick = { sourceTargetId = candidate.id.value; sourceMenuExpanded = false },
+                            )
+                        }
+                    }
+                    Text("The source name, license, attribution, imported details, and association history stay in household backups.", style = MaterialTheme.typography.bodySmall)
+                    sourceAssociationMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (target != null && onChangeSourceAssociation(source.id, target.id)) sourceToManage = null
+                    else sourceAssociationMessage = "That recipe has a different measured formulation or is no longer available. Choose a compatible version."
+                }) { Text("Associate") }
+            },
+            dismissButton = {
+                Row {
+                    if (source.linked) TextButton(onClick = {
+                        if (onChangeSourceAssociation(source.id, null)) sourceToManage = null
+                        else sourceAssociationMessage = "The source could not be unlinked. Try again."
+                    }) { Text("Unlink") }
+                    TextButton(onClick = { sourceToManage = null }) { Text("Cancel") }
+                }
+            },
         )
     }
 }

@@ -16,6 +16,7 @@ Household bundles preserve CocktAIls revisions and sync metadata, but they are n
 - Commit the complete batch in one database transaction. Reimporting an identical source record is a no-op; reusing a source name/record ID with changed content is an error, and no other rows in that batch are written.
 - When a stable source-record ID is absent, derive a deterministic content identity within the named source. This gives repeated imports of unchanged content idempotent behavior without claiming that title is a stable identifier.
 - Rows are grouped only when the user maps a family field. Linking an imported group to an existing cocktail family requires a separate explicit selection. Title similarity alone never associates recipes.
+- Attaching an imported source to a compatible existing recipe variant requires explicit selection and an exact measured-formulation match. Imported source associations can later be unlinked or moved to another compatible variant; the source record and its provenance remain intact. Each association change is recorded as a revision so household import can detect divergent choices.
 - Treat imported recipes as household-owned records with recorded source attribution; do not elevate a user-provided file into a bundled catalog or make a license-clearance claim on the user's behalf.
 
 ## Consequences

@@ -528,13 +528,17 @@ class HouseholdBundleStore internal constructor(
         val name = data.string("productName")
         val barcode = data.nullableString("barcode")
         val createdAt = data.long("createdAt")
-        val photoMimeType = data.nullableString("photoMimeType")
-        val photoBase64 = data.nullableString("photoBase64")
+        // Photo fields were added in bundle format v1 after the initial v1
+        // rollout. Missing fields mean "not supplied" and preserve an existing
+        // local photo; explicit nulls in newer bundles mean "no photo".
+        val hasPhotoFields = listOf("photoMimeType", "photoBase64", "photoSha256").any(data::containsKey)
+        val photoMimeType = data.optionalNullableString("photoMimeType")
+        val photoBase64 = data.optionalNullableString("photoBase64")
         val photoBytes = photoBase64?.let { decodePhotoBase64(it) ?: error("Product photo is not valid base64.") }
-        val photoSha = data.nullableString("photoSha256")
+        val photoSha = data.optionalNullableString("photoSha256")
         queries.insertProductIgnore(record.id, ingredientId, brand, name, barcode, createdAt)
         queries.updateProduct(ingredientId, brand, name, barcode, record.id)
-        queries.updateProductPhoto(photoMimeType, photoBytes, photoSha, record.id)
+        if (hasPhotoFields) queries.updateProductPhoto(photoMimeType, photoBytes, photoSha, record.id)
     }
 
     private fun writeInventory(record: BundleRecord) {
@@ -657,6 +661,7 @@ class HouseholdBundleStore internal constructor(
 
     private fun JsonObject.string(key: String): String = getValue(key).jsonPrimitive.content
     private fun JsonObject.nullableString(key: String): String? = getValue(key).let { if (it == JsonNull) null else it.jsonPrimitive.content }
+    private fun JsonObject.optionalNullableString(key: String): String? = this[key]?.let { if (it == JsonNull) null else it.jsonPrimitive.content }
     private fun JsonObject.long(key: String): Long = getValue(key).jsonPrimitive.longOrNull ?: error("Invalid integer field $key")
     private fun JsonObject.double(key: String): Double = getValue(key).jsonPrimitive.doubleOrNull ?: error("Invalid number field $key")
     private fun JsonObject.nullableLong(key: String): Long? = getValue(key).let { if (it == JsonNull) null else it.jsonPrimitive.longOrNull ?: error("Invalid integer field $key") }

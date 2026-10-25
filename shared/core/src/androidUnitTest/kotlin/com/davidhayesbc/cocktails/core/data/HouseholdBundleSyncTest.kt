@@ -152,7 +152,12 @@ Martini Classic,"Gin | 60 | ml; Vermouth | 10 | ml",Stir for 30 seconds,1,SHORT,
         assertEquals(1, repository.recipes().size)
         assertEquals("Martini", repository.recipes().single().title)
         assertEquals(listOf("Very dry"), repository.tastingNotes(original.id).map { it.note })
-        assertEquals(revisionsBefore, sourceDatabase.householdQueries.selectAllRevisionsForBundle().executeAsList().size)
+        assertEquals(revisionsBefore + 1, sourceDatabase.householdQueries.selectAllRevisionsForBundle().executeAsList().size)
+        assertEquals(0, sourceDatabase.householdQueries.selectRevisionParents(
+            sourceDatabase.householdQueries.selectLatestRecordRevision(
+                sourceDatabase.householdQueries.selectAllSourcesForBundle().executeAsList().single().id, "RECIPE_SOURCE",
+            ).executeAsOne(),
+        ).executeAsList().size)
 
         val secondSource = preview(
             """title,ingredients,method,yield,style,id
@@ -177,6 +182,30 @@ Dry Martini,"Gin | 60 | ml; Vermouth | 10 | ml",Stir until very cold,1,SHORT,dry
         assertEquals(1, repeated.skippedDuplicates)
         assertEquals(2, sourceDatabase.householdQueries.selectRecipeSourcesForVariant(original.id.value).executeAsList().size)
 
+        assertTrue(repository.addRecipeLines(
+            title = "Dry Martini Alternate",
+            ingredientLines = listOf(RecipeIngredientDraft("Gin", 60.0, "ml"), RecipeIngredientDraft("Vermouth", 10.0, "ml")),
+            instructions = "House method", style = RecipeStyle.SHORT, servings = 1.0, existingFamilyId = original.familyId, nowMillis = 55,
+        ))
+        val alternate = repository.recipes().single { it.title == "Dry Martini Alternate" }
+        val bookBSourceId = sourceDatabase.householdQueries.selectAllSourcesForBundle().executeAsList().single { it.source_record_id == "dry-1" }.id
+        val priorSourceHead = sourceDatabase.householdQueries.selectLatestRecordRevision(bookBSourceId, "RECIPE_SOURCE").executeAsOne()
+        assertTrue(repository.reassociateRecipeSource(bookBSourceId, alternate.id, 56))
+        assertEquals(1, sourceDatabase.householdQueries.selectRecipeSourcesForVariant(original.id.value).executeAsList().size)
+        assertEquals(1, sourceDatabase.householdQueries.selectRecipeSourcesForVariant(alternate.id.value).executeAsList().size)
+        val movedSourceHead = sourceDatabase.householdQueries.selectLatestRecordRevision(bookBSourceId, "RECIPE_SOURCE").executeAsOne()
+        assertEquals(listOf(priorSourceHead), sourceDatabase.householdQueries.selectRevisionParents(movedSourceHead).executeAsList())
+        assertTrue(repository.reassociateRecipeSource(bookBSourceId, null, 57))
+        assertFalse(repository.recipes().single { it.id == alternate.id }.sources.single().linked)
+        val reimportedUnlinked = assertIs<RecipeImportApplyResult.Applied>(repository.applyRecipeImport(
+            secondSource, provenanceB, emptyMap(), 58,
+        ))
+        assertEquals(0, reimportedUnlinked.imported)
+        assertEquals(1, reimportedUnlinked.skippedDuplicates)
+        assertFalse(repository.recipes().single { it.id == alternate.id }.sources.single().linked)
+        assertTrue(repository.reassociateRecipeSource(bookBSourceId, alternate.id, 59))
+        assertTrue(repository.recipes().single { it.id == alternate.id }.sources.single().linked)
+
         val incompatible = preview(
             """title,ingredients,method,yield,style,id
 Martini,"Vodka | 60 | ml; Vermouth | 10 | ml",Stir,1,SHORT,unrelated-1""",
@@ -186,14 +215,18 @@ Martini,"Vodka | 60 | ml; Vermouth | 10 | ml",Stir,1,SHORT,unrelated-1""",
         assertIs<RecipeImportApplyResult.Invalid>(repository.applyRecipeImport(
             incompatible, provenanceB.copy(sourceName = "Book C"), emptyMap(), 60, mapOf(2 to original.id),
         ))
-        assertEquals(1, repository.recipes().size)
+        assertEquals(2, repository.recipes().size)
 
         // The same title with a different formulation stays a separate family unless the user links it.
         assertIs<RecipeImportApplyResult.Applied>(repository.applyRecipeImport(
             incompatible, provenanceB.copy(sourceName = "Book C"), emptyMap(), 70,
         ))
-        assertEquals(2, repository.recipes().size)
+        assertEquals(3, repository.recipes().size)
         assertEquals(2, repository.recipeFamilies().size)
+        val unrelatedVariant = repository.recipes().single { it.ingredients.any { line -> line.name == "Vodka" } }
+        assertFalse(repository.reassociateRecipeSource(bookBSourceId, unrelatedVariant.id, 71))
+        assertEquals(alternate.id.value, sourceDatabase.householdQueries.selectAllSourcesForBundle().executeAsList()
+            .single { it.id == bookBSourceId }.variant_id)
 
         val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
         CocktailsDatabase.Schema.create(targetDriver)
@@ -205,7 +238,12 @@ Martini,"Vodka | 60 | ml; Vermouth | 10 | ml",Stir,1,SHORT,unrelated-1""",
         assertIs<ImportApplyResult.Applied>(target.applyHouseholdBundle(bundle, importPreview, emptyMap(), 90))
         val transferredOriginal = target.recipes().single { it.id == original.id }
         assertEquals("Very dry", target.tastingNotes(original.id).single().note)
-        assertEquals(2, targetDatabase.householdQueries.selectRecipeSourcesForVariant(original.id.value).executeAsList().size)
+        assertEquals(1, targetDatabase.householdQueries.selectRecipeSourcesForVariant(original.id.value).executeAsList().size)
+        val transferredBookB = targetDatabase.householdQueries.selectRecipeSourcesForVariant(alternate.id.value).executeAsOne()
+        assertEquals("Book B", transferredBookB.source_name)
+        assertTrue(transferredBookB.modifications?.contains("associationState") == true)
+        assertTrue(targetDatabase.householdQueries.selectAllRevisionsForBundle().executeAsList()
+            .any { it.record_id == bookBSourceId && it.record_type == "RECIPE_SOURCE" })
         assertEquals(original.familyId, transferredOriginal.familyId)
         sourceDriver.close()
         targetDriver.close()
@@ -264,6 +302,53 @@ Martini,"Vodka | 60 | ml; Vermouth | 10 | ml",Stir,1,SHORT,unrelated-1""",
         assertIs<ImportPreviewResult.Invalid>(target.previewHouseholdBundle(oversized))
         assertEquals(1, target.pantry(location.id).size)
         assertContentEquals(photo, target.pantry(location.id).single().photoData)
+        sourceDriver.close()
+        targetDriver.close()
+    }
+
+    @Test
+    fun prePhotoVersionOneProductBundleImportsAndDoesNotEraseLaterPhoto() {
+        val sourceDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        CocktailsDatabase.Schema.create(sourceDriver)
+        val sourceDatabase = CocktailsDatabase(sourceDriver)
+        val source = LocalCocktailRepository(sourceDatabase)
+        source.initialize(10)
+        val location = source.locations().single()
+        assertTrue(source.addIngredient("Gin", "Spirit", InventoryLevel.HALF, location.id, 20,
+            barcode = "0012345678905", brand = "Example", productName = "London Dry"))
+        val initial = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(source.exportHouseholdBundle(30))).bundle
+        val legacy = initial.copy(records = initial.records.map { record ->
+            if (record.type == "PRODUCT") record.copy(data = buildJsonObject {
+                record.data.forEach { (key, value) ->
+                    if (key !in setOf("photoMimeType", "photoBase64", "photoSha256")) put(key, value)
+                }
+            }) else record
+        })
+
+        val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        CocktailsDatabase.Schema.create(targetDriver)
+        val targetDatabase = CocktailsDatabase(targetDriver)
+        val target = LocalCocktailRepository(targetDatabase)
+        target.initialize(40)
+        val legacyPreview = assertIs<ImportPreviewResult.Valid>(target.previewHouseholdBundle(legacy)).preview
+        assertIs<ImportApplyResult.Applied>(target.applyHouseholdBundle(legacy, legacyPreview, emptyMap(), 50))
+        assertEquals(null, targetDatabase.householdQueries.selectAllProductsForBundle().executeAsOne().photo_data)
+        assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(target.exportHouseholdBundle(60)))
+
+        val photo = byteArrayOf(
+            0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 0xc0.toByte(), 0, 11, 8, 0, 1, 0, 1, 1, 1, 17, 0,
+            0xff.toByte(), 0xda.toByte(), 0, 8, 1, 1, 0, 0, 63, 0, 0, 0xff.toByte(), 0xd9.toByte(),
+        )
+        assertTrue(source.addIngredient("Gin", "Spirit", InventoryLevel.HALF, location.id, 70,
+            barcode = "0012345678905", brand = "Example", productName = "London Dry", productPhotoJpeg = photo))
+        val photoBundle = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(source.exportHouseholdBundle(80))).bundle
+        val photoPreview = assertIs<ImportPreviewResult.Valid>(target.previewHouseholdBundle(photoBundle)).preview
+        assertIs<ImportApplyResult.Applied>(target.applyHouseholdBundle(photoBundle, photoPreview, emptyMap(), 90))
+        assertContentEquals(photo, targetDatabase.householdQueries.selectAllProductsForBundle().executeAsOne().photo_data)
+
+        val stalePreview = assertIs<ImportPreviewResult.Valid>(target.previewHouseholdBundle(legacy)).preview
+        assertIs<ImportApplyResult.Applied>(target.applyHouseholdBundle(legacy, stalePreview, emptyMap(), 100))
+        assertContentEquals(photo, targetDatabase.householdQueries.selectAllProductsForBundle().executeAsOne().photo_data)
         sourceDriver.close()
         targetDriver.close()
     }

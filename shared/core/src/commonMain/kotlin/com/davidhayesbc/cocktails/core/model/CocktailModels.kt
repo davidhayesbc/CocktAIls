@@ -77,6 +77,18 @@ data class RecipeDetail(
     val servings: Double,
     val style: RecipeStyle,
     val ingredients: List<RecipeLine>,
+    val sources: List<RecipeSourceInfo> = emptyList(),
+)
+
+data class RecipeSourceInfo(
+    val id: String,
+    val name: String,
+    val recordId: String?,
+    val url: String?,
+    val license: String?,
+    val attribution: String?,
+    val linked: Boolean,
+    val canReassociate: Boolean,
 )
 
 data class RecipeLine(
