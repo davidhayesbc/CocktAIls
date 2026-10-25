@@ -49,4 +49,5 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4:1.9.3")
     debugImplementation("androidx.compose.ui:ui-test-manifest:1.9.3")
+    testImplementation("junit:junit:4.13.2")
 }

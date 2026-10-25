@@ -22,17 +22,16 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Observer
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.zxing.BarcodeFormat
-import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
 import com.google.zxing.MultiFormatReader
-import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.ReaderException
-import com.google.zxing.common.HybridBinarizer
 import com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -45,7 +44,7 @@ internal fun BarcodeScannerDialog(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
-    var scannerMessage by remember { mutableStateOf("Center a UPC or EAN barcode in the frame.") }
+    var scannerMessage by remember { mutableStateOf("Starting camera preview…") }
     val completed = remember { AtomicBoolean(false) }
     val currentOnDetected by rememberUpdatedState(onDetected)
     DisposableEffect(previewView, lifecycleOwner) {
@@ -60,7 +59,15 @@ internal fun BarcodeScannerDialog(
         var provider: ProcessCameraProvider? = null
         var analysis: ImageAnalysis? = null
         val disposed = AtomicBoolean(false)
+        val analyzerReady = AtomicBoolean(false)
+        var previewStateObserver: Observer<PreviewView.StreamState>? = null
         if (view != null) {
+            previewStateObserver = Observer { streamState ->
+                if (streamState == PreviewView.StreamState.STREAMING && !disposed.get()) {
+                    scannerMessage = "Camera preview is live. Center a UPC or EAN barcode in the frame."
+                }
+            }
+            view.previewStreamState.observe(lifecycleOwner, previewStateObserver!!)
             val providerFuture = ProcessCameraProvider.getInstance(context)
             providerFuture.addListener({
                 if (disposed.get()) return@addListener
@@ -75,26 +82,19 @@ internal fun BarcodeScannerDialog(
                         try {
                             if (disposed.get() || completed.get()) return@setAnalyzer
                             val plane = imageProxy.planes.firstOrNull() ?: return@setAnalyzer
-                            val width = imageProxy.width
-                            val height = imageProxy.height
-                            require(width > 0 && height > 0 && width.toLong() * height <= 4_000_000L) { "Camera frame size is not supported." }
-                            val yBytes = ByteArray(width * height)
-                            val yBuffer = plane.buffer.duplicate()
-                            val rowStride = plane.rowStride
-                            val pixelStride = plane.pixelStride
-                            for (row in 0 until height) {
-                                for (column in 0 until width) {
-                                    val sourceIndex = row * rowStride + column * pixelStride
-                                    require(sourceIndex < yBuffer.limit()) { "Camera frame layout is invalid." }
-                                    yBytes[row * width + column] = yBuffer.get(sourceIndex)
-                                }
-                            }
-                            val source = PlanarYUVLuminanceSource(yBytes, width, height, 0, 0, width, height, false)
-                            var bitmap = BinaryBitmap(HybridBinarizer(source))
-                            repeat((imageProxy.imageInfo.rotationDegrees / 90).coerceIn(0, 3)) {
-                                bitmap = bitmap.rotateCounterClockwise()
-                            }
-                            runCatching { reader.decodeWithState(bitmap).text }
+                            val crop = imageProxy.cropRect
+                            val frame = copyLumaPlane(
+                                buffer = plane.buffer,
+                                imageWidth = imageProxy.width,
+                                imageHeight = imageProxy.height,
+                                rowStride = plane.rowStride,
+                                pixelStride = plane.pixelStride,
+                                cropLeft = crop.left,
+                                cropTop = crop.top,
+                                cropWidth = crop.width(),
+                                cropHeight = crop.height(),
+                            )
+                            runCatching { decodeBarcodeFrame(reader, frame, imageProxy.imageInfo.rotationDegrees) }
                                 .onSuccess { value ->
                                     if (normalizeGtinForLookup(value) == null) {
                                         ContextCompat.getMainExecutor(context).execute {
@@ -107,7 +107,11 @@ internal fun BarcodeScannerDialog(
                                     }
                                 }
                                 .onFailure { error ->
-                                    if (error !is ReaderException) {
+                                    if (error is ReaderException && analyzerReady.compareAndSet(false, true)) {
+                                        ContextCompat.getMainExecutor(context).execute {
+                                            if (!disposed.get()) scannerMessage = "Camera is live and barcode frames are being analyzed."
+                                        }
+                                    } else if (error !is ReaderException) {
                                         ContextCompat.getMainExecutor(context).execute {
                                             if (!disposed.get()) scannerMessage = "Scanner error. You can enter the code manually instead."
                                         }
@@ -132,6 +136,7 @@ internal fun BarcodeScannerDialog(
             disposed.set(true)
             analysis?.clearAnalyzer()
             provider?.unbindAll()
+            previewStateObserver?.let { observer -> view?.previewStreamState?.removeObserver(observer) }
             analysisExecutor.shutdownNow()
         }
     }
@@ -143,7 +148,7 @@ internal fun BarcodeScannerDialog(
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 AndroidView(
                     factory = { viewContext -> PreviewView(viewContext).also { previewView = it } },
-                    modifier = Modifier.fillMaxWidth().height(300.dp),
+                    modifier = Modifier.fillMaxWidth().height(300.dp).testTag("barcode-camera-preview"),
                 )
                 Text(scannerMessage, style = MaterialTheme.typography.bodySmall)
             }

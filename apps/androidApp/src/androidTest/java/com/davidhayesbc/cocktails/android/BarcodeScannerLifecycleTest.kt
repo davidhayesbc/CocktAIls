@@ -51,6 +51,11 @@ class BarcodeScannerLifecycleTest {
         composeRule.onNodeWithText("Scan barcode").performClick()
         clickPermissionPrompt("while using the app", "only this time", "allow")
         composeRule.onNodeWithText("Scan a bottle").assertIsDisplayed()
+        composeRule.onNodeWithTag("barcode-camera-preview").assertIsDisplayed()
+        composeRule.waitUntil(timeoutMillis = 30_000) {
+            composeRule.onAllNodesWithText("Camera is live and barcode frames are being analyzed.")
+                .fetchSemanticsNodes().isNotEmpty()
+        }
         composeRule.activityRule.scenario.onActivity { activity -> activity.onBackPressedDispatcher.onBackPressed() }
         composeRule.waitForIdle()
         composeRule.onAllNodesWithText("Scan a bottle").assertCountEquals(0)
