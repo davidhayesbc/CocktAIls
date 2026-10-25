@@ -1,7 +1,9 @@
 package com.davidhayesbc.cocktails.android
 
 import android.Manifest
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.os.Build
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -33,6 +35,33 @@ import org.junit.runner.RunWith
 class OfflineRecipeSmokeTest {
     @get:Rule
     val composeRule = createAndroidComposeRule<MainActivity>()
+
+    @Test
+    fun displayedVersionMatchesInstalledPackageMetadata() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        @Suppress("DEPRECATION")
+        val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+        val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            packageInfo.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            packageInfo.versionCode.toLong()
+        }
+        val versionName = packageInfo.versionName ?: "Unknown"
+        val isDebuggable = context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+        val buildStatus = when {
+            isDebuggable -> "Debug build"
+            versionName.contains("preview", ignoreCase = true) -> "Preview build"
+            else -> "Installed build"
+        }
+
+        composeRule.onNodeWithText("More").performClick()
+        composeRule.onNodeWithTag("household-screen-scroll").performScrollToNode(hasText("App version"))
+        composeRule.onNodeWithTag("app-version").assertIsDisplayed()
+            .assertTextEquals("$versionName · version code $versionCode")
+        composeRule.onNodeWithTag("household-screen-scroll").performScrollToNode(hasText(buildStatus))
+        composeRule.onNodeWithTag("app-build-status").assertIsDisplayed().assertTextEquals(buildStatus)
+    }
 
     @Test
     fun canCreateRecipeOfflineAndFindItAfterActivityRecreation() {

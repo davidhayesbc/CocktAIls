@@ -2,12 +2,14 @@ package com.davidhayesbc.cocktails.android.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.pm.ApplicationInfo
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
 import android.net.Uri
+import android.os.Build
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -133,6 +135,12 @@ private enum class Page(val label: String) {
 private const val MAX_SELECTED_PHOTO_BYTES = 20 * 1024 * 1024
 private const val MAX_PRODUCT_PHOTO_DIMENSION = 1440
 
+private data class InstalledAppVersion(
+    val name: String,
+    val code: Long,
+    val buildStatus: String,
+)
+
 /** Reads only the user-selected URI and re-encodes pixels, which removes embedded metadata. */
 private fun readAndCompressProductPhoto(context: Context, uri: Uri): ByteArray {
     val sourceBytes = context.contentResolver.openInputStream(uri)?.use { input ->
@@ -202,6 +210,24 @@ private sealed interface LocationAction {
 @Composable
 fun CocktailsApp(repository: LocalCocktailRepository) {
     val context = LocalContext.current
+    val installedAppVersion = remember(context) {
+        @Suppress("DEPRECATION")
+        val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+        val versionName = packageInfo.versionName ?: "Unknown"
+        val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            packageInfo.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            packageInfo.versionCode.toLong()
+        }
+        val isDebuggable = context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+        val buildStatus = when {
+            isDebuggable -> "Debug build"
+            versionName.contains("preview", ignoreCase = true) -> "Preview build"
+            else -> "Installed build"
+        }
+        InstalledAppVersion(versionName, versionCode, buildStatus)
+    }
     val coroutineScope = rememberCoroutineScope()
     var locations by remember(repository) { mutableStateOf(repository.locations()) }
     var members by remember(repository) { mutableStateOf(repository.members()) }
@@ -671,6 +697,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 shareMessage = shareMessage,
                 onOpenLocationSettings = { showLocationSettings = true },
                 onOpenDiagnostics = { showDiagnostics = true },
+                installedAppVersion = installedAppVersion,
             )
         }
     }
@@ -1678,9 +1705,10 @@ private fun HouseholdScreen(
     onImport: () -> Unit,
     onImportRecipes: () -> Unit,
     shareMessage: String?,
+    installedAppVersion: InstalledAppVersion,
 ) {
     Column(
-        modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).testTag("household-screen-scroll").padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text("Household", style = MaterialTheme.typography.headlineMedium)
@@ -1698,6 +1726,9 @@ private fun HouseholdScreen(
         OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth()) { Text("Import household backup") }
         OutlinedButton(onClick = onImportRecipes, modifier = Modifier.fillMaxWidth()) { Text("Import recipes from CSV or JSON") }
         OutlinedButton(onClick = onOpenDiagnostics, modifier = Modifier.fillMaxWidth()) { Text("View or export diagnostics") }
+        Text("App version", style = MaterialTheme.typography.titleLarge)
+        Text("${installedAppVersion.name} · version code ${installedAppVersion.code}", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.testTag("app-version"))
+        Text(installedAppVersion.buildStatus, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("app-build-status"), color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("Import previews never change your data. Each phone can share a backup using Nearby Share, Drive, or another file app.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (shareMessage != null) Text(shareMessage, style = MaterialTheme.typography.bodyMedium)
     }
