@@ -7,7 +7,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -17,6 +19,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -39,6 +42,10 @@ import com.davidhayesbc.cocktails.core.data.LocalCocktailRepository
 import com.davidhayesbc.cocktails.core.model.HomeLocation
 import com.davidhayesbc.cocktails.core.model.InventoryLevel
 import com.davidhayesbc.cocktails.core.model.PantryEntry
+import com.davidhayesbc.cocktails.core.model.RecipeDetail
+import com.davidhayesbc.cocktails.core.model.RecipeStyle
+import com.davidhayesbc.cocktails.core.model.TastingNote
+import com.davidhayesbc.cocktails.core.model.ShopSuggestion
 
 private enum class Page(val label: String) {
     MAKE("Make"),
@@ -49,13 +56,18 @@ private enum class Page(val label: String) {
 
 @Composable
 fun CocktailsApp(repository: LocalCocktailRepository) {
-    val locations = remember(repository) { repository.locations() }
-    var selectedLocationId by remember(locations) {
+    var locations by remember(repository) { mutableStateOf(repository.locations()) }
+    var selectedLocationId by remember(repository) {
         mutableStateOf(locations.firstOrNull()?.id.orEmpty())
     }
     var selectedPage by remember { mutableStateOf(Page.MAKE) }
     var showShop by remember { mutableStateOf(false) }
     var showAddIngredient by remember { mutableStateOf(false) }
+    var showAddRecipe by remember { mutableStateOf(false) }
+    var showAddLocation by remember { mutableStateOf(false) }
+    var selectedRecipe by remember { mutableStateOf<RecipeDetail?>(null) }
+    var showAddNote by remember { mutableStateOf(false) }
+    var recipes by remember { mutableStateOf(repository.recipes()) }
     var pantry by remember { mutableStateOf(emptyList<PantryEntry>()) }
 
     LaunchedEffect(selectedLocationId) {
@@ -88,17 +100,22 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 modifier = Modifier.padding(contentPadding),
                 location = locations.firstOrNull { it.id == selectedLocationId },
                 pantry = pantry,
+                recommendations = repository.shopSuggestions(pantry),
                 onBack = { showShop = false },
             )
             selectedPage == Page.MAKE -> MakeScreen(
                 modifier = Modifier.padding(contentPadding),
-                location = locations.firstOrNull { it.id == selectedLocationId },
+                locations = locations,
+                selectedLocationId = selectedLocationId,
+                onLocationSelected = { selectedLocationId = it },
                 pantry = pantry,
                 onAddIngredients = {
                     selectedPage = Page.MY_BAR
                     showAddIngredient = true
                 },
                 onOpenShop = { showShop = true },
+                recipes = recipes,
+                onBrowseRecipes = { selectedPage = Page.RECIPES },
             )
             selectedPage == Page.MY_BAR -> MyBarScreen(
                 modifier = Modifier.padding(contentPadding),
@@ -107,6 +124,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 pantry = pantry,
                 onLocationSelected = { selectedLocationId = it },
                 onAddIngredient = { showAddIngredient = true },
+                onAddLocation = { showAddLocation = true },
                 onLevelSelected = { entry, level ->
                     repository.updateInventoryLevel(
                         ingredientId = entry.ingredientId,
@@ -118,10 +136,18 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 },
                 onOpenShop = { showShop = true },
             )
-            selectedPage == Page.RECIPES -> PlaceholderScreen(
+            selectedPage == Page.RECIPES -> if (selectedRecipe == null) RecipeBrowser(
                 modifier = Modifier.padding(contentPadding),
-                title = "Recipes",
-                message = "Your recipe collection will live here. The first local catalog is being prepared.",
+                recipes = recipes,
+                pantry = pantry,
+                onAddRecipe = { showAddRecipe = true },
+                onSelectRecipe = { selectedRecipe = it },
+            ) else RecipeDetailScreen(
+                modifier = Modifier.padding(contentPadding),
+                recipe = selectedRecipe!!,
+                notes = repository.tastingNotes(selectedRecipe!!.id),
+                onBack = { selectedRecipe = null },
+                onAddNote = { showAddNote = true },
             )
             else -> PlaceholderScreen(
                 modifier = Modifier.padding(contentPadding),
@@ -149,16 +175,72 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             },
         )
     }
+
+    if (showAddRecipe) {
+        AddRecipeDialog(
+            onDismiss = { showAddRecipe = false },
+            onSave = { title, ingredientText, instructions, style ->
+                val saved = repository.addRecipe(
+                    title = title,
+                    ingredientNames = ingredientText.lines(),
+                    instructions = instructions,
+                    style = style,
+                    nowMillis = System.currentTimeMillis(),
+                )
+                if (saved) {
+                    recipes = repository.recipes()
+                    showAddRecipe = false
+                }
+            },
+        )
+    }
+
+    if (showAddLocation) {
+        AddLocationDialog(
+            onDismiss = { showAddLocation = false },
+            onSave = { name ->
+                repository.addLocation(name, System.currentTimeMillis())?.let { location ->
+                    locations = repository.locations()
+                    selectedLocationId = location.id
+                    showAddLocation = false
+                }
+            },
+        )
+    }
+
+    if (showAddNote && selectedRecipe != null) {
+        AddNoteDialog(
+            onDismiss = { showAddNote = false },
+            onSave = { rating, note ->
+                repository.addTastingNote(
+                    variantId = selectedRecipe!!.id,
+                    rating = rating,
+                    note = note,
+                    locationId = selectedLocationId.ifEmpty { null },
+                    nowMillis = System.currentTimeMillis(),
+                )
+                showAddNote = false
+            },
+        )
+    }
 }
 
 @Composable
 private fun MakeScreen(
     modifier: Modifier,
-    location: HomeLocation?,
+    locations: List<HomeLocation>,
+    selectedLocationId: String,
+    onLocationSelected: (String) -> Unit,
     pantry: List<PantryEntry>,
     onAddIngredients: () -> Unit,
     onOpenShop: () -> Unit,
+    recipes: List<RecipeDetail>,
+    onBrowseRecipes: () -> Unit,
 ) {
+    val availableIngredients = pantry.filter { it.level != InventoryLevel.OUT }.map { it.name.lowercase() }.toSet()
+    val readyRecipes = recipes.filter { recipe -> recipe.ingredients.filterNot { it.optional }.all { it.name.lowercase() in availableIngredients } }
+        .distinctBy { it.familyId }
+    var locationMenuExpanded by remember { mutableStateOf(false) }
     Column(
         modifier = modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 24.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
@@ -171,7 +253,14 @@ private fun MakeScreen(
         ) {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                 Text("YOUR BAR", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                Text(location?.name ?: "Choose a home", style = MaterialTheme.typography.titleMedium)
+                TextButton(onClick = { locationMenuExpanded = true }) {
+                    Text("${locations.firstOrNull { it.id == selectedLocationId }?.name ?: "Choose a home"}  ▾", style = MaterialTheme.typography.titleMedium)
+                }
+                DropdownMenu(expanded = locationMenuExpanded, onDismissRequest = { locationMenuExpanded = false }) {
+                    locations.forEach { location ->
+                        DropdownMenuItem(text = { Text(location.name) }, onClick = { onLocationSelected(location.id); locationMenuExpanded = false })
+                    }
+                }
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -197,16 +286,21 @@ private fun MakeScreen(
             }
         } else {
             Text("${pantry.size} ingredients tracked here", style = MaterialTheme.typography.bodyLarge)
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            ) {
-                Text(
-                    "The recipe catalog is not installed yet. Your pantry is saved on this device.",
-                    modifier = Modifier.padding(18.dp),
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+            if (readyRecipes.isEmpty()) {
+                Text("No saved recipes are ready with this bar yet.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                Text("Ready to make", style = MaterialTheme.typography.titleLarge)
+                readyRecipes.take(4).forEach { recipe ->
+                    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                        Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(recipe.title, style = MaterialTheme.typography.titleMedium)
+                            Spacer(Modifier.weight(1f))
+                            Text(recipe.style.label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
             }
+            TextButton(onClick = onBrowseRecipes) { Text("Browse all recipes →") }
         }
     }
 }
@@ -219,6 +313,7 @@ private fun MyBarScreen(
     pantry: List<PantryEntry>,
     onLocationSelected: (String) -> Unit,
     onAddIngredient: () -> Unit,
+    onAddLocation: () -> Unit,
     onLevelSelected: (PantryEntry, InventoryLevel) -> Unit,
     onOpenShop: () -> Unit,
 ) {
@@ -229,7 +324,10 @@ private fun MyBarScreen(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             Text("My Bar", style = MaterialTheme.typography.headlineMedium)
-            TextButton(onClick = onAddIngredient) { Text("＋ Add") }
+            Row {
+                TextButton(onClick = onAddLocation) { Text("＋ Home") }
+                TextButton(onClick = onAddIngredient) { Text("＋ Add") }
+            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedButton(onClick = { locationMenuExpanded = true }) {
@@ -362,10 +460,25 @@ private fun AddIngredientDialog(
 }
 
 @Composable
+private fun AddLocationDialog(onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add a home") },
+        text = {
+            OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Home or bar name") }, singleLine = true)
+        },
+        confirmButton = { Button(onClick = { onSave(name) }, enabled = name.isNotBlank()) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
 private fun ShopScreen(
     modifier: Modifier,
     location: HomeLocation?,
     pantry: List<PantryEntry>,
+    recommendations: List<ShopSuggestion>,
     onBack: () -> Unit,
 ) {
     val restock = pantry.filter { it.level == InventoryLevel.LOW || it.level == InventoryLevel.OUT || it.level == InventoryLevel.HALF }
@@ -379,10 +492,11 @@ private fun ShopScreen(
         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Spirits that unlock the most drinks", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Rankings will appear when the local recipe catalog is available. Counts will include only cocktail families you can fully make.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+                if (recommendations.isEmpty()) {
+                    Text("Add recipes and mark their spirit ingredients to see what would unlock new families.", style = MaterialTheme.typography.bodyMedium)
+                } else recommendations.forEachIndexed { index, item ->
+                    Text("${index + 1}. ${item.spiritName} · ${item.newlyMakeableFamilies} new drink families", style = MaterialTheme.typography.bodyLarge)
+                }
             }
         }
         Text("RESTOCK SOON", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
@@ -394,6 +508,168 @@ private fun ShopScreen(
             }
         }
     }
+}
+
+@Composable
+private fun RecipeBrowser(
+    modifier: Modifier,
+    recipes: List<RecipeDetail>,
+    pantry: List<PantryEntry>,
+    onAddRecipe: () -> Unit,
+    onSelectRecipe: (RecipeDetail) -> Unit,
+) {
+    var search by remember { mutableStateOf("") }
+    var selectedStyle by remember { mutableStateOf<RecipeStyle?>(null) }
+    var onlyMakeable by remember { mutableStateOf(false) }
+    val availableNames = pantry.filter { it.level != InventoryLevel.OUT }.map { it.name.lowercase() }.toSet()
+    fun missingCount(recipe: RecipeDetail) = recipe.ingredients.count { !it.optional && it.name.lowercase() !in availableNames }
+    val matching = recipes.filter { recipe ->
+        (selectedStyle == null || recipe.style == selectedStyle) &&
+            (!onlyMakeable || missingCount(recipe) == 0) &&
+            (search.isBlank() || recipe.title.contains(search, ignoreCase = true) || recipe.ingredients.any { it.name.contains(search, true) })
+    }
+    val families = matching.groupBy { it.familyId }
+    Column(modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+            Text("Recipes", style = MaterialTheme.typography.headlineMedium)
+            TextButton(onClick = onAddRecipe) { Text("＋ Add recipe") }
+        }
+        OutlinedTextField(
+            value = search,
+            onValueChange = { search = it },
+            label = { Text("Search recipes or ingredients") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+            FilterChip(selected = selectedStyle == null, onClick = { selectedStyle = null }, label = { Text("All styles") })
+            FilterChip(selected = onlyMakeable, onClick = { onlyMakeable = !onlyMakeable }, label = { Text("Ready with my bar") })
+            listOf(RecipeStyle.SHORT, RecipeStyle.LONG, RecipeStyle.SOUR, RecipeStyle.BITTER, RecipeStyle.SWEET, RecipeStyle.HOT, RecipeStyle.COLD).forEach { style ->
+                FilterChip(selected = selectedStyle == style, onClick = { selectedStyle = if (selectedStyle == style) null else style }, label = { Text(style.label) })
+            }
+        }
+        if (recipes.isEmpty()) {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Your recipe book starts here", style = MaterialTheme.typography.titleLarge)
+                    Text("Add your own drinks now. An attributed offline recipe pack can be added once its source records are cleared.")
+                    Button(onClick = onAddRecipe) { Text("Add a recipe") }
+                }
+            }
+        } else if (matching.isEmpty()) {
+            Text("No recipes match these filters.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                families.forEach { (_, variants) ->
+                    item(key = variants.first().familyId.value) {
+                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                            Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(variants.first().title, style = MaterialTheme.typography.titleMedium)
+                                if (variants.size > 1) Text("${variants.size} versions", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                                Text(
+                                    variants.minOf(::missingCount).let { if (it == 0) "Ready to make" else "Missing $it ingredient${if (it == 1) "" else "s"}" },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                variants.forEach { variant ->
+                                    TextButton(onClick = { onSelectRecipe(variant) }) {
+                                        Text(if (variants.size == 1) "Open recipe" else variant.title)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecipeDetailScreen(
+    modifier: Modifier,
+    recipe: RecipeDetail,
+    notes: List<TastingNote>,
+    onBack: () -> Unit,
+    onAddNote: () -> Unit,
+) {
+    Column(modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        TextButton(onClick = onBack) { Text("‹  Recipes") }
+        Text(recipe.title, style = MaterialTheme.typography.headlineMedium)
+        Text("${recipe.style.label} · ${recipe.servings.toInt()} serving", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        Text("INGREDIENTS", style = MaterialTheme.typography.labelLarge)
+        recipe.ingredients.forEach { line ->
+            Text("• ${line.name}${if (line.optional) " (optional)" else ""}", style = MaterialTheme.typography.bodyLarge)
+        }
+        if (recipe.instructions.isNotBlank()) {
+            Text("METHOD", style = MaterialTheme.typography.labelLarge)
+            Text(recipe.instructions, style = MaterialTheme.typography.bodyLarge)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+            Text("Tasting notes", style = MaterialTheme.typography.titleLarge)
+            TextButton(onClick = onAddNote) { Text("＋ Add note") }
+        }
+        if (notes.isEmpty()) Text("No notes yet. Add how it tasted for next time.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        else notes.forEach { note ->
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("${note.memberName}${note.rating?.let { " · $it/5" } ?: ""}", style = MaterialTheme.typography.titleSmall)
+                    if (note.note.isNotBlank()) Text(note.note)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AddRecipeDialog(onDismiss: () -> Unit, onSave: (String, String, String, RecipeStyle) -> Unit) {
+    var title by remember { mutableStateOf("") }
+    var ingredients by remember { mutableStateOf("") }
+    var instructions by remember { mutableStateOf("") }
+    var style by remember { mutableStateOf(RecipeStyle.OTHER) }
+    var styleMenu by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add a recipe") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(title, { title = it }, label = { Text("Drink name") }, singleLine = true)
+                OutlinedTextField(ingredients, { ingredients = it }, label = { Text("Ingredients · one per line") }, minLines = 3)
+                OutlinedTextField(instructions, { instructions = it }, label = { Text("Method (optional)") }, minLines = 2)
+                TextButton(onClick = { styleMenu = true }) { Text("Style: ${style.label} ▾") }
+                DropdownMenu(expanded = styleMenu, onDismissRequest = { styleMenu = false }) {
+                    RecipeStyle.entries.forEach { option ->
+                        DropdownMenuItem(text = { Text(option.label) }, onClick = { style = option; styleMenu = false })
+                    }
+                }
+            }
+        },
+        confirmButton = { Button(onClick = { onSave(title, ingredients, instructions, style) }, enabled = title.isNotBlank() && ingredients.lines().any { it.isNotBlank() }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun AddNoteDialog(onDismiss: () -> Unit, onSave: (Int?, String) -> Unit) {
+    var note by remember { mutableStateOf("") }
+    var rating by remember { mutableStateOf<Int?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("How was it?") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Rating")
+                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    (1..5).forEach { value ->
+                        TextButton(onClick = { rating = value }) { Text(if (rating != null && value <= rating!!) "★" else "☆") }
+                    }
+                }
+                OutlinedTextField(note, { note = it }, label = { Text("Tasting note") }, minLines = 2)
+            }
+        },
+        confirmButton = { Button(onClick = { onSave(rating, note) }) { Text("Save note") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable

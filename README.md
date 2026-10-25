@@ -31,4 +31,4 @@ The debug APK is created at `apps/androidApp/build/outputs/apk/debug/androidApp-
 
 ## Current state
 
-The product and architecture foundation is in place, and the first Android implementation slice is underway. The current build includes local ingredient entry and approximate inventory tracking. See the [Phase 1 plan](docs/planning/PHASE_1_PLAN.md) for the remaining milestones and the app READMEs for platform status.
+The product and architecture foundation is in place, and Android development has started. The current build includes multiple local homes, ingredient and recipe entry, approximate inventory tracking, recipe search/style filters, tasting notes, and shop insights. See the [Phase 1 plan](docs/planning/PHASE_1_PLAN.md) for the remaining milestones and the app READMEs for platform status.

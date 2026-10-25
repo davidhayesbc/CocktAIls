@@ -11,6 +11,29 @@ CREATE TABLE household_location (
     created_at INTEGER NOT NULL
 );
 
+CREATE TABLE record_revision (
+    id TEXT NOT NULL PRIMARY KEY,
+    record_id TEXT NOT NULL,
+    record_type TEXT NOT NULL,
+    author_member_id TEXT NOT NULL REFERENCES household_member(id),
+    device_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE revision_parent (
+    revision_id TEXT NOT NULL REFERENCES record_revision(id),
+    parent_revision_id TEXT NOT NULL,
+    PRIMARY KEY(revision_id, parent_revision_id)
+);
+
+CREATE TABLE tombstone (
+    record_id TEXT NOT NULL PRIMARY KEY,
+    record_type TEXT NOT NULL,
+    revision_id TEXT NOT NULL REFERENCES record_revision(id),
+    deleted_at INTEGER NOT NULL
+);
+
 CREATE TABLE household_member (
     id TEXT NOT NULL PRIMARY KEY,
     household_id TEXT NOT NULL REFERENCES household(id),
@@ -25,6 +48,17 @@ CREATE TABLE ingredient (
     created_at INTEGER NOT NULL
 );
 
+CREATE TABLE ingredient_product (
+    id TEXT NOT NULL PRIMARY KEY,
+    ingredient_id TEXT NOT NULL REFERENCES ingredient(id),
+    brand TEXT,
+    product_name TEXT NOT NULL,
+    barcode TEXT,
+    created_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX ingredient_product_barcode ON ingredient_product(barcode) WHERE barcode IS NOT NULL;
+
 CREATE TABLE inventory_item (
     id TEXT NOT NULL PRIMARY KEY,
     location_id TEXT NOT NULL REFERENCES household_location(id),
@@ -35,8 +69,8 @@ CREATE TABLE inventory_item (
     UNIQUE(location_id, ingredient_id)
 );
 
-CREATE UNIQUE INDEX ingredient_name_category
-ON ingredient(canonical_name COLLATE NOCASE, category COLLATE NOCASE);
+CREATE UNIQUE INDEX ingredient_name
+ON ingredient(canonical_name COLLATE NOCASE);
 
 CREATE TABLE cocktail_family (
     id TEXT NOT NULL PRIMARY KEY,
@@ -44,12 +78,35 @@ CREATE TABLE cocktail_family (
     created_at INTEGER NOT NULL
 );
 
+CREATE TABLE cocktail_alias (
+    family_id TEXT NOT NULL REFERENCES cocktail_family(id),
+    alias TEXT NOT NULL,
+    PRIMARY KEY(family_id, alias)
+);
+
 CREATE TABLE recipe_variant (
     id TEXT NOT NULL PRIMARY KEY,
     family_id TEXT NOT NULL REFERENCES cocktail_family(id),
     title TEXT NOT NULL,
     source_kind TEXT NOT NULL,
+    instructions TEXT NOT NULL DEFAULT '',
+    preparation TEXT NOT NULL DEFAULT '',
+    servings REAL NOT NULL DEFAULT 1,
+    style TEXT NOT NULL DEFAULT 'OTHER',
+    revision_id TEXT REFERENCES record_revision(id),
     created_at INTEGER NOT NULL
+);
+
+CREATE TABLE recipe_source (
+    id TEXT NOT NULL PRIMARY KEY,
+    variant_id TEXT NOT NULL REFERENCES recipe_variant(id),
+    source_name TEXT NOT NULL,
+    source_record_id TEXT,
+    source_url TEXT,
+    license_name TEXT,
+    attribution TEXT,
+    modifications TEXT,
+    imported_at INTEGER NOT NULL
 );
 
 CREATE TABLE recipe_ingredient (
@@ -58,8 +115,27 @@ CREATE TABLE recipe_ingredient (
     ingredient_id TEXT NOT NULL REFERENCES ingredient(id),
     amount_value REAL,
     amount_unit TEXT,
+    preparation TEXT,
     optional INTEGER NOT NULL DEFAULT 0,
     sort_order INTEGER NOT NULL
+);
+
+CREATE TABLE tasting_note (
+    id TEXT NOT NULL PRIMARY KEY,
+    variant_id TEXT NOT NULL REFERENCES recipe_variant(id),
+    member_id TEXT NOT NULL REFERENCES household_member(id),
+    location_id TEXT REFERENCES household_location(id),
+    rating INTEGER CHECK (rating BETWEEN 1 AND 5),
+    note TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    revision_id TEXT REFERENCES record_revision(id)
+);
+
+CREATE TABLE favorite (
+    member_id TEXT NOT NULL REFERENCES household_member(id),
+    family_id TEXT NOT NULL REFERENCES cocktail_family(id),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(member_id, family_id)
 );
 
 insertHousehold:
@@ -83,9 +159,6 @@ SELECT id, name FROM household_location ORDER BY name COLLATE NOCASE;
 insertIngredientIgnore:
 INSERT OR IGNORE INTO ingredient(id, canonical_name, category, created_at) VALUES (?, ?, ?, ?);
 
-selectIngredientByNameAndCategory:
-SELECT id FROM ingredient WHERE canonical_name = ? COLLATE NOCASE AND category = ? COLLATE NOCASE;
-
 selectInventoryId:
 SELECT id FROM inventory_item WHERE location_id = ? AND ingredient_id = ?;
 
@@ -103,3 +176,60 @@ FROM inventory_item
 JOIN ingredient ON ingredient.id = inventory_item.ingredient_id
 WHERE inventory_item.location_id = ?
 ORDER BY ingredient.category COLLATE NOCASE, ingredient.canonical_name COLLATE NOCASE;
+
+selectRecipeFamilies:
+SELECT cocktail_family.id AS family_id, cocktail_family.canonical_name,
+       COUNT(DISTINCT recipe_variant.id) AS variant_count
+FROM cocktail_family
+JOIN recipe_variant ON recipe_variant.family_id = cocktail_family.id
+GROUP BY cocktail_family.id
+ORDER BY cocktail_family.canonical_name COLLATE NOCASE;
+
+findFamilyByName:
+SELECT id FROM cocktail_family WHERE canonical_name = ? COLLATE NOCASE;
+
+insertRecipeFamily:
+INSERT INTO cocktail_family(id, canonical_name, created_at) VALUES (?, ?, ?);
+
+insertRecipeVariant:
+INSERT INTO recipe_variant(id, family_id, title, source_kind, instructions, preparation, servings, style, created_at)
+VALUES (?, ?, ?, 'HOUSEHOLD', ?, ?, ?, ?, ?);
+
+insertRecipeIngredient:
+INSERT INTO recipe_ingredient(id, variant_id, ingredient_id, amount_value, amount_unit, preparation, optional, sort_order)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+selectIngredientsByName:
+SELECT id FROM ingredient WHERE canonical_name = ? COLLATE NOCASE LIMIT 1;
+
+updateIngredientCategory:
+UPDATE ingredient SET category = ? WHERE id = ?;
+
+selectSpiritCandidates:
+SELECT id, canonical_name FROM ingredient WHERE category = 'Spirit' COLLATE NOCASE ORDER BY canonical_name COLLATE NOCASE;
+
+selectRecipeVariants:
+SELECT recipe_variant.id AS variant_id, recipe_variant.family_id, recipe_variant.title,
+       recipe_variant.instructions, recipe_variant.preparation, recipe_variant.servings, recipe_variant.style
+FROM recipe_variant
+ORDER BY recipe_variant.title COLLATE NOCASE;
+
+selectRecipeIngredients:
+SELECT ingredient.id AS ingredient_id, ingredient.canonical_name, recipe_ingredient.amount_value, recipe_ingredient.amount_unit,
+       recipe_ingredient.optional
+FROM recipe_ingredient
+JOIN ingredient ON ingredient.id = recipe_ingredient.ingredient_id
+WHERE recipe_ingredient.variant_id = ?
+ORDER BY recipe_ingredient.sort_order;
+
+insertTastingNote:
+INSERT INTO tasting_note(id, variant_id, member_id, location_id, rating, note, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?);
+
+selectTastingNotes:
+SELECT tasting_note.id, tasting_note.member_id, household_member.display_name,
+       tasting_note.location_id, tasting_note.rating, tasting_note.note, tasting_note.created_at
+FROM tasting_note
+JOIN household_member ON household_member.id = tasting_note.member_id
+WHERE tasting_note.variant_id = ?
+ORDER BY tasting_note.created_at DESC;
