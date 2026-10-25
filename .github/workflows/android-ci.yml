@@ -188,8 +188,11 @@ jobs:
           done
           timeout 10 "$adb" -s emulator-5554 shell svc wifi disable
 
+      - name: Prepare connected instrumentation APKs
+        run: ./gradlew --no-daemon :apps:androidApp:assembleDebug :apps:androidApp:assembleDebugAndroidTest
+
       - name: Run offline launch and persistence smoke test
-        run: timeout 600 ./gradlew --no-daemon :apps:androidApp:connectedDebugAndroidTest
+        run: timeout 900 ./gradlew --no-daemon :apps:androidApp:connectedDebugAndroidTest
 
       - name: Collect emulator diagnostics
         if: always()
@@ -215,10 +218,11 @@ jobs:
           tail -n 300 "$RUNNER_TEMP/cocktails-avdmanager.log"
           echo '--- adb bootstrap log (last 100 lines) ---'
           tail -n 100 "$RUNNER_TEMP/cocktails-adb-bootstrap.log"
-          echo '--- permission prompt screenshot ---'
-          timeout 15 "$adb" pull \
-            /sdcard/Android/data/com.davidhayesbc.cocktails/cache/camera-permission-prompt.png \
-            "$RUNNER_TEMP/camera-permission-prompt.png"
+          echo '--- permission prompt screenshots ---'
+          for screenshot in /sdcard/Android/data/com.davidhayesbc.cocktails/cache/camera-permission-*.png; do
+            [[ -f "$screenshot" ]] || continue
+            timeout 15 "$adb" pull "$screenshot" "$RUNNER_TEMP/$(basename "$screenshot")"
+          done
 
       - name: Upload emulator diagnostics
         if: always()
@@ -231,7 +235,7 @@ jobs:
             ${{ runner.temp }}/cocktails-logcat.log
             ${{ runner.temp }}/cocktails-avdmanager.log
             ${{ runner.temp }}/cocktails-adb-bootstrap.log
-            ${{ runner.temp }}/camera-permission-prompt.png
+            ${{ runner.temp }}/camera-permission-*.png
             apps/androidApp/build/outputs/androidTest-results/connected/**/*.xml
             apps/androidApp/build/reports/androidTests/connected/**
           if-no-files-found: ignore

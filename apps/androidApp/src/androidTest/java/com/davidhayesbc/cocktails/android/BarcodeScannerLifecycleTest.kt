@@ -21,10 +21,14 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
+import org.junit.rules.TestName
 import java.io.File
 
 @RunWith(AndroidJUnit4::class)
 class BarcodeScannerLifecycleTest {
+    @get:Rule
+    val testName = TestName()
+
     @get:Rule
     val composeRule = createAndroidComposeRule<MainActivity>()
 
@@ -134,7 +138,8 @@ class BarcodeScannerLifecycleTest {
         }.ifBlank { dumpNode(automation.rootInActiveWindow, 0) }
         val screenshot = runCatching {
             val bitmap = automation.takeScreenshot()
-            val target = File(requireNotNull(composeRule.activity.externalCacheDir), "camera-permission-prompt.png")
+            val safeTestName = testName.methodName.replace(Regex("[^A-Za-z0-9_-]"), "_")
+            val target = File(requireNotNull(composeRule.activity.externalCacheDir), "camera-permission-$safeTestName.png")
             target.parentFile?.mkdirs()
             target.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
             target.absolutePath
