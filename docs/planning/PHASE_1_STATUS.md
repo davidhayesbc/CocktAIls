@@ -10,13 +10,14 @@ This is a snapshot of implementation and verification, not a release-readiness c
 - Versioned household JSON backups can be written/read with Android's document picker. Import is size/schema/reference checked, staged for preview, cancelable without writes, and committed in one database transaction. Device-local preferences and provider/coordinate settings are excluded.
 - Import conflict review compares revision ancestry, never relies on device timestamps, supports keep-local/use-backup/field merge, and writes a merge revision with both branch heads as parents. Reimporting an older branch after merge does not roll back the selected result.
 - Local household and member profiles, multiple homes, per-home approximate inventory, persisted manual home/member choices, recipe entry, grouped variants, style filters, tasting notes, and the initial At the shop spirit ranking are implemented.
+- Recipe discovery now filters by what is on hand, exactly one missing required ingredient, or up to two missing required ingredients. Optional lines do not block availability and repeated use of one ingredient counts once.
 - Recipe catalog remains empty by design pending record-level rights review. No credentials, model providers, or network service are required for the app's current workflows.
 
 ## Acceptance criteria
 
 | # | State | Evidence or remaining work |
 |---|---|---|
-| 1 | Partial | Offline-capable local storage, homes, pantry, recipe entry, availability, and notes exist. Favorites, scaling, missing-one/two suggestions, and airplane-mode device validation remain. |
+| 1 | Partial | Offline-capable local storage, homes, pantry, recipe entry, availability, missing-one/two filters, and notes exist. Favorites, scaling, and airplane-mode device validation remain. |
 | 2 | Partial | Versioned household JSON export/import is implemented with preview, cancel, size/reference validation, atomic apply, and an Android file-picker flow. Photo transfer and generic recipe CSV/JSON mapping remain. |
 | 3 | Partial | Revision-ancestry conflicts, explicit resolution, field merge, and merge revisions with both parents are implemented and tested. Tombstone transfer and deletion-vs-edit edge-case tests remain. |
 | 4 | Partial | Member-attributed tasting notes round-trip across two independent databases in the sync regression test. Device-level multi-user usability remains unverified. |

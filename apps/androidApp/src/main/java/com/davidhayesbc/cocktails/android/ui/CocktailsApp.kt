@@ -61,6 +61,9 @@ import com.davidhayesbc.cocktails.core.model.InventoryLevel
 import com.davidhayesbc.cocktails.core.model.PantryEntry
 import com.davidhayesbc.cocktails.core.model.RecipeDetail
 import com.davidhayesbc.cocktails.core.model.RecipeStyle
+import com.davidhayesbc.cocktails.core.matching.RecipeAvailabilityFilter
+import com.davidhayesbc.cocktails.core.matching.countMissingRequiredIngredients
+import com.davidhayesbc.cocktails.core.matching.matchesMissingCount
 import com.davidhayesbc.cocktails.core.model.TastingNote
 import com.davidhayesbc.cocktails.core.model.ShopSuggestion
 import com.davidhayesbc.cocktails.core.model.MemberProfile
@@ -701,12 +704,12 @@ private fun RecipeBrowser(
 ) {
     var search by remember { mutableStateOf("") }
     var selectedStyle by remember { mutableStateOf<RecipeStyle?>(null) }
-    var onlyMakeable by remember { mutableStateOf(false) }
-    val availableNames = pantry.filter { it.level != InventoryLevel.OUT }.map { it.name.lowercase() }.toSet()
-    fun missingCount(recipe: RecipeDetail) = recipe.ingredients.count { !it.optional && it.name.lowercase() !in availableNames }
+    var availabilityFilter by remember { mutableStateOf(RecipeAvailabilityFilter.ANY) }
+    val availableIngredients = pantry.filter { it.level != InventoryLevel.OUT }.map { it.ingredientId }.toSet()
+    fun missingCount(recipe: RecipeDetail) = countMissingRequiredIngredients(recipe.ingredients, availableIngredients)
     val matching = recipes.filter { recipe ->
         (selectedStyle == null || recipe.style == selectedStyle) &&
-            (!onlyMakeable || missingCount(recipe) == 0) &&
+            availabilityFilter.matchesMissingCount(missingCount(recipe)) &&
             (search.isBlank() || recipe.title.contains(search, ignoreCase = true) || recipe.ingredients.any { it.name.contains(search, true) })
     }
     val families = matching.groupBy { it.familyId }
@@ -724,7 +727,13 @@ private fun RecipeBrowser(
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
             FilterChip(selected = selectedStyle == null, onClick = { selectedStyle = null }, label = { Text("All styles") })
-            FilterChip(selected = onlyMakeable, onClick = { onlyMakeable = !onlyMakeable }, label = { Text("Ready with my bar") })
+            RecipeAvailabilityFilter.entries.forEach { filter ->
+                FilterChip(
+                    selected = availabilityFilter == filter,
+                    onClick = { availabilityFilter = filter },
+                    label = { Text(filter.label) },
+                )
+            }
             listOf(RecipeStyle.SHORT, RecipeStyle.LONG, RecipeStyle.SOUR, RecipeStyle.BITTER, RecipeStyle.SWEET, RecipeStyle.HOT, RecipeStyle.COLD).forEach { style ->
                 FilterChip(selected = selectedStyle == style, onClick = { selectedStyle = if (selectedStyle == style) null else style }, label = { Text(style.label) })
             }
