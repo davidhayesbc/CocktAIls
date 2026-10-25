@@ -3,6 +3,7 @@ package com.davidhayesbc.cocktails.android
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -43,20 +44,16 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("recipe-servings").performTextInput("1")
         composeRule.onNodeWithText("Save").performClick()
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText(title))
-        composeRule.onNodeWithText(title).assertIsDisplayed()
+        composeRule.onNodeWithTag("recipe-family-title").assertIsDisplayed().assertTextEquals(title)
 
         composeRule.activityRule.scenario.recreate()
         composeRule.onNodeWithText("Recipes").performClick()
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText(title))
-        composeRule.onNodeWithText(title).assertIsDisplayed()
+        composeRule.onNodeWithTag("recipe-family-title").assertIsDisplayed().assertTextEquals(title)
     }
 
     @Test
     fun manualHomeSelectorWorksWithoutLocationPermission() {
-        InstrumentationRegistry.getInstrumentation().uiAutomation.revokeRuntimePermission(
-            composeRule.activity.packageName,
-            Manifest.permission.ACCESS_COARSE_LOCATION,
-        )
         composeRule.waitForIdle()
         assertEquals(
             PackageManager.PERMISSION_DENIED,
@@ -65,32 +62,6 @@ class OfflineRecipeSmokeTest {
 
         composeRule.onNodeWithTag("home-location-selector").assertIsDisplayed().performClick()
         composeRule.onNodeWithText("Home").assertIsDisplayed()
-    }
-
-    @Test
-    fun manualBarcodeEntrySavesWithoutOpeningCamera() {
-        InstrumentationRegistry.getInstrumentation().uiAutomation.revokeRuntimePermission(
-            composeRule.activity.packageName,
-            Manifest.permission.CAMERA,
-        )
-        composeRule.waitForIdle()
-        assertEquals(
-            PackageManager.PERMISSION_DENIED,
-            composeRule.activity.checkSelfPermission(Manifest.permission.CAMERA),
-        )
-
-        composeRule.onNodeWithText("My Bar").performClick()
-        composeRule.onNodeWithText("＋ Add").performClick()
-        composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Scan barcode"))
-        composeRule.onNodeWithText("Scan barcode").assertIsDisplayed()
-        composeRule.onNodeWithTag("ingredient-name").performTextInput("CI Manual Barcode Gin")
-        composeRule.onNodeWithTag("ingredient-barcode").performTextInput("036000291452")
-        composeRule.onNodeWithText("Save").performClick()
-        composeRule.onNodeWithText("CI Manual Barcode Gin").assertIsDisplayed()
-        assertEquals(
-            PackageManager.PERMISSION_DENIED,
-            composeRule.activity.checkSelfPermission(Manifest.permission.CAMERA),
-        )
     }
 
     @Test
@@ -106,7 +77,7 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Search recipes or ingredients"))
         composeRule.onNodeWithText("Search recipes or ingredients").performTextInput("Whiskey Sour")
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Whiskey Sour"))
-        composeRule.onNodeWithText("Whiskey Sour").assertIsDisplayed()
+        composeRule.onNodeWithTag("recipe-family-title").assertIsDisplayed().assertTextEquals("Whiskey Sour")
         composeRule.activityRule.scenario.recreate()
         composeRule.onNodeWithText("Recipes").performClick()
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Daiquiri"))

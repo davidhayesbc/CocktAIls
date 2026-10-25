@@ -1353,7 +1353,7 @@ private fun RecipeBrowser(
                 item(key = variants.first().familyId.value) {
                     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(variants.first().title, style = MaterialTheme.typography.titleMedium)
+                            Text(variants.first().title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("recipe-family-title"))
                             TextButton(onClick = { onToggleFavorite(variants.first().familyId, variants.first().familyId !in favoriteFamilyIds) }) {
                                 Text(if (variants.first().familyId in favoriteFamilyIds) "★ Favorite" else "☆ Add favorite")
                             }

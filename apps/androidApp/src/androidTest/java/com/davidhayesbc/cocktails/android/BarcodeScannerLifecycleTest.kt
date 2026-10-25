@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.SystemClock
 import android.util.Log
+import android.view.KeyEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
@@ -16,6 +17,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Rule
@@ -35,12 +37,7 @@ class BarcodeScannerLifecycleTest {
     val composeRule = createAndroidComposeRule<MainActivity>()
 
     @Test
-    fun deniedCameraPermissionKeepsManualBarcodeEntryAvailable() {
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        instrumentation.uiAutomation.revokeRuntimePermission(
-            composeRule.activity.packageName,
-            Manifest.permission.CAMERA,
-        )
+    fun denialKeepsManualEntryAvailableThenGrantOpensScannerAcrossLifecycle() {
         assertEquals(PackageManager.PERMISSION_DENIED, composeRule.activity.checkSelfPermission(Manifest.permission.CAMERA))
         composeRule.onNodeWithText("My Bar").performClick()
         composeRule.onNodeWithText("＋ Add").performClick()
@@ -48,20 +45,19 @@ class BarcodeScannerLifecycleTest {
         composeRule.onNodeWithText("Scan barcode").assertIsDisplayed()
         composeRule.onNodeWithText("Scan barcode").performClick()
         clickPermissionPrompt("don't allow", "deny")
+        composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Camera access wasn't granted. Enter the barcode manually instead."))
         composeRule.onNodeWithText("Camera access wasn't granted. Enter the barcode manually instead.").assertIsDisplayed()
         composeRule.onNodeWithTag("ingredient-barcode").assertIsDisplayed()
         composeRule.onAllNodesWithText("Scan a bottle").assertCountEquals(0)
-    }
 
-    @Test
-    fun scannerCanBeOpenedClosedReopenedAndActivityRecreated() {
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        instrumentation.uiAutomation.revokeRuntimePermission(
-            composeRule.activity.packageName,
-            Manifest.permission.CAMERA,
-        )
+        composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Ingredient name"))
+        composeRule.onNodeWithTag("ingredient-name").performTextInput("CI Manual Barcode Gin")
+        composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("UPC / EAN barcode"))
+        composeRule.onNodeWithTag("ingredient-barcode").performTextInput("036000291452")
+        composeRule.onNodeWithText("Save").performClick()
+        composeRule.onNodeWithText("CI Manual Barcode Gin").assertIsDisplayed()
         assertEquals(PackageManager.PERMISSION_DENIED, composeRule.activity.checkSelfPermission(Manifest.permission.CAMERA))
-        composeRule.onNodeWithText("My Bar").performClick()
+
         composeRule.onNodeWithText("＋ Add").performClick()
         composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Scan barcode"))
         composeRule.onNodeWithText("Scan barcode").assertIsDisplayed()
@@ -73,7 +69,7 @@ class BarcodeScannerLifecycleTest {
             composeRule.onAllNodesWithText("Camera is live and barcode frames are being analyzed.")
                 .fetchSemanticsNodes().isNotEmpty()
         }
-        composeRule.activityRule.scenario.onActivity { activity -> activity.onBackPressedDispatcher.onBackPressed() }
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         composeRule.waitForIdle()
         composeRule.onAllNodesWithText("Scan a bottle").assertCountEquals(0)
         composeRule.onNodeWithText("Scan barcode").performClick()
