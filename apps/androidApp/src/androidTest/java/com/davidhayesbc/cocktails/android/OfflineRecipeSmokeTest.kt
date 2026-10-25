@@ -56,10 +56,8 @@ class OfflineRecipeSmokeTest {
         }
 
         composeRule.onNodeWithText("More").performClick()
-        composeRule.onNodeWithTag("household-screen-scroll").performScrollToNode(hasText("App version"))
         composeRule.onNodeWithTag("app-version").assertIsDisplayed()
             .assertTextEquals("$versionName · version code $versionCode")
-        composeRule.onNodeWithTag("household-screen-scroll").performScrollToNode(hasText(buildStatus))
         composeRule.onNodeWithTag("app-build-status").assertIsDisplayed().assertTextEquals(buildStatus)
     }
 

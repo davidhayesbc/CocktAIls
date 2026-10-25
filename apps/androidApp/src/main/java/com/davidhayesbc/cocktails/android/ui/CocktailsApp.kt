@@ -1708,10 +1708,13 @@ private fun HouseholdScreen(
     installedAppVersion: InstalledAppVersion,
 ) {
     Column(
-        modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).testTag("household-screen-scroll").padding(24.dp),
+        modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text("Household", style = MaterialTheme.typography.headlineMedium)
+        Text("App version", style = MaterialTheme.typography.titleLarge)
+        Text("${installedAppVersion.name} · version code ${installedAppVersion.code}", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.testTag("app-version"))
+        Text(installedAppVersion.buildStatus, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("app-build-status"), color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("Shared at home", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
         Text("Tasting notes are saved under the selected member. Backups contain recipes, pantry, member notes, and revision history.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         OutlinedButton(onClick = onManageMembers) {
@@ -1726,9 +1729,6 @@ private fun HouseholdScreen(
         OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth()) { Text("Import household backup") }
         OutlinedButton(onClick = onImportRecipes, modifier = Modifier.fillMaxWidth()) { Text("Import recipes from CSV or JSON") }
         OutlinedButton(onClick = onOpenDiagnostics, modifier = Modifier.fillMaxWidth()) { Text("View or export diagnostics") }
-        Text("App version", style = MaterialTheme.typography.titleLarge)
-        Text("${installedAppVersion.name} · version code ${installedAppVersion.code}", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.testTag("app-version"))
-        Text(installedAppVersion.buildStatus, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("app-build-status"), color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("Import previews never change your data. Each phone can share a backup using Nearby Share, Drive, or another file app.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (shareMessage != null) Text(shareMessage, style = MaterialTheme.typography.bodyMedium)
     }
