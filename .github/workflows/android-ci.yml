@@ -215,6 +215,10 @@ jobs:
           tail -n 300 "$RUNNER_TEMP/cocktails-avdmanager.log"
           echo '--- adb bootstrap log (last 100 lines) ---'
           tail -n 100 "$RUNNER_TEMP/cocktails-adb-bootstrap.log"
+          echo '--- permission prompt screenshot ---'
+          timeout 15 "$adb" pull \
+            /sdcard/Android/data/com.davidhayesbc.cocktails/cache/camera-permission-prompt.png \
+            "$RUNNER_TEMP/camera-permission-prompt.png"
 
       - name: Upload emulator diagnostics
         if: always()
@@ -227,6 +231,7 @@ jobs:
             ${{ runner.temp }}/cocktails-logcat.log
             ${{ runner.temp }}/cocktails-avdmanager.log
             ${{ runner.temp }}/cocktails-adb-bootstrap.log
+            ${{ runner.temp }}/camera-permission-prompt.png
             apps/androidApp/build/outputs/androidTest-results/connected/**/*.xml
             apps/androidApp/build/reports/androidTests/connected/**
           if-no-files-found: ignore
