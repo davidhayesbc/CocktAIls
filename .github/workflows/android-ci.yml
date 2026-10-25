@@ -9,7 +9,6 @@ on:
 
 permissions:
   contents: read
-  actions: write
 
 jobs:
   verify-and-package:
@@ -47,7 +46,7 @@ jobs:
         run: echo "COCKTAILS_VERSION_NAME=0.1.0-ci.${GITHUB_RUN_NUMBER}+${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
       - name: Run shared-core tests and build Android APK
-        run: ./gradlew --no-daemon :shared:core:compileCommonMainKotlinMetadata :shared:core:testDebugUnitTest :apps:androidApp:assembleDebug
+        run: ./gradlew --no-daemon :shared:core:compileCommonMainKotlinMetadata :shared:core:testDebugUnitTest :apps:androidApp:lintDebug :shared:core:lintDebug :apps:androidApp:assembleDebug
 
       - name: Upload debug APK artifact
         if: github.event_name != 'pull_request'
