@@ -34,7 +34,6 @@ import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.ReaderException
 import com.google.zxing.common.HybridBinarizer
 import com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup
-import java.util.EnumMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -49,29 +48,22 @@ internal fun BarcodeScannerDialog(
     var scannerMessage by remember { mutableStateOf("Center a UPC or EAN barcode in the frame.") }
     val completed = remember { AtomicBoolean(false) }
     val currentOnDetected by rememberUpdatedState(onDetected)
-    val reader = remember {
-        MultiFormatReader().apply {
-            val hints = EnumMap<DecodeHintType, Any>(DecodeHintType::class.java)
-            hints[DecodeHintType.POSSIBLE_FORMATS] = listOf(
-                BarcodeFormat.UPC_A,
-                BarcodeFormat.EAN_8,
-                BarcodeFormat.EAN_13,
-            )
-            hints[DecodeHintType.TRY_HARDER] = true
-            setHints(hints)
-        }
-    }
-
     DisposableEffect(previewView, lifecycleOwner) {
         val view = previewView
         val analysisExecutor = Executors.newSingleThreadExecutor()
+        val reader = MultiFormatReader().apply {
+            setHints(mapOf(
+                DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.UPC_A, BarcodeFormat.EAN_8, BarcodeFormat.EAN_13),
+                DecodeHintType.TRY_HARDER to true,
+            ))
+        }
         var provider: ProcessCameraProvider? = null
         var analysis: ImageAnalysis? = null
-        var disposed = false
+        val disposed = AtomicBoolean(false)
         if (view != null) {
             val providerFuture = ProcessCameraProvider.getInstance(context)
             providerFuture.addListener({
-                if (disposed) return@addListener
+                if (disposed.get()) return@addListener
                 runCatching {
                     provider = providerFuture.get()
                     val preview = Preview.Builder().build().also { it.setSurfaceProvider(view.surfaceProvider) }
@@ -81,17 +73,20 @@ internal fun BarcodeScannerDialog(
                     analysis = useCase
                     useCase.setAnalyzer(analysisExecutor) { imageProxy ->
                         try {
-                            if (completed.get()) return@setAnalyzer
+                            if (disposed.get() || completed.get()) return@setAnalyzer
                             val plane = imageProxy.planes.firstOrNull() ?: return@setAnalyzer
                             val width = imageProxy.width
                             val height = imageProxy.height
+                            require(width > 0 && height > 0 && width.toLong() * height <= 4_000_000L) { "Camera frame size is not supported." }
                             val yBytes = ByteArray(width * height)
                             val yBuffer = plane.buffer.duplicate()
                             val rowStride = plane.rowStride
                             val pixelStride = plane.pixelStride
                             for (row in 0 until height) {
                                 for (column in 0 until width) {
-                                    yBytes[row * width + column] = yBuffer.get(row * rowStride + column * pixelStride)
+                                    val sourceIndex = row * rowStride + column * pixelStride
+                                    require(sourceIndex < yBuffer.limit()) { "Camera frame layout is invalid." }
+                                    yBytes[row * width + column] = yBuffer.get(sourceIndex)
                                 }
                             }
                             val source = PlanarYUVLuminanceSource(yBytes, width, height, 0, 0, width, height, false)
@@ -103,19 +98,25 @@ internal fun BarcodeScannerDialog(
                                 .onSuccess { value ->
                                     if (normalizeGtinForLookup(value) == null) {
                                         ContextCompat.getMainExecutor(context).execute {
-                                            scannerMessage = "That code isn't a valid UPC/EAN barcode. Keep scanning or enter it manually."
+                                            if (!disposed.get()) scannerMessage = "That code isn't a valid UPC/EAN barcode. Keep scanning or enter it manually."
                                         }
                                     } else if (completed.compareAndSet(false, true)) {
-                                        ContextCompat.getMainExecutor(context).execute { currentOnDetected(value) }
+                                        ContextCompat.getMainExecutor(context).execute {
+                                            if (!disposed.get()) currentOnDetected(value)
+                                        }
                                     }
                                 }
                                 .onFailure { error ->
                                     if (error !is ReaderException) {
                                         ContextCompat.getMainExecutor(context).execute {
-                                            scannerMessage = "Scanner error. You can enter the code manually instead."
+                                            if (!disposed.get()) scannerMessage = "Scanner error. You can enter the code manually instead."
                                         }
                                     }
                                 }
+                        } catch (_: Exception) {
+                            ContextCompat.getMainExecutor(context).execute {
+                                if (!disposed.get()) scannerMessage = "Camera frame couldn't be read. Close the scanner or enter the code manually."
+                            }
                         } finally {
                             imageProxy.close()
                         }
@@ -123,16 +124,15 @@ internal fun BarcodeScannerDialog(
                     provider?.unbindAll()
                     provider?.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, useCase)
                 }.onFailure {
-                    scannerMessage = "Camera couldn't start. Close this scanner and enter the barcode manually."
+                    if (!disposed.get()) scannerMessage = "Camera couldn't start. Close this scanner and enter the barcode manually."
                 }
             }, ContextCompat.getMainExecutor(context))
         }
         onDispose {
-            disposed = true
+            disposed.set(true)
             analysis?.clearAnalyzer()
             provider?.unbindAll()
-            analysisExecutor.shutdown()
-            reader.reset()
+            analysisExecutor.shutdownNow()
         }
     }
 
