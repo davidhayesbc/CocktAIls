@@ -128,7 +128,7 @@ Help a household keep track of its ingredients at multiple homes, discover drink
 - Keep images out of the initial core unless each image has separately verified rights and attribution.
 - Recipe source records, household copies, product datasets, images, and app code are separate licensing units. Preserve source/license/version/retrieval date and modification metadata for imported content.
 - Barcode scans are stored as strings (preserving leading zeros); validate and normalize UPC/EAN forms without discarding the scanned original. Manual entry always works offline.
-- Do not bundle Open Food Facts data in Phase 1. Its ODbL/Database Contents License obligations and the size/coverage of a useful spirits subset need review. Consider an optional compliant data pack or online lookup later; a filtered extract is not automatically outside database obligations.
+- Do not bundle Open Food Facts data. Its ODbL/Database Contents License obligations and the size/coverage of a useful spirits subset remain relevant; a filtered extract is not automatically outside database obligations. The narrowly scoped, user-triggered single-product v3.6 lookup is documented in [ADR-0011](../architecture/ADR-0011-optional-open-food-facts-lookup.md) and does not export provider cache data.
 - USDA FoodData Central Branded (CC0) and Wikidata (CC0) are candidates for product facts/identities, subject to useful coverage tests. Do not claim sensory tasting notes from chemical data.
 - No verified comprehensive open bottle-level tasting-note corpus is available from this research. Use household-authored notes and, later, opt-in community profiles with explicit contribution terms. Do not scrape manufacturer prose without permission.
 

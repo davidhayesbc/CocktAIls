@@ -96,6 +96,7 @@ import com.davidhayesbc.cocktails.core.model.HomeLocation
 import com.davidhayesbc.cocktails.core.model.CocktailFamilyId
 import com.davidhayesbc.cocktails.core.model.InventoryLevel
 import com.davidhayesbc.cocktails.core.model.PantryEntry
+import com.davidhayesbc.cocktails.core.model.LocalProductBarcodeMatch
 import com.davidhayesbc.cocktails.core.model.RecipeDetail
 import com.davidhayesbc.cocktails.core.model.RecipeStyle
 import com.davidhayesbc.cocktails.core.model.RecipeIngredientDraft
@@ -111,11 +112,20 @@ import com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup
 import com.davidhayesbc.cocktails.core.model.RecipeCard
 import com.davidhayesbc.cocktails.core.model.RecipeVariantId
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.davidhayesbc.cocktails.android.location.ApproximateCoordinates
 import com.davidhayesbc.cocktails.android.location.requestApproximateLocation
 import com.davidhayesbc.cocktails.android.LocalDiagnostics
+import com.davidhayesbc.cocktails.android.product.OpenFoodFactsLocalCache
+import com.davidhayesbc.cocktails.android.product.OpenFoodFactsLookupClient
+import com.davidhayesbc.cocktails.android.product.OpenFoodFactsLookupResult
+import com.davidhayesbc.cocktails.android.product.OpenFoodFactsSuggestion
+import com.davidhayesbc.cocktails.android.product.SharedPreferencesLookupStorage
+import com.davidhayesbc.cocktails.android.product.lookupResultMatchesCurrentBarcode
+import com.davidhayesbc.cocktails.android.product.OPEN_FOOD_FACTS_HOME
+import com.davidhayesbc.cocktails.android.product.OPEN_FOOD_FACTS_LICENSE
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -210,6 +220,9 @@ private sealed interface LocationAction {
 @Composable
 fun CocktailsApp(repository: LocalCocktailRepository) {
     val context = LocalContext.current
+    val openFoodFactsClient = remember(context) {
+        OpenFoodFactsLookupClient(OpenFoodFactsLocalCache(SharedPreferencesLookupStorage(context)))
+    }
     val installedAppVersion = remember(context) {
         @Suppress("DEPRECATION")
         val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
@@ -252,6 +265,9 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var showBarcodeScanner by remember { mutableStateOf(false) }
     var barcodeInput by remember { mutableStateOf("") }
     var barcodePermissionMessage by remember { mutableStateOf<String?>(null) }
+    var localProductMatch by remember { mutableStateOf<LocalProductBarcodeMatch?>(null) }
+    var productLookupResult by remember { mutableStateOf<OpenFoodFactsLookupResult?>(null) }
+    var productLookupInProgress by remember { mutableStateOf(false) }
     var selectedProductPhoto by remember { mutableStateOf<ByteArray?>(null) }
     var productPhotoMessage by remember { mutableStateOf<String?>(null) }
     var showAddRecipe by remember { mutableStateOf(false) }
@@ -274,6 +290,32 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var stagedRecipeTable by remember { mutableStateOf<RecipeImportTable?>(null) }
     var stagedRecipeFileName by remember { mutableStateOf("") }
     var conflictResolutions by remember { mutableStateOf<Map<String, ConflictResolution>>(emptyMap()) }
+
+    fun setBarcodeInput(value: String) {
+        barcodeInput = value
+        localProductMatch = repository.localProductForBarcode(value)
+        productLookupResult = null
+    }
+
+    fun lookupProductDetails(value: String) {
+        if (productLookupInProgress) return
+        productLookupInProgress = true
+        productLookupResult = null
+        coroutineScope.launch {
+            try {
+                val result = openFoodFactsClient.lookup(value, installedAppVersion.name)
+                if (lookupResultMatchesCurrentBarcode(value, barcodeInput)) productLookupResult = result
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (lookupResultMatchesCurrentBarcode(value, barcodeInput)) {
+                    productLookupResult = OpenFoodFactsLookupResult.Unavailable
+                }
+            } finally {
+                productLookupInProgress = false
+            }
+        }
+    }
 
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         if (uri == null) {
@@ -569,6 +611,8 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 onAddIngredients = {
                     selectedPage = Page.MY_BAR
                     showAddIngredient = true
+                    setBarcodeInput("")
+                    barcodePermissionMessage = null
                 },
                 onOpenShop = ::openShop,
                 recipes = recipes,
@@ -580,7 +624,11 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 selectedLocationId = selectedLocationId,
                 pantry = pantry,
                 onLocationSelected = ::selectHome,
-                onAddIngredient = { showAddIngredient = true },
+                onAddIngredient = {
+                    showAddIngredient = true
+                    setBarcodeInput("")
+                    barcodePermissionMessage = null
+                },
                 onAddLocation = { showAddLocation = true },
                 onLevelSelected = { entry, level ->
                     repository.updateInventoryLevel(
@@ -735,13 +783,17 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         AddIngredientDialog(
             barcode = barcodeInput,
             barcodeMessage = barcodePermissionMessage,
+            localProductMatch = localProductMatch,
+            productLookupResult = productLookupResult,
+            productLookupInProgress = productLookupInProgress,
             productPhotoBytes = selectedProductPhoto,
             productPhotoMessage = productPhotoMessage,
-            onBarcodeChanged = { barcodeInput = it; barcodePermissionMessage = null },
+            onBarcodeChanged = { setBarcodeInput(it); barcodePermissionMessage = null },
+            onLookupProduct = ::lookupProductDetails,
             onScanBarcode = ::beginBarcodeScan,
             onPickPhoto = { productPhotoLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
             onRemovePhoto = { selectedProductPhoto = null; productPhotoMessage = null },
-            onDismiss = { showAddIngredient = false; barcodeInput = ""; barcodePermissionMessage = null; selectedProductPhoto = null; productPhotoMessage = null },
+            onDismiss = { showAddIngredient = false; setBarcodeInput(""); barcodePermissionMessage = null; selectedProductPhoto = null; productPhotoMessage = null },
             onSave = { name, category, level, barcode, brand, productName, productPhoto ->
                 val saved = repository.addIngredient(
                     name = name,
@@ -757,7 +809,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 if (saved) {
                     refreshPantry()
                     showAddIngredient = false
-                    barcodeInput = ""
+                    setBarcodeInput("")
                     barcodePermissionMessage = null
                     selectedProductPhoto = null
                     productPhotoMessage = null
@@ -779,7 +831,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         BarcodeScannerDialog(
             onDetected = { scanned ->
                 if (normalizeGtinForLookup(scanned) != null) {
-                    barcodeInput = scanned
+                    setBarcodeInput(scanned)
                     barcodePermissionMessage = "Barcode captured on this phone. Confirm the ingredient and product details before saving."
                     showBarcodeScanner = false
                 } else {
@@ -1116,9 +1168,13 @@ private fun PantryRow(entry: PantryEntry, onLevelSelected: (PantryEntry, Invento
 private fun AddIngredientDialog(
     barcode: String,
     barcodeMessage: String?,
+    localProductMatch: LocalProductBarcodeMatch?,
+    productLookupResult: OpenFoodFactsLookupResult?,
+    productLookupInProgress: Boolean,
     productPhotoBytes: ByteArray?,
     productPhotoMessage: String?,
     onBarcodeChanged: (String) -> Unit,
+    onLookupProduct: (String) -> Unit,
     onScanBarcode: () -> Unit,
     onPickPhoto: () -> Unit,
     onRemovePhoto: () -> Unit,
@@ -1177,13 +1233,47 @@ private fun AddIngredientDialog(
                     modifier = Modifier.fillMaxWidth().testTag("ingredient-barcode"),
                 )
                 OutlinedButton(onClick = onScanBarcode, modifier = Modifier.fillMaxWidth()) { Text("Scan barcode") }
+                if (localProductMatch != null) {
+                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("Found in your household", style = MaterialTheme.typography.titleSmall)
+                            Text("${localProductMatch.ingredientName} · ${localProductMatch.category}")
+                            localProductMatch.brand?.let { Text("Brand: $it") }
+                            Text("Product: ${localProductMatch.productName}")
+                            Text("This match is local. It did not contact Open Food Facts.", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+                Text(
+                    "Lookup is optional and starts only when you tap. A saved Open Food Facts result is checked first; on a cache miss the request sends only this barcode and CocktAIls version. Open Food Facts also receives your network IP. No pantry names, home locations, photos, or member details are sent.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(
+                    onClick = { onLookupProduct(barcode) },
+                    enabled = normalizeGtinForLookup(barcode) != null && !productLookupInProgress,
+                    modifier = Modifier.fillMaxWidth().testTag("open-food-facts-lookup"),
+                ) { Text(if (productLookupInProgress) "Looking up…" else "Look up on Open Food Facts") }
+                when (val result = productLookupResult) {
+                    is OpenFoodFactsLookupResult.Found -> OpenFoodFactsSuggestionCard(result.suggestion, result.fromCache)
+                    OpenFoodFactsLookupResult.InvalidBarcode -> Text("Enter a valid UPC or EAN barcode to look up.", color = MaterialTheme.colorScheme.error)
+                    OpenFoodFactsLookupResult.NotFound -> Text("Open Food Facts has no product record for this barcode. You can continue entering details manually.")
+                    OpenFoodFactsLookupResult.DifferentProductType -> Text("Open Food Facts reports this code as a different product type. Review it carefully or continue manually.")
+                    OpenFoodFactsLookupResult.RateLimited -> Text("Open Food Facts is limiting requests from this network. Try again later or continue manually.")
+                    OpenFoodFactsLookupResult.Unavailable -> Text("Open Food Facts couldn't be reached. Check your connection or continue manually.")
+                    OpenFoodFactsLookupResult.InvalidResponse -> Text("Open Food Facts returned data this version couldn't read. Continue manually or try later.")
+                    null -> Unit
+                }
+                if (barcodeMessage != null) {
+                    Text(barcodeMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 OutlinedTextField(
                     value = brand,
                     onValueChange = { brand = it },
                     label = { Text("Brand (optional)") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().testTag("ingredient-brand"),
                 )
                 OutlinedTextField(
                     value = productName,
@@ -1191,7 +1281,7 @@ private fun AddIngredientDialog(
                     label = { Text("Bottle / product name (optional)") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().testTag("ingredient-product-name"),
                 )
                 OutlinedButton(onClick = onPickPhoto, modifier = Modifier.fillMaxWidth()) {
                     Text(if (productPhotoBytes == null) "Add optional bottle label photo" else "Replace bottle label photo")
@@ -1203,11 +1293,10 @@ private fun AddIngredientDialog(
                     Text(productPhotoMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Text(
-                    "Photos are optional and picked locally. They are resized, re-encoded without EXIF metadata, and included in household backups only when you select them. No photo service or product lookup is used.",
+                    "Photos are optional and picked locally. They are resized, re-encoded without EXIF metadata, and included in household backups only when you select them. Photos are never sent to Open Food Facts.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                if (barcodeMessage != null) Text(barcodeMessage, style = MaterialTheme.typography.bodySmall)
                 if (saveError != null) Text(saveError!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
         },
@@ -1574,6 +1663,32 @@ private fun parseRecipeIngredientDrafts(text: String): List<RecipeIngredientDraf
             val optionalText = parts.getOrNull(4)?.lowercase().orEmpty()
             if (optionalText.isNotEmpty() && optionalText !in setOf("optional", "true", "yes")) return null
             RecipeIngredientDraft(parts.first(), amount, unit, preparation, optionalText.isNotEmpty())
+        }
+    }
+}
+
+@Composable
+private fun OpenFoodFactsSuggestionCard(suggestion: OpenFoodFactsSuggestion, fromCache: Boolean) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Open Food Facts suggestion", style = MaterialTheme.typography.titleSmall)
+            suggestion.productName?.let { Text("Product: $it") }
+            suggestion.brands?.let { Text("Brand: $it") }
+            suggestion.quantity?.let { Text("Package quantity text: $it") }
+            if (suggestion.productName == null && suggestion.brands == null && suggestion.quantity == null) {
+                Text("This product record has no name, brand, or quantity details.")
+            }
+            Text("Open Food Facts barcode: ${suggestion.canonicalCode}", style = MaterialTheme.typography.bodySmall)
+            if (suggestion.warningIds.isNotEmpty()) {
+                Text("Open Food Facts marked this record with warnings; check the details carefully.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+            Text(if (fromCache) "Showing a result saved on this phone." else "Result saved in this phone's local lookup cache.", style = MaterialTheme.typography.bodySmall)
+            Text("Data from $OPEN_FOOD_FACTS_LICENSE · ${OPEN_FOOD_FACTS_HOME}", style = MaterialTheme.typography.bodySmall)
+            Text(
+                "Provider details stay in the local lookup cache, outside household records and backups. They aren't copied into the ingredient, brand, or product-name fields; category remains manually chosen, and ABV isn't retrieved or stored. Quantity is source text, not a verified bottle volume.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

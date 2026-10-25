@@ -483,6 +483,13 @@ SELECT id, ingredient_id, brand, product_name, barcode, created_at
 FROM ingredient_product
 WHERE barcode IS NOT NULL;
 
+selectProductsForBarcodeLookup:
+SELECT ingredient.canonical_name AS ingredient_name, ingredient.category, ingredient_product.brand,
+       ingredient_product.product_name, ingredient_product.barcode
+FROM ingredient_product
+JOIN ingredient ON ingredient.id = ingredient_product.ingredient_id
+WHERE ingredient_product.barcode IS NOT NULL;
+
 updateProduct:
 UPDATE ingredient_product SET ingredient_id = ?, brand = ?, product_name = ?, barcode = ? WHERE id = ?;
 

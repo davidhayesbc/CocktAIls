@@ -57,7 +57,7 @@ flowchart TD
   H --> I[Save to this location]
 ```
 
-Lookup results are suggestions. Confirm or correct the product-to-generic-ingredient link before saving. Unknown barcode never blocks manual entry.
+An existing household barcode match is shown locally first. Open Food Facts lookup is an explicit optional action and only sends the barcode when the local source cache has no result. Returned name, brand, and quantity remain a separate attributed suggestion; they are not copied into household fields or backups. Unknown barcode or lookup failure never blocks manual entry. See [ADR-0011](../architecture/ADR-0011-optional-open-food-facts-lookup.md).
 
 ## Import a source or household file
 

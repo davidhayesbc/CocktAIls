@@ -947,6 +947,16 @@ Martini,"Vodka | 60 | ml; Vermouth | 10 | ml",Stir,1,SHORT,unrelated-1""",
         assertTrue(repository.pantry(homeId).isEmpty())
         assertTrue(repository.addIngredient("Vodka", "Spirit", InventoryLevel.FULL, homeId, 30, barcode = "036000291452", brand = "Example", productName = "Example Vodka 750 ml"))
         assertTrue(repository.addIngredient("Vodka", "Spirit", InventoryLevel.MOSTLY_FULL, homeId, 40, barcode = "0036000291452", brand = "Example", productName = "Example Vodka 750 ml"))
+        assertEquals(
+            com.davidhayesbc.cocktails.core.model.LocalProductBarcodeMatch(
+                ingredientName = "Vodka",
+                category = "Spirit",
+                brand = "Example",
+                productName = "Example Vodka 750 ml",
+                barcode = "0036000291452",
+            ),
+            repository.localProductForBarcode("036000291452"),
+        )
 
         val backup = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(repository.exportHouseholdBundle(50))).bundle
         val currentProduct = backup.records.single { it.type == "PRODUCT" }

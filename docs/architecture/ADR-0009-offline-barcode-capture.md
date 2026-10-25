@@ -9,7 +9,7 @@ Use CameraX for the Android camera preview and ZXing Core for UPC-A, EAN-8, and 
 
 Validate GTIN lengths and check digits before saving. Normalize UPC-A to its equivalent zero-prefixed GTIN-13 form only for comparison, while retaining the exact scanned or entered string in the product record. Confirm the generic ingredient and optional brand before saving. The product-to-ingredient relationship and inventory addition commit together locally and travel through the versioned household backup.
 
-Do not query a remote product service or bundle a product dataset in this phase. Any later lookup must be optional, require explicit source/coverage and license review, and must not make barcode entry depend on connectivity. The shared core owns GTIN validation; a future iOS shell can use the same rules with an iOS camera adapter.
+Do not bundle a product dataset. The later approved optional Open Food Facts lookup is defined in [ADR-0011](ADR-0011-optional-open-food-facts-lookup.md); it never makes barcode entry depend on connectivity. The shared core owns GTIN validation; a future iOS shell can use the same rules with an iOS camera adapter.
 
 ## Consequences
 

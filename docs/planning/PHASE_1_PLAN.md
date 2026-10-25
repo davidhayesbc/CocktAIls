@@ -18,7 +18,7 @@ Included:
 - Family-based listings that group equivalent source records and distinct recipe variants, with safe import match suggestions and user review for uncertain identity links.
 - Recipe scaling, unit display preference, favorites, and recently made list.
 - Separate tasting notes/reviews for each member.
-- Barcode capture with manual fallback. External barcode lookups and label OCR await source/runtime review; neither may block saving.
+- Barcode capture with manual fallback and an optional, explicitly user-triggered Open Food Facts v3.6 product-name/brand/quantity suggestion; see [ADR-0011](../architecture/ADR-0011-optional-open-food-facts-lookup.md). Label OCR remains deferred; lookup failures never block saving.
 - Small, separately versioned and attributed core recipe pack; candidate seed is the audited Wikipedia CSV subset of `rasmusab/iba-cocktails`. Source entries are read-only; household edits create linked variants.
 - Staged, provenance-aware import pipeline. Support CocktAIls bundles and user-provided recipe CSV/JSON with explicit field mapping; add source-specific adapters only after rights and formats are reviewed.
 - Versioned bundle export/import with optional photos, validation, preview, idempotent merge, conflict resolution, and safe backup/restore.
@@ -38,7 +38,7 @@ Not in Phase 1:
 - Confirm package/application ID, minimum Android version, target SDK, distribution method, visual direction, and whether photos are needed in the first import format.
 - Audit source-page attribution and modifications for each selected row in the candidate 89-record Wikipedia subset; exclude rows that cannot be attributed adequately. Document source URL/revision, license/version, attribution, redistribution, and update process. Do not use the separately scraped `iba-web/` data without independent clearance.
 - Decide the initial core pack license for original contributions and define contributor terms. Keep per-record provenance where source licenses differ.
-- Defer Open Food Facts bulk data until spirits coverage, pack size, and ODbL obligations are evaluated. Keep barcode capture useful with manual entry meanwhile.
+- Defer Open Food Facts bulk data until spirits coverage, pack size, and ODbL obligations are evaluated. Keep barcode capture useful with manual entry; the optional single-product lookup is a separate path and not a bundled dataset.
 - Verify barcode scanning and optional OCR offline behavior; verify Ollama Cloud auth/API terms separately if Phase 2 AI is approved.
 - Create a Gradle repository with an Android app target and a Kotlin Multiplatform `shared/core` target; configure Android and future iOS framework source sets without introducing an online account/backend dependency.
 - Add a SwiftUI app shell directory for the future client, but keep iOS UI implementation and release out of Phase 1. Record that full iOS framework linking, signing, and device tests require a macOS/Xcode runner.
@@ -82,8 +82,8 @@ Not in Phase 1:
 
 ### 4. Barcode and visual refinement
 
-- Add camera permission explanation and barcode scan flow. Save the scanned value locally before attempting lookup.
-- Integrate an approved lookup source only after coverage and rights review; show source and confidence and require user confirmation.
+- Add camera permission explanation and barcode scan flow. Keep the scanned value in the local form before any optional lookup; only request data after the explicit provider button is tapped.
+- Show provider suggestions separately with attribution and require manual household-field entry; never copy provider data into household records as a side effect of lookup.
 - Add optional label photo. OCR is a later opt-in enhancement if its offline footprint and accuracy are acceptable.
 - Refine typography, color, empty states, loading, errors, dark mode, font scaling, and accessibility.
 

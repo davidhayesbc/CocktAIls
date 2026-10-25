@@ -55,6 +55,14 @@ data class PantryEntry(
     val photoData: ByteArray? = null,
 )
 
+data class LocalProductBarcodeMatch(
+    val ingredientName: String,
+    val category: String,
+    val brand: String?,
+    val productName: String,
+    val barcode: String,
+)
+
 data class HomeLocation(
     val id: String,
     val name: String,

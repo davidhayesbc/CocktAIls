@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -18,6 +19,9 @@ import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.davidhayesbc.cocktails.android.product.OpenFoodFactsLocalCache
+import com.davidhayesbc.cocktails.android.product.OpenFoodFactsSuggestion
+import com.davidhayesbc.cocktails.android.product.SharedPreferencesLookupStorage
 import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import com.davidhayesbc.cocktails.core.data.CatalogInstallResult
 import com.davidhayesbc.cocktails.core.data.LocalCocktailRepository
@@ -59,6 +63,52 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("app-version").assertIsDisplayed()
             .assertTextEquals("$versionName · version code $versionCode")
         composeRule.onNodeWithTag("app-build-status").assertIsDisplayed().assertTextEquals(buildStatus)
+    }
+
+    @Test
+    fun providerLookupIsExplicitAndCachedSuggestionsStaySeparateFromManualFields() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val preferences = context.getSharedPreferences("open_food_facts_local_cache", android.content.Context.MODE_PRIVATE)
+        preferences.edit().clear().commit()
+        try {
+            val cache = OpenFoodFactsLocalCache(SharedPreferencesLookupStorage(context))
+            cache.store(
+                OpenFoodFactsSuggestion(
+                    requestedBarcode = "036000291452",
+                    requestCode = "036000291452",
+                    canonicalCode = "0036000291452",
+                    productName = "Provider Gin",
+                    brands = "Provider Brand",
+                    quantity = "700 ml",
+                    lastModifiedSeconds = 1_700_000_000L,
+                    schemaVersion = "3.6",
+                    fetchedAtMillis = System.currentTimeMillis(),
+                    warningIds = emptyList(),
+                ),
+            )
+
+            composeRule.onNodeWithText("My Bar").performClick()
+            composeRule.onNodeWithText("＋ Add").performClick()
+            composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Ingredient name"))
+            composeRule.onNodeWithTag("ingredient-name").performTextInput("My Manual Gin")
+            composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasTestTag("ingredient-barcode"))
+            composeRule.onNodeWithTag("ingredient-barcode").performTextInput("036000291452")
+            composeRule.onAllNodesWithText("Open Food Facts suggestion").assertCountEquals(0)
+            composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasTestTag("open-food-facts-lookup"))
+            composeRule.onNodeWithTag("open-food-facts-lookup").assertIsDisplayed().performClick()
+            composeRule.waitUntil(timeoutMillis = 5_000) {
+                composeRule.onAllNodesWithText("Provider Gin").fetchSemanticsNodes().isNotEmpty()
+            }
+            composeRule.onNodeWithText("Showing a result saved on this phone.").assertIsDisplayed()
+            composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Ingredient name"))
+            composeRule.onNodeWithTag("ingredient-name").assertTextEquals("My Manual Gin")
+            composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasTestTag("ingredient-brand"))
+            composeRule.onNodeWithTag("ingredient-brand").assertTextEquals("")
+            composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasTestTag("ingredient-product-name"))
+            composeRule.onNodeWithTag("ingredient-product-name").assertTextEquals("")
+        } finally {
+            preferences.edit().clear().commit()
+        }
     }
 
     @Test

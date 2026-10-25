@@ -5,6 +5,7 @@ import com.davidhayesbc.cocktails.core.model.HomeLocation
 import com.davidhayesbc.cocktails.core.model.IngredientId
 import com.davidhayesbc.cocktails.core.model.InventoryLevel
 import com.davidhayesbc.cocktails.core.model.PantryEntry
+import com.davidhayesbc.cocktails.core.model.LocalProductBarcodeMatch
 import com.davidhayesbc.cocktails.core.model.CocktailFamilyId
 import com.davidhayesbc.cocktails.core.model.RecipeCard
 import com.davidhayesbc.cocktails.core.model.RecipeDetail
@@ -928,6 +929,20 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                 photoData = it.photo_data,
             )
         }
+
+    fun localProductForBarcode(barcode: String): LocalProductBarcodeMatch? {
+        val normalized = normalizeGtinForLookup(barcode) ?: return null
+        val product = queries.selectProductsForBarcodeLookup().executeAsList().firstOrNull {
+            normalizeGtinForLookup(it.barcode) == normalized
+        } ?: return null
+        return LocalProductBarcodeMatch(
+            ingredientName = product.ingredient_name,
+            category = product.category,
+            brand = product.brand,
+            productName = product.product_name,
+            barcode = product.barcode,
+        )
+    }
 
     fun addIngredient(
         name: String,
