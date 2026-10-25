@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="430" height="932" viewBox="0 0 430 932" role="img" aria-labelledby="title desc">
+  <title id="title">CocktAIls Make screen concept</title>
+  <desc id="desc">A warm, editorial mobile cocktail app home screen showing drinks available at Home.</desc>
+  <defs>
+    <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E8B66F"/>
+      <stop offset="1" stop-color="#C9793E"/>
+    </linearGradient>
+  </defs>
+  <rect width="430" height="932" fill="#F5F1E8"/>
+
+  <!-- Status bar -->
+  <text x="26" y="30" font-family="Arial, sans-serif" font-size="14" font-weight="700" fill="#202923">9:41</text>
+  <g fill="#202923">
+    <rect x="350" y="18" width="4" height="11" rx="1"/><rect x="357" y="15" width="4" height="14" rx="1"/>
+    <rect x="364" y="12" width="4" height="17" rx="1"/><rect x="371" y="9" width="4" height="20" rx="1"/>
+    <rect x="384" y="14" width="27" height="15" rx="4" fill="none" stroke="#202923" stroke-width="1.5"/>
+    <rect x="387" y="17" width="19" height="9" rx="2"/><rect x="412" y="18" width="2" height="7" rx="1"/>
+  </g>
+
+  <!-- Greeting and household/location -->
+  <text x="26" y="77" font-family="Arial, sans-serif" font-size="14" fill="#59645D">SUNDAY EVENING</text>
+  <text x="26" y="117" font-family="Georgia, serif" font-size="32" fill="#202923">Good evening</text>
+  <circle cx="386" cy="95" r="23" fill="#DCE6DB"/>
+  <text x="386" y="101" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#285E4D">A</text>
+
+  <rect x="24" y="143" width="382" height="48" rx="16" fill="#FFFDFA" stroke="#DED9CE"/>
+  <path d="M43 163l9-7 9 7v13H45v-9h6v9" fill="none" stroke="#285E4D" stroke-width="1.8" stroke-linejoin="round"/>
+  <text x="72" y="174" font-family="Arial, sans-serif" font-size="15" font-weight="700" fill="#202923">Home</text>
+  <path d="M126 166l5 5 5-5" fill="none" stroke="#59645D" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="383" y="161" text-anchor="end" font-family="Arial, sans-serif" font-size="10" font-weight="700" letter-spacing=".8" fill="#285E4D">AUTO · NEARBY</text>
+  <text x="383" y="177" text-anchor="end" font-family="Arial, sans-serif" font-size="10" font-weight="700" fill="#59645D">AT THE SHOP →</text>
+
+  <!-- Search / heading -->
+  <text x="26" y="238" font-family="Georgia, serif" font-size="29" fill="#202923">What can you make?</text>
+  <rect x="24" y="255" width="382" height="54" rx="16" fill="#FFFDFA" stroke="#DED9CE"/>
+  <circle cx="49" cy="281" r="8" fill="none" stroke="#59645D" stroke-width="1.7"/>
+  <path d="M55 287l6 6" stroke="#59645D" stroke-width="1.7" stroke-linecap="round"/>
+  <text x="74" y="286" font-family="Arial, sans-serif" font-size="15" fill="#768078">Search drinks or ingredients</text>
+
+  <!-- Ready now -->
+  <text x="26" y="352" font-family="Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="1.4" fill="#285E4D">READY NOW</text>
+  <text x="404" y="352" text-anchor="end" font-family="Arial, sans-serif" font-size="13" fill="#59645D">8 drinks</text>
+
+  <rect x="24" y="370" width="382" height="150" rx="20" fill="#FFFDFA" stroke="#DED9CE"/>
+  <rect x="38" y="384" width="92" height="122" rx="14" fill="#E8E3D7"/>
+  <ellipse cx="84" cy="475" rx="27" ry="7" fill="#B8A68A" opacity=".55"/>
+  <path d="M61 416h46l-5 36c-1 12-7 18-18 18s-17-6-18-18z" fill="url(#glass)"/>
+  <path d="M62 417h44" stroke="#F8E6C9" stroke-width="3" stroke-linecap="round"/>
+  <path d="M84 470v18m-14 0h28" stroke="#7F6650" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="100" cy="413" r="10" fill="#285E4D"/>
+  <path d="M96 413l3 3 5-6" fill="none" stroke="#FFFDFA" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="148" y="405" font-family="Arial, sans-serif" font-size="11" font-weight="700" letter-spacing="1.2" fill="#9B6B37">BITTERSWEET</text>
+  <text x="148" y="436" font-family="Georgia, serif" font-size="25" fill="#202923">Negroni</text>
+  <text x="148" y="462" font-family="Arial, sans-serif" font-size="13" fill="#59645D">2 versions · classic ready</text>
+  <rect x="148" y="478" width="112" height="27" rx="13.5" fill="#E6EEE5"/>
+  <circle cx="163" cy="491.5" r="4" fill="#285E4D"/>
+  <text x="174" y="496" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#285E4D">READY TO MAKE</text>
+  <path d="M379 392c-2-3-8-2-8 3 0 5 8 10 8 10s8-5 8-10c0-5-6-6-8-3z" fill="none" stroke="#59645D" stroke-width="1.5"/>
+
+  <rect x="24" y="532" width="382" height="118" rx="20" fill="#FFFDFA" stroke="#DED9CE"/>
+  <rect x="38" y="546" width="92" height="90" rx="14" fill="#E3E9DD"/>
+  <path d="M60 570h48l-6 30c-2 9-8 14-18 14s-16-5-18-14z" fill="#B9C990"/>
+  <path d="M84 614v12m-13 0h26" stroke="#71815D" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="102" cy="568" r="7" fill="#E8F0DA" stroke="#819663" stroke-width="1.5"/>
+  <text x="148" y="573" font-family="Arial, sans-serif" font-size="11" font-weight="700" letter-spacing="1.2" fill="#70835C">FRESH &amp; CITRUSY</text>
+  <text x="148" y="603" font-family="Georgia, serif" font-size="23" fill="#202923">Gimlet</text>
+  <text x="148" y="628" font-family="Arial, sans-serif" font-size="13" fill="#59645D">1 version · all ingredients ready</text>
+  <path d="M379 553c-2-3-8-2-8 3 0 5 8 10 8 10s8-5 8-10c0-5-6-6-8-3z" fill="none" stroke="#59645D" stroke-width="1.5"/>
+
+  <!-- Close to ready -->
+  <text x="26" y="699" font-family="Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="1.3" fill="#59645D">CLOSE TO READY</text>
+  <text x="26" y="728" font-family="Georgia, serif" font-size="21" fill="#202923">Boulevardier</text>
+  <text x="26" y="751" font-family="Arial, sans-serif" font-size="13" fill="#59645D">Missing sweet vermouth</text>
+  <rect x="307" y="710" width="99" height="32" rx="16" fill="#F1E4CE"/>
+  <text x="356.5" y="731" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#77532C">1 missing</text>
+  <path d="M24 772h382" stroke="#DED9CE"/>
+
+  <!-- Recent -->
+  <text x="26" y="812" font-family="Georgia, serif" font-size="22" fill="#202923">Recently made</text>
+  <text x="404" y="811" text-anchor="end" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#285E4D">SEE ALL</text>
+  <circle cx="47" cy="850" r="18" fill="#E8D7BF"/>
+  <path d="M39 845h16l-2 12c-1 4-3 6-6 6s-6-2-6-6z" fill="#C9793E"/>
+  <text x="77" y="847" font-family="Arial, sans-serif" font-size="14" font-weight="700" fill="#202923">Whiskey Sour</text>
+  <text x="77" y="866" font-family="Arial, sans-serif" font-size="12" fill="#59645D">Your note · last Friday</text>
+  <text x="387" y="856" text-anchor="end" font-family="Arial, sans-serif" font-size="14" fill="#D78A32">★★★★★</text>
+
+  <!-- Bottom navigation -->
+  <rect x="0" y="889" width="430" height="43" fill="#FFFDFA"/>
+  <path d="M0 889h430" stroke="#DED9CE"/>
+  <rect x="23" y="896" width="76" height="30" rx="15" fill="#E6EEE5"/>
+  <path d="M48 906l7-6 7 6v9H50v-6h5v6" fill="none" stroke="#285E4D" stroke-width="1.6" stroke-linejoin="round"/>
+  <text x="69" y="918" font-family="Arial, sans-serif" font-size="10" font-weight="700" fill="#285E4D">Make</text>
+  <path d="M151 905h18v14h-18zM155 901h10v4h-10" fill="none" stroke="#7A827B" stroke-width="1.5" stroke-linejoin="round"/>
+  <text x="160" y="926" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#59645D">My Bar</text>
+  <path d="M257 902h16v18h-16zM261 907h8m-8 4h8m-8 4h5" fill="none" stroke="#7A827B" stroke-width="1.5" stroke-linecap="round"/>
+  <text x="265" y="926" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#59645D">Recipes</text>
+  <circle cx="364" cy="909" r="8" fill="none" stroke="#7A827B" stroke-width="1.5"/>
+  <path d="M351 920c2-5 6-7 13-7s11 2 13 7" fill="none" stroke="#7A827B" stroke-width="1.5" stroke-linecap="round"/>
+  <text x="364" y="926" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#59645D">More</text>
+</svg>

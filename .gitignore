@@ -1,0 +1,26 @@
+# Gradle / Kotlin / Android build output
+.gradle/
+**/build/
+local.properties
+.idea/
+*.iml
+
+# Apple/Xcode generated files
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+*.ipa
+*.xcarchive/
+.swiftpm/
+
+# Local signing credentials and secrets
+*.jks
+*.keystore
+secrets.properties
+.env
+.env.*
+!.env.example
+
+# OS metadata
+.DS_Store
