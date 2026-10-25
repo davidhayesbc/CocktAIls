@@ -326,7 +326,7 @@ class HouseholdBundleStore internal constructor(
             ))
         }
         queries.selectAllInventoryForBundle().executeAsList().forEach {
-            records += BundleRecord("INVENTORY_ITEM", it.id, obj("id" to str(it.id), "locationId" to str(it.location_id), "ingredientId" to str(it.ingredient_id), "level" to str(it.level), "updatedAt" to num(it.updated_at), "updatedByMemberId" to str(it.updated_by_member_id)))
+            records += BundleRecord("INVENTORY_ITEM", it.id, obj("id" to str(it.id), "locationId" to str(it.location_id), "ingredientId" to str(it.ingredient_id), "productId" to nullableString(it.product_id), "level" to str(it.level), "updatedAt" to num(it.updated_at), "updatedByMemberId" to str(it.updated_by_member_id)))
         }
         queries.selectAllFamiliesForBundle().executeAsList().forEach { row ->
             records += BundleRecord("COCKTAIL_FAMILY", row.id, obj(
@@ -491,9 +491,6 @@ class HouseholdBundleStore internal constructor(
         if (ingredientKeys.size != ingredientKeys.toSet().size) return false
         val productBarcodes = combined.filter { it.type == "PRODUCT" }.mapNotNull { it.data.nullableString("barcode") }
         if (productBarcodes.size != productBarcodes.toSet().size) return false
-        val inventoryKeys = combined.filter { it.type == "INVENTORY_ITEM" }
-            .map { "${it.data.string("locationId")}\u0000${it.data.string("ingredientId")}" }
-        if (inventoryKeys.size != inventoryKeys.toSet().size) return false
         return true
     }
 
@@ -548,9 +545,9 @@ class HouseholdBundleStore internal constructor(
         val level = data.string("level")
         val updatedAt = data.long("updatedAt")
         val memberId = data.string("updatedByMemberId")
-        queries.insertInventoryBundleIgnore(record.id, locationId, ingredientId, level, updatedAt, memberId)
-        queries.updateInventoryBundleById(locationId, ingredientId, level, updatedAt, memberId, record.id)
-        queries.updateInventoryBundleByLocationIngredient(level, updatedAt, memberId, locationId, ingredientId)
+        val productId = data.optionalNullableString("productId")
+        queries.insertInventoryBundleIgnore(record.id, locationId, ingredientId, productId, level, updatedAt, memberId)
+        queries.updateInventoryBundleById(locationId, ingredientId, productId, level, updatedAt, memberId, record.id)
     }
 
     private fun writeFamily(record: BundleRecord) {

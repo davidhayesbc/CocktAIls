@@ -188,11 +188,11 @@ object BundleValidator {
         val memberIds = ids("MEMBER")
         val locationIds = ids("LOCATION")
         val ingredientIds = ids("INGREDIENT")
+        val productIds = ids("PRODUCT")
         val familyIds = ids("COCKTAIL_FAMILY")
         val variantIds = ids("RECIPE_VARIANT")
 
         val ingredientNaturalKeys = mutableSetOf<String>()
-        val inventoryNaturalKeys = mutableSetOf<String>()
         val barcodeKeys = mutableSetOf<String>()
         val recipeLineIds = mutableSetOf<String>()
         var totalProductPhotoBytes = 0
@@ -257,8 +257,7 @@ object BundleValidator {
                     reference("updatedByMemberId", memberIds)
                     requiredLong("updatedAt")
                     if (record.data.optionalString("level") !in setOf("FULL", "MOSTLY_FULL", "HALF", "LOW", "OUT")) errors += "INVENTORY_ITEM ${record.id} has an invalid stock level."
-                    val naturalKey = "${record.data.optionalString("locationId")}\u0000${record.data.optionalString("ingredientId")}"
-                    if (!inventoryNaturalKeys.add(naturalKey)) errors += "Bundle contains duplicate pantry slots."
+                    record.data.optionalString("productId")?.let { if (it !in productIds) errors += "INVENTORY_ITEM ${record.id} has an invalid productId reference." }
                 }
                 "COCKTAIL_FAMILY" -> {
                     requiredString("canonicalName"); requiredLong("createdAt")

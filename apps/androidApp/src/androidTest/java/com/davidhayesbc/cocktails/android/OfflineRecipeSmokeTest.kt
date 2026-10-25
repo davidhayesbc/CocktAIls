@@ -19,6 +19,7 @@ import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.text.AnnotatedString
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -44,6 +45,41 @@ import org.junit.runner.RunWith
 class OfflineRecipeSmokeTest {
     @get:Rule
     val composeRule = createAndroidComposeRule<MainActivity>()
+
+    @Test
+    fun batchIntakeDraftsResumeAfterActivityRecreationAndConfirmSeparateBottles() {
+        val bottleName = "Batch Test Gin ${System.currentTimeMillis()}"
+        composeRule.onNodeWithText("My Bar").performClick()
+        composeRule.onNodeWithTag("start-bottle-intake").performClick()
+        composeRule.onNodeWithTag("batch-manual-name").performTextInput(bottleName)
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-add-manual-bottle"))
+        composeRule.onNodeWithTag("batch-add-manual-bottle").performClick()
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-manual-name"))
+        composeRule.onNodeWithTag("batch-manual-name").performTextInput(bottleName)
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-add-manual-bottle"))
+        composeRule.onNodeWithTag("batch-add-manual-bottle").performClick()
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("2 bottles in this batch"))
+        composeRule.onNodeWithText("2 bottles in this batch").assertIsDisplayed()
+
+        composeRule.activityRule.scenario.recreate()
+        composeRule.onNodeWithText("My Bar").performClick()
+        composeRule.onNodeWithTag("start-bottle-intake").performClick()
+        composeRule.onNodeWithText("2 bottles in this batch").assertIsDisplayed()
+        composeRule.onNodeWithTag("batch-confirm").performClick()
+
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val driver = AndroidSqliteDriver(CocktailsDatabase.Schema, context, "cocktails.db")
+        try {
+            val repository = LocalCocktailRepository(CocktailsDatabase(driver))
+            repository.initialize(1)
+            val homeId = repository.preferredHomeId() ?: repository.locations().first().id
+            val bottles = repository.pantry(homeId).filter { it.name == bottleName }
+            assertEquals(2, bottles.size)
+            assertEquals(2, bottles.map { it.inventoryId }.toSet().size)
+        } finally {
+            driver.close()
+        }
+    }
 
     @Test
     fun displayedVersionMatchesInstalledPackageMetadata() {
@@ -92,8 +128,12 @@ class OfflineRecipeSmokeTest {
                 ),
             )
 
+            composeRule.onNodeWithText("More").performClick()
+            composeRule.onNodeWithTag("household-scroll").performScrollToNode(hasTestTag("online-product-lookup-toggle"))
+            val lookupToggle = composeRule.onNodeWithTag("online-product-lookup-toggle")
+            if (lookupToggle.fetchSemanticsNode().config[SemanticsProperties.ToggleableState] != ToggleableState.On) lookupToggle.performClick()
             composeRule.onNodeWithText("My Bar").performClick()
-            composeRule.onNodeWithText("＋ Add").performClick()
+            composeRule.onNodeWithText("＋ Add one").performClick()
             composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Ingredient name"))
             composeRule.onNodeWithTag("ingredient-name").performTextInput("My Manual Gin")
             composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasTestTag("ingredient-barcode"))

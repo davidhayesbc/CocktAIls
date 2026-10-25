@@ -46,6 +46,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Switch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -63,9 +64,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.core.content.FileProvider
 import com.davidhayesbc.cocktails.core.data.LocalCocktailRepository
 import com.davidhayesbc.cocktails.core.data.CatalogInstallResult
 import com.davidhayesbc.cocktails.core.matching.HomeLocationArea
@@ -92,11 +95,15 @@ import com.davidhayesbc.cocktails.core.interchange.previewRecipeImport
 import com.davidhayesbc.cocktails.core.interchange.hasSameRecipeFormulation
 import com.davidhayesbc.cocktails.core.interchange.isProductPhotoJpeg
 import com.davidhayesbc.cocktails.core.interchange.MAX_PRODUCT_PHOTO_BYTES
+import com.davidhayesbc.cocktails.core.interchange.photoSha256
 import com.davidhayesbc.cocktails.core.model.HomeLocation
 import com.davidhayesbc.cocktails.core.model.CocktailFamilyId
 import com.davidhayesbc.cocktails.core.model.InventoryLevel
 import com.davidhayesbc.cocktails.core.model.PantryEntry
 import com.davidhayesbc.cocktails.core.model.LocalProductBarcodeMatch
+import com.davidhayesbc.cocktails.core.model.BottleIntakeSession
+import com.davidhayesbc.cocktails.core.model.BottleIntakeDraft
+import com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult
 import com.davidhayesbc.cocktails.core.model.RecipeDetail
 import com.davidhayesbc.cocktails.core.model.RecipeStyle
 import com.davidhayesbc.cocktails.core.model.RecipeIngredientDraft
@@ -114,6 +121,7 @@ import com.davidhayesbc.cocktails.core.model.RecipeVariantId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
 import com.davidhayesbc.cocktails.android.location.ApproximateCoordinates
 import com.davidhayesbc.cocktails.android.location.requestApproximateLocation
@@ -128,6 +136,12 @@ import com.davidhayesbc.cocktails.android.product.OPEN_FOOD_FACTS_HOME
 import com.davidhayesbc.cocktails.android.product.OPEN_FOOD_FACTS_LICENSE
 import com.davidhayesbc.cocktails.android.product.ODBL_LICENSE_URL
 import com.davidhayesbc.cocktails.android.product.DBCL_LICENSE_URL
+import com.davidhayesbc.cocktails.android.product.FirecrawlCredentialStore
+import com.davidhayesbc.cocktails.android.product.FirecrawlSearchProvider
+import com.davidhayesbc.cocktails.android.product.WebSearchHit
+import com.davidhayesbc.cocktails.android.product.WebPageText
+import com.davidhayesbc.cocktails.android.product.WebSearchResult
+import com.davidhayesbc.cocktails.android.product.WebPageResult
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -136,6 +150,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.ByteArrayOutputStream
 import java.io.ByteArrayInputStream
+import java.io.File
 
 private enum class Page(val label: String) {
     MAKE("Make"),
@@ -151,6 +166,14 @@ private data class InstalledAppVersion(
     val name: String,
     val code: Long,
     val buildStatus: String,
+)
+
+private data class BottleWebSearchState(
+    val searching: Boolean = false,
+    val fetchingUrl: String? = null,
+    val hits: List<WebSearchHit> = emptyList(),
+    val page: WebPageText? = null,
+    val message: String? = null,
 )
 
 /** Reads only the user-selected URI and re-encodes pixels, which removes embedded metadata. */
@@ -225,6 +248,24 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     val openFoodFactsClient = remember(context) {
         OpenFoodFactsLookupClient(OpenFoodFactsLocalCache(SharedPreferencesLookupStorage(context)))
     }
+    val firecrawlCredentialStore = remember(context) { FirecrawlCredentialStore(context) }
+    val firecrawlSearchProvider = remember(firecrawlCredentialStore) {
+        FirecrawlSearchProvider(keyProvider = firecrawlCredentialStore::readApiKey)
+    }
+    var openFoodFactsEnabled by remember(context) {
+        mutableStateOf(context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).getBoolean("open_food_facts_enabled", false))
+    }
+    var firecrawlKeySaved by remember(context) { mutableStateOf(firecrawlCredentialStore.hasSavedKey()) }
+    var firecrawlKeyNeedsReplacement by remember(context) {
+        mutableStateOf(firecrawlCredentialStore.hasSavedKey() && firecrawlCredentialStore.readApiKey() == null)
+    }
+    var firecrawlSearchEnabled by remember(context) {
+        mutableStateOf(context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).getBoolean("firecrawl_search_enabled", false))
+    }
+    var showFirecrawlCredentialDialog by remember { mutableStateOf(false) }
+    var bottleWebSearchStates by remember { mutableStateOf<Map<String, BottleWebSearchState>>(emptyMap()) }
+    val bottleWebSearchJobs = remember { mutableMapOf<String, Job>() }
+    val bottleWebSearchRequestTokens = remember { mutableMapOf<String, Int>() }
     val installedAppVersion = remember(context) {
         @Suppress("DEPRECATION")
         val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
@@ -265,6 +306,12 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var showShop by remember { mutableStateOf(false) }
     var showAddIngredient by remember { mutableStateOf(false) }
     var showBarcodeScanner by remember { mutableStateOf(false) }
+    var showBottleIntake by remember { mutableStateOf(false) }
+    var showBottleScanner by remember { mutableStateOf(false) }
+    var bottleIntakeCameraMessage by remember { mutableStateOf<String?>(null) }
+    var bottleIntakeSession by remember(repository) { mutableStateOf(repository.openBottleIntakeSession()) }
+    var pendingBottleLabelPhoto by remember { mutableStateOf<ByteArray?>(null) }
+    var bottleLabelCaptureMessage by remember { mutableStateOf<String?>(null) }
     var barcodeInput by remember { mutableStateOf("") }
     var barcodePermissionMessage by remember { mutableStateOf<String?>(null) }
     var localProductMatch by remember { mutableStateOf<LocalProductBarcodeMatch?>(null) }
@@ -302,7 +349,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     }
 
     fun lookupProductDetails(value: String) {
-        if (productLookupInProgress) return
+        if (!openFoodFactsEnabled || productLookupInProgress) return
         productLookupInProgress = true
         productLookupResult = null
         val requestToken = productLookupRequestToken + 1
@@ -323,6 +370,78 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 productLookupInProgress = false
             }
         }
+    }
+
+    fun searchBottleSources(draft: BottleIntakeDraft) {
+        if (!firecrawlSearchEnabled || !firecrawlKeySaved || firecrawlKeyNeedsReplacement) return
+        val terms = listOfNotNull(draft.brand, draft.productName, draft.ingredientName)
+            .map(String::trim).filter(String::isNotEmpty).distinct().joinToString(" ").take(256)
+        if (terms.isBlank()) return
+        bottleWebSearchJobs.remove(draft.id)?.cancel()
+        val requestToken = (bottleWebSearchRequestTokens[draft.id] ?: 0) + 1
+        bottleWebSearchRequestTokens[draft.id] = requestToken
+        val sessionId = draft.sessionId
+        bottleWebSearchStates = bottleWebSearchStates + (draft.id to BottleWebSearchState(searching = true))
+        bottleWebSearchJobs[draft.id] = coroutineScope.launch {
+            val result = try {
+                firecrawlSearchProvider.search(terms, 5)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                WebSearchResult.Unavailable
+            }
+            if (bottleWebSearchRequestTokens[draft.id] == requestToken && showBottleIntake && bottleIntakeSession?.id == sessionId && bottleIntakeSession?.drafts?.any { it.id == draft.id } == true) {
+                bottleWebSearchStates = bottleWebSearchStates + (draft.id to when (result) {
+                    is WebSearchResult.Found -> BottleWebSearchState(hits = result.hits, message = if (result.hits.isEmpty()) "No usable sources were found. You can continue manually." else null)
+                    WebSearchResult.SetupRequired -> BottleWebSearchState(message = "Add a Firecrawl key and enable search in More before making requests.")
+                    WebSearchResult.AuthenticationRequired -> BottleWebSearchState(message = "Firecrawl did not accept this key. Replace it in More or continue manually.")
+                    WebSearchResult.InvalidQuery -> BottleWebSearchState(message = "This bottle does not have enough searchable product text yet.")
+                    WebSearchResult.QuotaExceeded -> BottleWebSearchState(message = "The Firecrawl plan quota is exhausted. No retry was made; continue manually.")
+                    WebSearchResult.RateLimited -> BottleWebSearchState(message = "Firecrawl is rate limiting requests. Wait before trying again.")
+                    WebSearchResult.Unavailable -> BottleWebSearchState(message = "Firecrawl could not be reached. The local draft is unchanged.")
+                    WebSearchResult.InvalidResponse -> BottleWebSearchState(message = "Firecrawl returned a response this version could not read.")
+                })
+            }
+            if (bottleWebSearchRequestTokens[draft.id] == requestToken) bottleWebSearchJobs.remove(draft.id)
+        }
+    }
+
+    fun fetchBottleSource(draft: BottleIntakeDraft, hit: WebSearchHit) {
+        if (!firecrawlSearchEnabled || !firecrawlKeySaved || firecrawlKeyNeedsReplacement) return
+        val sessionId = draft.sessionId
+        bottleWebSearchJobs.remove(draft.id)?.cancel()
+        val requestToken = (bottleWebSearchRequestTokens[draft.id] ?: 0) + 1
+        bottleWebSearchRequestTokens[draft.id] = requestToken
+        bottleWebSearchStates = bottleWebSearchStates + (draft.id to (bottleWebSearchStates[draft.id] ?: BottleWebSearchState()).copy(fetchingUrl = hit.url, page = null, message = null))
+        bottleWebSearchJobs[draft.id] = coroutineScope.launch {
+            val result = try {
+                firecrawlSearchProvider.fetch(hit.url)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                WebPageResult.Unavailable
+            }
+            if (bottleWebSearchRequestTokens[draft.id] == requestToken && showBottleIntake && bottleIntakeSession?.id == sessionId && bottleIntakeSession?.drafts?.any { it.id == draft.id } == true) {
+                val previous = bottleWebSearchStates[draft.id] ?: BottleWebSearchState()
+                bottleWebSearchStates = bottleWebSearchStates + (draft.id to when (result) {
+                    is WebPageResult.Found -> previous.copy(fetchingUrl = null, page = result.page)
+                    WebPageResult.SetupRequired -> previous.copy(fetchingUrl = null, message = "Add a Firecrawl key in More before fetching a selected source.")
+                    WebPageResult.AuthenticationRequired -> previous.copy(fetchingUrl = null, message = "Firecrawl did not accept this key. Replace it in More.")
+                    WebPageResult.InvalidUrl -> previous.copy(fetchingUrl = null, message = "That source URL cannot be fetched safely.")
+                    WebPageResult.QuotaExceeded -> previous.copy(fetchingUrl = null, message = "The Firecrawl plan quota is exhausted. No retry was made.")
+                    WebPageResult.RateLimited -> previous.copy(fetchingUrl = null, message = "Firecrawl is rate limiting requests. Wait before trying again.")
+                    WebPageResult.Unavailable -> previous.copy(fetchingUrl = null, message = "Firecrawl could not fetch that page. The local draft is unchanged.")
+                    WebPageResult.InvalidResponse -> previous.copy(fetchingUrl = null, message = "Firecrawl returned page data this version could not read.")
+                })
+            }
+            if (bottleWebSearchRequestTokens[draft.id] == requestToken) bottleWebSearchJobs.remove(draft.id)
+        }
+    }
+
+    fun cancelBottleSourceSearch(draftId: String) {
+        bottleWebSearchRequestTokens[draftId] = (bottleWebSearchRequestTokens[draftId] ?: 0) + 1
+        bottleWebSearchJobs.remove(draftId)?.cancel()
+        bottleWebSearchStates = bottleWebSearchStates + (draftId to (bottleWebSearchStates[draftId] ?: BottleWebSearchState()).copy(searching = false, fetchingUrl = null, message = "Request canceled. The bottle draft is unchanged."))
     }
 
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
@@ -441,6 +560,27 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         }
     }
 
+    val bottleLabelCaptureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { captured ->
+        val file = File(File(context.cacheDir, "intake-labels"), "intake-label-capture.jpg")
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        if (captured) {
+            coroutineScope.launch {
+                val result = runCatching { withContext(Dispatchers.IO) { readAndCompressProductPhoto(context, uri) } }
+                pendingBottleLabelPhoto = result.getOrNull()
+                bottleLabelCaptureMessage = if (result.isSuccess) null else "The camera photo could not be prepared. The draft was not changed; try again or skip the photo."
+                file.delete()
+            }
+        } else {
+            file.delete()
+            pendingBottleLabelPhoto = null
+            bottleLabelCaptureMessage = "Photo capture canceled. Your bottle drafts are unchanged."
+        }
+    }
+
+    fun clearPendingBottleCapture() {
+        File(File(context.cacheDir, "intake-labels"), "intake-label-capture.jpg").delete()
+    }
+
     LaunchedEffect(selectedLocationId) {
         pantry = if (selectedLocationId.isEmpty()) emptyList() else repository.pantry(selectedLocationId)
     }
@@ -539,8 +679,13 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         if (granted && showAddIngredient) {
             barcodePermissionMessage = null
             showBarcodeScanner = true
+        } else if (granted && showBottleIntake) {
+            bottleIntakeCameraMessage = null
+            showBottleScanner = true
         } else if (!granted && showAddIngredient) {
             barcodePermissionMessage = "Camera access wasn't granted. Enter the barcode manually instead."
+        } else if (!granted && showBottleIntake) {
+            bottleIntakeCameraMessage = "Camera access wasn't granted. Your draft is safe; add bottles manually or try again in Android settings."
         }
     }
 
@@ -637,11 +782,15 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     setBarcodeInput("")
                     barcodePermissionMessage = null
                 },
+                onAddBottles = {
+                    val session = repository.startBottleIntakeSession(selectedLocationId, InventoryLevel.FULL, System.currentTimeMillis())
+                    bottleIntakeSession = repository.openBottleIntakeSession() ?: session
+                    showBottleIntake = true
+                },
                 onAddLocation = { showAddLocation = true },
                 onLevelSelected = { entry, level ->
-                    repository.updateInventoryLevel(
-                        ingredientId = entry.ingredientId,
-                        locationId = selectedLocationId,
+                    repository.updateBottleLevel(
+                        inventoryId = entry.inventoryId,
                         level = level,
                         nowMillis = System.currentTimeMillis(),
                     )
@@ -754,6 +903,27 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 onOpenLocationSettings = { showLocationSettings = true },
                 onOpenDiagnostics = { showDiagnostics = true },
                 installedAppVersion = installedAppVersion,
+                openFoodFactsEnabled = openFoodFactsEnabled,
+                onOpenFoodFactsEnabledChanged = { enabled ->
+                    context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).edit().putBoolean("open_food_facts_enabled", enabled).apply()
+                    openFoodFactsEnabled = enabled
+                },
+                firecrawlSearchEnabled = firecrawlSearchEnabled,
+                firecrawlKeySaved = firecrawlKeySaved,
+                firecrawlKeyNeedsReplacement = firecrawlKeyNeedsReplacement,
+                onConfigureFirecrawl = { showFirecrawlCredentialDialog = true },
+                onRemoveFirecrawlKey = {
+                    firecrawlCredentialStore.clear()
+                    firecrawlKeySaved = false
+                    firecrawlKeyNeedsReplacement = false
+                    firecrawlSearchEnabled = false
+                    context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).edit().putBoolean("firecrawl_search_enabled", false).apply()
+                },
+                onFirecrawlEnabledChanged = { enabled ->
+                    val allowed = enabled && firecrawlKeySaved && !firecrawlKeyNeedsReplacement
+                    context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).edit().putBoolean("firecrawl_search_enabled", allowed).apply()
+                    firecrawlSearchEnabled = allowed
+                },
             )
         }
     }
@@ -787,6 +957,21 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         )
     }
 
+    if (showFirecrawlCredentialDialog) {
+        FirecrawlCredentialDialog(
+            keyNeedsReplacement = firecrawlKeyNeedsReplacement,
+            onSave = { key ->
+                val saved = firecrawlCredentialStore.saveApiKey(key)
+                if (saved) {
+                    firecrawlKeySaved = true
+                    firecrawlKeyNeedsReplacement = false
+                }
+                saved
+            },
+            onDismiss = { showFirecrawlCredentialDialog = false },
+        )
+    }
+
     if (showAddIngredient) {
         AddIngredientDialog(
             barcode = barcodeInput,
@@ -794,6 +979,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             localProductMatch = localProductMatch,
             productLookupResult = productLookupResult,
             productLookupInProgress = productLookupInProgress,
+            onlineLookupEnabled = openFoodFactsEnabled,
             productPhotoBytes = selectedProductPhoto,
             productPhotoMessage = productPhotoMessage,
             onBarcodeChanged = { setBarcodeInput(it); barcodePermissionMessage = null },
@@ -832,6 +1018,139 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     "Enter an ingredient name before saving."
                 }
             },
+        )
+    }
+
+    if (showBottleIntake && bottleIntakeSession != null) {
+        BottleIntakeDialog(
+            session = bottleIntakeSession!!,
+            homes = locations,
+            capturePhoto = pendingBottleLabelPhoto,
+            captureMessage = bottleLabelCaptureMessage,
+            permissionMessage = bottleIntakeCameraMessage,
+            webSearchEnabled = firecrawlSearchEnabled && firecrawlKeySaved && !firecrawlKeyNeedsReplacement,
+            webSearchStates = bottleWebSearchStates,
+            onSearchDraft = ::searchBottleSources,
+            onFetchDraftSource = ::fetchBottleSource,
+            onCancelDraftSearch = ::cancelBottleSourceSearch,
+            onCaptureLabel = {
+                bottleLabelCaptureMessage = null
+                val directory = File(context.cacheDir, "intake-labels")
+                directory.mkdirs()
+                val file = File(directory, "intake-label-capture.jpg")
+                file.delete()
+                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                bottleLabelCaptureLauncher.launch(uri)
+            },
+            onDiscardCapturedLabel = { pendingBottleLabelPhoto = null; bottleLabelCaptureMessage = null },
+            onAttachCapturedLabel = { draft ->
+                val photo = pendingBottleLabelPhoto
+                if (photo != null) {
+                    repository.updateBottleIntakeDraft(draft.copy(photoData = photo, photoSha256 = photoSha256(photo)))
+                    pendingBottleLabelPhoto = null
+                    bottleLabelCaptureMessage = null
+                    bottleIntakeSession = repository.openBottleIntakeSession()
+                }
+            },
+            onScan = {
+                bottleIntakeCameraMessage = null
+                if (context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) showBottleScanner = true
+                else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            },
+            onAddManual = { name, category, barcode, brand, productName, level, photo ->
+                repository.addBottleIntakeDraft(
+                    sessionId = bottleIntakeSession!!.id,
+                    ingredientName = name,
+                    category = category,
+                    locationId = bottleIntakeSession!!.locationId,
+                    level = level,
+                    nowMillis = System.currentTimeMillis(),
+                    barcode = barcode,
+                    brand = brand,
+                    productName = productName,
+                    photoJpeg = photo,
+                )
+                bottleIntakeSession = repository.openBottleIntakeSession()
+            },
+            onRemove = { draft ->
+                cancelBottleSourceSearch(draft.id)
+                bottleWebSearchStates = bottleWebSearchStates - draft.id
+                repository.removeBottleIntakeDraft(draft.sessionId, draft.id)
+                bottleIntakeSession = repository.openBottleIntakeSession()
+            },
+            onUpdate = { draft ->
+                val prior = bottleIntakeSession?.drafts?.firstOrNull { it.id == draft.id }
+                if (prior != null && (prior.ingredientName != draft.ingredientName || prior.brand != draft.brand || prior.productName != draft.productName)) {
+                    cancelBottleSourceSearch(draft.id)
+                    bottleWebSearchStates = bottleWebSearchStates - draft.id
+                }
+                repository.updateBottleIntakeDraft(draft)
+                bottleIntakeSession = repository.openBottleIntakeSession()
+            },
+            onHomeChanged = { home -> repository.setBottleIntakeHome(bottleIntakeSession!!.id, home, System.currentTimeMillis()); bottleIntakeSession = repository.openBottleIntakeSession() },
+            onLevelChanged = { level -> repository.setBottleIntakeDefaultLevel(bottleIntakeSession!!.id, level, System.currentTimeMillis()); bottleIntakeSession = repository.openBottleIntakeSession() },
+            onConfirm = {
+                val result = repository.confirmBottleIntakeSession(bottleIntakeSession!!.id, System.currentTimeMillis())
+                when (result) {
+                    is BottleIntakeCommitResult.Confirmed, is BottleIntakeCommitResult.AlreadyConfirmed -> {
+                        bottleWebSearchJobs.values.forEach(Job::cancel)
+                        bottleWebSearchJobs.clear()
+                        bottleWebSearchStates = emptyMap()
+                        refreshPantry()
+                        bottleIntakeSession = null
+                        showBottleIntake = false
+                        pendingBottleLabelPhoto = null
+                        bottleLabelCaptureMessage = null
+                    }
+                    is BottleIntakeCommitResult.Invalid -> Unit
+                }
+                result
+            },
+            onCancel = {
+                bottleWebSearchJobs.values.forEach(Job::cancel)
+                bottleWebSearchJobs.clear()
+                bottleWebSearchStates = emptyMap()
+                repository.cancelBottleIntakeSession(bottleIntakeSession!!.id)
+                clearPendingBottleCapture()
+                bottleIntakeSession = null
+                pendingBottleLabelPhoto = null
+                bottleLabelCaptureMessage = null
+                showBottleIntake = false
+            },
+            onDismiss = {
+                bottleWebSearchJobs.values.forEach(Job::cancel)
+                bottleWebSearchJobs.clear()
+                bottleWebSearchStates = emptyMap()
+                showBottleIntake = false
+                bottleIntakeSession = repository.openBottleIntakeSession()
+                pendingBottleLabelPhoto = null
+                bottleLabelCaptureMessage = null
+                clearPendingBottleCapture()
+            },
+        )
+    }
+
+    if (showBottleScanner && bottleIntakeSession != null) {
+        BarcodeScannerDialog(
+            continuous = true,
+            onDetected = { scanned ->
+                if (normalizeGtinForLookup(scanned) != null) {
+                    val local = repository.localProductForBarcode(scanned)
+                    repository.addBottleIntakeDraft(
+                        sessionId = bottleIntakeSession!!.id,
+                        ingredientName = local?.ingredientName ?: "Unidentified bottle",
+                        category = local?.category ?: "Spirit",
+                        locationId = bottleIntakeSession!!.locationId,
+                        level = bottleIntakeSession!!.defaultLevel,
+                        nowMillis = System.currentTimeMillis(),
+                        barcode = scanned,
+                        brand = local?.brand,
+                        productName = local?.productName,
+                    )
+                    bottleIntakeSession = repository.openBottleIntakeSession()
+                }
+            },
+            onDismiss = { showBottleScanner = false; bottleIntakeSession = repository.openBottleIntakeSession() },
         )
     }
 
@@ -1072,6 +1391,181 @@ private fun MakeScreen(
 }
 
 @Composable
+private fun BottleIntakeDialog(
+    session: BottleIntakeSession,
+    homes: List<HomeLocation>,
+    capturePhoto: ByteArray?,
+    captureMessage: String?,
+    permissionMessage: String?,
+    webSearchEnabled: Boolean,
+    webSearchStates: Map<String, BottleWebSearchState>,
+    onSearchDraft: (BottleIntakeDraft) -> Unit,
+    onFetchDraftSource: (BottleIntakeDraft, WebSearchHit) -> Unit,
+    onCancelDraftSearch: (String) -> Unit,
+    onCaptureLabel: () -> Unit,
+    onDiscardCapturedLabel: () -> Unit,
+    onAttachCapturedLabel: (BottleIntakeDraft) -> Unit,
+    onScan: () -> Unit,
+    onAddManual: (String, String, String?, String?, String?, InventoryLevel, ByteArray?) -> Unit,
+    onRemove: (BottleIntakeDraft) -> Unit,
+    onUpdate: (BottleIntakeDraft) -> Unit,
+    onHomeChanged: (String) -> Unit,
+    onLevelChanged: (InventoryLevel) -> Unit,
+    onConfirm: () -> BottleIntakeCommitResult,
+    onCancel: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    var category by remember { mutableStateOf("Spirit") }
+    var barcode by remember { mutableStateOf("") }
+    var brand by remember { mutableStateOf("") }
+    var productName by remember { mutableStateOf("") }
+    var showHomeMenu by remember { mutableStateOf(false) }
+    var showLevelMenu by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add bottles") },
+        text = {
+            Column(Modifier.fillMaxWidth().heightIn(max = 620.dp).verticalScroll(rememberScrollState()).testTag("bottle-intake-scroll"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("${session.drafts.size} bottle${if (session.drafts.size == 1) "" else "s"} in this batch", style = MaterialTheme.typography.titleMedium)
+                Text("Drafts stay on this phone until you confirm. Repeated bottles are kept separately.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { showHomeMenu = true }) { Text("Home: ${homes.firstOrNull { it.id == session.locationId }?.name ?: "Choose"}") }
+                    DropdownMenu(expanded = showHomeMenu, onDismissRequest = { showHomeMenu = false }) {
+                        homes.forEach { home -> DropdownMenuItem(text = { Text(home.name) }, onClick = { onHomeChanged(home.id); showHomeMenu = false }) }
+                    }
+                    OutlinedButton(onClick = { showLevelMenu = true }) { Text("Stock: ${session.defaultLevel.label}") }
+                    DropdownMenu(expanded = showLevelMenu, onDismissRequest = { showLevelMenu = false }) {
+                        InventoryLevel.entries.forEach { level -> DropdownMenuItem(text = { Text(level.label) }, onClick = { onLevelChanged(level); showLevelMenu = false }) }
+                    }
+                }
+                Button(onClick = onScan, modifier = Modifier.fillMaxWidth().testTag("batch-scan-bottles")) { Text("Scan bottles") }
+                permissionMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                OutlinedButton(onClick = onCaptureLabel, modifier = Modifier.fillMaxWidth().testTag("capture-bottle-label")) { Text("Capture a label photo") }
+                captureMessage?.let { Text(it, color = if (capturePhoto == null && !it.startsWith("Photo capture canceled")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) }
+                if (capturePhoto != null) {
+                    val bitmap = remember(capturePhoto) { BitmapFactory.decodeByteArray(capturePhoto, 0, capturePhoto.size)?.asImageBitmap() }
+                    if (bitmap != null) Image(bitmap, contentDescription = "Captured bottle label preview", modifier = Modifier.fillMaxWidth().heightIn(max = 160.dp))
+                    Text("Review the label photo before attaching it. It stays on this phone until you confirm the batch.")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        session.drafts.lastOrNull()?.let { draft -> OutlinedButton(onClick = { onAttachCapturedLabel(draft) }) { Text("Attach to latest") } }
+                        TextButton(onClick = onCaptureLabel) { Text("Retake") }
+                        TextButton(onClick = onDiscardCapturedLabel) { Text("Discard photo") }
+                    }
+                }
+                session.drafts.forEach { draft ->
+                    BottleDraftCard(
+                        draft = draft,
+                        homes = homes,
+                        onUpdate = onUpdate,
+                        onRemove = onRemove,
+                        webSearchEnabled = webSearchEnabled,
+                        webSearchState = webSearchStates[draft.id] ?: BottleWebSearchState(),
+                        onSearch = { onSearchDraft(draft) },
+                        onFetchSource = { hit -> onFetchDraftSource(draft, hit) },
+                        onCancelSearch = { onCancelDraftSearch(draft.id) },
+                    )
+                }
+                Text("Add one manually", style = MaterialTheme.typography.titleSmall)
+                OutlinedTextField(name, { name = it; error = null }, label = { Text("Ingredient / spirit") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("batch-manual-name"))
+                OutlinedTextField(category, { category = it }, label = { Text("Category") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(barcode, { barcode = it }, label = { Text("Barcode (optional)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(brand, { brand = it }, label = { Text("Brand (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(productName, { productName = it }, label = { Text("Product name (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedButton(onClick = {
+                    if (name.isBlank()) error = "Enter an ingredient name, or scan its barcode first."
+                    else {
+                        onAddManual(name, category, barcode.trim().ifEmpty { null }, brand.trim().ifEmpty { null }, productName.trim().ifEmpty { null }, session.defaultLevel, capturePhoto)
+                        name = ""; barcode = ""; brand = ""; productName = ""; if (capturePhoto != null) onDiscardCapturedLabel(); error = null
+                    }
+                }, modifier = Modifier.fillMaxWidth().testTag("batch-add-manual-bottle")) { Text("Add bottle to draft") }
+                if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
+                Text("Online lookup and model suggestions never block scanning. Lookup starts only when you choose it.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                when (val result = onConfirm()) {
+                    is BottleIntakeCommitResult.Invalid -> error = result.reason
+                    else -> Unit
+                }
+            }, enabled = session.drafts.isNotEmpty(), modifier = Modifier.testTag("batch-confirm")) { Text("Confirm ${session.drafts.size} bottles") }
+        },
+        dismissButton = {
+            Row { TextButton(onClick = onCancel) { Text("Discard batch") }; TextButton(onClick = onDismiss) { Text("Keep for later") } }
+        },
+    )
+}
+
+@Composable
+private fun BottleDraftCard(
+    draft: BottleIntakeDraft,
+    homes: List<HomeLocation>,
+    onUpdate: (BottleIntakeDraft) -> Unit,
+    onRemove: (BottleIntakeDraft) -> Unit,
+    webSearchEnabled: Boolean,
+    webSearchState: BottleWebSearchState,
+    onSearch: () -> Unit,
+    onFetchSource: (WebSearchHit) -> Unit,
+    onCancelSearch: () -> Unit,
+) {
+    var name by remember(draft.id) { mutableStateOf(draft.ingredientName) }
+    var brand by remember(draft.id) { mutableStateOf(draft.brand.orEmpty()) }
+    var productName by remember(draft.id) { mutableStateOf(draft.productName.orEmpty()) }
+    var homeMenu by remember(draft.id) { mutableStateOf(false) }
+    var levelMenu by remember(draft.id) { mutableStateOf(false) }
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            OutlinedTextField(name, { name = it; onUpdate(draft.copy(ingredientName = it)) }, label = { Text("Bottle ${draft.position + 1}") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            draft.barcode?.let { Text("Barcode: $it", style = MaterialTheme.typography.bodySmall) }
+            OutlinedTextField(brand, { brand = it; onUpdate(draft.copy(brand = it.trim().ifEmpty { null })) }, label = { Text("Brand · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(productName, { productName = it; onUpdate(draft.copy(productName = it.trim().ifEmpty { null })) }, label = { Text("Product · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { homeMenu = true }) { Text(homes.firstOrNull { it.id == draft.locationId }?.name ?: "Home") }
+                DropdownMenu(expanded = homeMenu, onDismissRequest = { homeMenu = false }) {
+                    homes.forEach { home -> DropdownMenuItem(text = { Text(home.name) }, onClick = { onUpdate(draft.copy(locationId = home.id)); homeMenu = false }) }
+                }
+                OutlinedButton(onClick = { levelMenu = true }) { Text(draft.level.label) }
+                DropdownMenu(expanded = levelMenu, onDismissRequest = { levelMenu = false }) {
+                    InventoryLevel.entries.forEach { level -> DropdownMenuItem(text = { Text(level.label) }, onClick = { onUpdate(draft.copy(level = level)); levelMenu = false }) }
+                }
+                TextButton(onClick = { onRemove(draft) }) { Text("Remove") }
+            }
+            draft.photoData?.let { bytes ->
+                val photo = remember(bytes) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap() }
+                if (photo != null) Image(photo, contentDescription = "${draft.ingredientName} label photo", modifier = Modifier.fillMaxWidth().heightIn(max = 120.dp))
+            }
+            Text("Web sources · Firecrawl", style = MaterialTheme.typography.titleSmall)
+            Text("Search sends this bottle's name and brand, not its barcode or home. Fetch sends the source URL. Requests use your plan quota.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onSearch, enabled = webSearchEnabled && !webSearchState.searching && webSearchState.fetchingUrl == null, modifier = Modifier.testTag("search-bottle-${draft.id}")) {
+                    Text(if (webSearchState.searching) "Searching…" else "Search web")
+                }
+                if (webSearchState.searching || webSearchState.fetchingUrl != null) TextButton(onClick = onCancelSearch) { Text("Cancel") }
+            }
+            webSearchState.message?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            webSearchState.hits.forEach { hit ->
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(hit.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text(hit.url, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    hit.snippet?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    OutlinedButton(onClick = { onFetchSource(hit) }, enabled = webSearchState.fetchingUrl == null) { Text("Fetch this source text") }
+                }
+            }
+            webSearchState.fetchingUrl?.let { Text("Fetching selected source…", style = MaterialTheme.typography.bodySmall) }
+            webSearchState.page?.let { page ->
+                Text(page.title ?: "Selected source", style = MaterialTheme.typography.titleSmall)
+                Text(page.sourceUrl, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                Text("Source page text is untrusted and remains attributed. Nothing is copied into your bottle fields automatically.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(page.markdown.take(1_200), style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+@Composable
 private fun MyBarScreen(
     modifier: Modifier,
     locations: List<HomeLocation>,
@@ -1079,6 +1573,7 @@ private fun MyBarScreen(
     pantry: List<PantryEntry>,
     onLocationSelected: (String) -> Unit,
     onAddIngredient: () -> Unit,
+    onAddBottles: () -> Unit,
     onAddLocation: () -> Unit,
     onLevelSelected: (PantryEntry, InventoryLevel) -> Unit,
     onOpenShop: () -> Unit,
@@ -1090,10 +1585,7 @@ private fun MyBarScreen(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             Text("My Bar", style = MaterialTheme.typography.headlineMedium)
-            Row {
-                TextButton(onClick = onAddLocation) { Text("＋ Home") }
-                TextButton(onClick = onAddIngredient) { Text("＋ Add") }
-            }
+            TextButton(onClick = onAddLocation) { Text("＋ Home") }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedButton(onClick = { locationMenuExpanded = true }) {
@@ -1112,6 +1604,10 @@ private fun MyBarScreen(
             }
             OutlinedButton(onClick = onOpenShop) { Text("At the shop") }
         }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedButton(onClick = onAddIngredient, modifier = Modifier.weight(1f)) { Text("＋ Add one") }
+            Button(onClick = onAddBottles, modifier = Modifier.weight(1f).testTag("start-bottle-intake")) { Text("＋ Add bottles") }
+        }
         if (pantry.isEmpty()) {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1121,7 +1617,7 @@ private fun MyBarScreen(
             }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(pantry, key = { it.ingredientId.value }) { entry ->
+                items(pantry, key = { it.inventoryId }) { entry ->
                     PantryRow(entry, onLevelSelected)
                 }
             }
@@ -1151,6 +1647,8 @@ private fun PantryRow(entry: PantryEntry, onLevelSelected: (PantryEntry, Invento
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(entry.name, style = MaterialTheme.typography.titleMedium)
+                    entry.brand?.takeIf(String::isNotBlank)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    entry.productName?.takeIf { it.isNotBlank() && it != entry.name }?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                     Text(entry.category, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
@@ -1183,6 +1681,7 @@ private fun AddIngredientDialog(
     productPhotoMessage: String?,
     onBarcodeChanged: (String) -> Unit,
     onLookupProduct: (String) -> Unit,
+    onlineLookupEnabled: Boolean,
     onScanBarcode: () -> Unit,
     onPickPhoto: () -> Unit,
     onRemovePhoto: () -> Unit,
@@ -1259,9 +1758,10 @@ private fun AddIngredientDialog(
                 )
                 OutlinedButton(
                     onClick = { onLookupProduct(barcode) },
-                    enabled = normalizeGtinForLookup(barcode) != null && !productLookupInProgress,
+                    enabled = onlineLookupEnabled && normalizeGtinForLookup(barcode) != null && !productLookupInProgress,
                     modifier = Modifier.fillMaxWidth().testTag("open-food-facts-lookup"),
                 ) { Text(if (productLookupInProgress) "Looking up…" else "Look up on Open Food Facts") }
+                if (!onlineLookupEnabled) Text("Turn on Open Food Facts lookup in More → Enrichment to allow optional online requests.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 when (val result = productLookupResult) {
                     is OpenFoodFactsLookupResult.Found -> OpenFoodFactsSuggestionCard(result.suggestion, result.fromCache)
                     OpenFoodFactsLookupResult.InvalidBarcode -> Text("Enter a valid UPC or EAN barcode to look up.", color = MaterialTheme.colorScheme.error)
@@ -1837,9 +2337,17 @@ private fun HouseholdScreen(
     onImportRecipes: () -> Unit,
     shareMessage: String?,
     installedAppVersion: InstalledAppVersion,
+    openFoodFactsEnabled: Boolean,
+    onOpenFoodFactsEnabledChanged: (Boolean) -> Unit,
+    firecrawlSearchEnabled: Boolean,
+    firecrawlKeySaved: Boolean,
+    firecrawlKeyNeedsReplacement: Boolean,
+    onConfigureFirecrawl: () -> Unit,
+    onRemoveFirecrawlKey: () -> Unit,
+    onFirecrawlEnabledChanged: (Boolean) -> Unit,
 ) {
     Column(
-        modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).testTag("household-scroll").padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text("Household", style = MaterialTheme.typography.headlineMedium)
@@ -1855,6 +2363,43 @@ private fun HouseholdScreen(
         OutlinedButton(onClick = onOpenLocationSettings, modifier = Modifier.fillMaxWidth()) {
             Text("Automatic home selection")
         }
+        Text("Enrichment", style = MaterialTheme.typography.titleLarge)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text("Open Food Facts barcode lookup", style = MaterialTheme.typography.titleSmall)
+                Text("Optional. Sends only the barcode plus normal network metadata. Off by default.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Switch(checked = openFoodFactsEnabled, onCheckedChange = onOpenFoodFactsEnabledChanged, modifier = Modifier.testTag("online-product-lookup-toggle"))
+        }
+        Text("Web search · Firecrawl", style = MaterialTheme.typography.titleSmall)
+        Text(
+            when {
+                firecrawlKeyNeedsReplacement -> "The saved Firecrawl key can no longer be decrypted. Enter it again; it was not stored in plaintext."
+                firecrawlKeySaved -> "Your key is encrypted with Android Keystore and stored only on this phone."
+                else -> "Add your own Firecrawl API key to enable optional web search on this phone."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = if (firecrawlKeyNeedsReplacement) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text("Allow Firecrawl search", style = MaterialTheme.typography.titleSmall)
+                Text("No search starts automatically. Each search uses your Firecrawl plan quota.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Switch(
+                checked = firecrawlSearchEnabled,
+                enabled = firecrawlKeySaved && !firecrawlKeyNeedsReplacement,
+                onCheckedChange = onFirecrawlEnabledChanged,
+                modifier = Modifier.testTag("firecrawl-search-toggle"),
+            )
+        }
+        Text("When you request a search, Firecrawl receives the search terms and network request metadata. No home, pantry list, member name, photo, or barcode is sent by default. Page retrieval sends the selected result URL. Results stay source attributed and are not added to shared backups.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Search credentials are sent only to the fixed Firecrawl HTTPS API. The app does not store or use a shared project key.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onConfigureFirecrawl, modifier = Modifier.testTag("configure-firecrawl-key")) { Text(if (firecrawlKeySaved) "Replace Firecrawl key" else "Add Firecrawl key") }
+            if (firecrawlKeySaved) TextButton(onClick = onRemoveFirecrawlKey, modifier = Modifier.testTag("remove-firecrawl-key")) { Text("Remove key") }
+        }
+        Text("On-device AI: model runtime is not installed yet. Intake and manual review work offline without it.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("Manual sharing", style = MaterialTheme.typography.titleLarge)
         Button(onClick = onExport, modifier = Modifier.fillMaxWidth()) { Text("Export household backup") }
         OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth()) { Text("Import household backup") }
@@ -1863,6 +2408,43 @@ private fun HouseholdScreen(
         Text("Import previews never change your data. Each phone can share a backup using Nearby Share, Drive, or another file app.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (shareMessage != null) Text(shareMessage, style = MaterialTheme.typography.bodyMedium)
     }
+}
+
+@Composable
+private fun FirecrawlCredentialDialog(
+    keyNeedsReplacement: Boolean,
+    onSave: (String) -> Boolean,
+    onDismiss: () -> Unit,
+) {
+    var apiKey by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (keyNeedsReplacement) "Replace Firecrawl key" else "Add Firecrawl key") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("The key is encrypted with this phone's Android Keystore. It is sent only in the Authorization header to api.firecrawl.dev and is never included in household backups or diagnostics.")
+                Text("Saving the key does not enable searches. Turn on Allow Firecrawl search separately, then choose when to search. Requests consume your Firecrawl plan quota; the app will not upgrade your plan or enable paid top-ups.", style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(
+                    value = apiKey,
+                    onValueChange = { apiKey = it; error = null },
+                    label = { Text("Firecrawl API key") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier.fillMaxWidth().testTag("firecrawl-api-key"),
+                )
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                if (onSave(apiKey)) onDismiss()
+                else error = "The key could not be stored securely. No plaintext fallback was used. Try again or continue without web search."
+            }, enabled = apiKey.isNotBlank(), modifier = Modifier.testTag("save-firecrawl-key")) { Text("Save securely") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable

@@ -23,6 +23,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -37,17 +39,24 @@ import com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup
 import com.davidhayesbc.cocktails.android.LocalDiagnostics
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 @Composable
 internal fun BarcodeScannerDialog(
     onDetected: (String) -> Unit,
     onDismiss: () -> Unit,
+    continuous: Boolean = false,
 ) {
     val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
     var scannerMessage by remember { mutableStateOf("Starting camera preview…") }
     val completed = remember { AtomicBoolean(false) }
+    val armed = remember { AtomicBoolean(true) }
+    val absentFrames = remember { AtomicInteger(0) }
+    var lastAccepted by remember { mutableStateOf<String?>(null) }
+    var acceptedCount by remember { mutableStateOf(0) }
     val readiness = remember(previewView, lifecycleOwner) { ScannerReadiness() }
     val currentOnDetected by rememberUpdatedState(onDetected)
     DisposableEffect(previewView, lifecycleOwner) {
@@ -90,7 +99,7 @@ internal fun BarcodeScannerDialog(
                     analysis = useCase
                     useCase.setAnalyzer(analysisExecutor) { imageProxy ->
                         try {
-                            if (disposed.get() || completed.get()) return@setAnalyzer
+                            if (disposed.get() || (!continuous && completed.get())) return@setAnalyzer
                             val plane = imageProxy.planes.firstOrNull() ?: return@setAnalyzer
                             val crop = imageProxy.cropRect
                             val frame = copyLumaPlane(
@@ -110,13 +119,31 @@ internal fun BarcodeScannerDialog(
                                         ContextCompat.getMainExecutor(context).execute {
                                             if (!disposed.get()) scannerMessage = "That code isn't a valid UPC/EAN barcode. Keep scanning or enter it manually."
                                         }
-                                    } else if (completed.compareAndSet(false, true)) {
+                                    } else if (!continuous && completed.compareAndSet(false, true)) {
                                         ContextCompat.getMainExecutor(context).execute {
                                             if (!disposed.get()) currentOnDetected(value)
                                         }
                                     }
+                                    if (continuous) {
+                                        absentFrames.set(0)
+                                        if (armed.compareAndSet(true, false)) {
+                                            ContextCompat.getMainExecutor(context).execute {
+                                                if (!disposed.get()) {
+                                                    lastAccepted = value
+                                                    acceptedCount += 1
+                                                    scannerMessage = "Bottle $acceptedCount added. Move its barcode out of view before scanning the next one."
+                                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                    currentOnDetected(value)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Unit
                                 }
                                 .onFailure { error ->
+                                    if (continuous && error is ReaderException && absentFrames.incrementAndGet() >= 8) {
+                                        armed.set(true)
+                                    }
                                     if (error is ReaderException && readiness.markAnalyzerReady()) {
                                         publishReadiness()
                                     } else if (error !is ReaderException) {
@@ -156,7 +183,7 @@ internal fun BarcodeScannerDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Scan a bottle") },
+        title = { Text(if (continuous) "Add bottles" else "Scan a bottle") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 AndroidView(
@@ -164,6 +191,11 @@ internal fun BarcodeScannerDialog(
                     modifier = Modifier.fillMaxWidth().height(300.dp).testTag("barcode-camera-preview"),
                 )
                 Text(scannerMessage, style = MaterialTheme.typography.bodySmall)
+                if (continuous && lastAccepted != null) {
+                    TextButton(onClick = { lastAccepted?.let(currentOnDetected); acceptedCount += 1 }) {
+                        Text("Add another bottle with this barcode")
+                    }
+                }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Enter manually") } },

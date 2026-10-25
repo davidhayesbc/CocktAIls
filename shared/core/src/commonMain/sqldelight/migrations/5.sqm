@@ -1,0 +1,56 @@
+CREATE TABLE inventory_item_new (
+    id TEXT NOT NULL PRIMARY KEY,
+    location_id TEXT NOT NULL REFERENCES household_location(id),
+    ingredient_id TEXT NOT NULL REFERENCES ingredient(id),
+    product_id TEXT REFERENCES ingredient_product(id),
+    level TEXT NOT NULL CHECK (level IN ('FULL', 'MOSTLY_FULL', 'HALF', 'LOW', 'OUT')),
+    updated_at INTEGER NOT NULL,
+    updated_by_member_id TEXT NOT NULL REFERENCES household_member(id)
+);
+
+INSERT INTO inventory_item_new(id, location_id, ingredient_id, product_id, level, updated_at, updated_by_member_id)
+SELECT inventory_item.id,
+       inventory_item.location_id,
+       inventory_item.ingredient_id,
+       CASE WHEN (SELECT COUNT(*) FROM ingredient_product WHERE ingredient_id = inventory_item.ingredient_id) = 1
+            THEN (SELECT id FROM ingredient_product WHERE ingredient_id = inventory_item.ingredient_id LIMIT 1)
+            ELSE NULL END,
+       inventory_item.level,
+       inventory_item.updated_at,
+       inventory_item.updated_by_member_id
+FROM inventory_item;
+
+DROP TABLE inventory_item;
+ALTER TABLE inventory_item_new RENAME TO inventory_item;
+CREATE INDEX inventory_location_ingredient ON inventory_item(location_id, ingredient_id);
+CREATE INDEX inventory_product ON inventory_item(product_id);
+
+CREATE TABLE bottle_intake_session (
+    id TEXT NOT NULL PRIMARY KEY,
+    status TEXT NOT NULL CHECK (status IN ('OPEN', 'CONFIRMED')),
+    location_id TEXT NOT NULL REFERENCES household_location(id),
+    default_level TEXT NOT NULL CHECK (default_level IN ('FULL', 'MOSTLY_FULL', 'HALF', 'LOW', 'OUT')),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    confirmed_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE bottle_intake_draft (
+    id TEXT NOT NULL PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES bottle_intake_session(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    barcode TEXT,
+    product_id TEXT REFERENCES ingredient_product(id),
+    ingredient_name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    brand TEXT,
+    product_name TEXT,
+    photo_data BLOB,
+    photo_sha256 TEXT,
+    location_id TEXT NOT NULL REFERENCES household_location(id),
+    level TEXT NOT NULL CHECK (level IN ('FULL', 'MOSTLY_FULL', 'HALF', 'LOW', 'OUT')),
+    created_at INTEGER NOT NULL,
+    UNIQUE(session_id, position)
+);
+
+CREATE INDEX bottle_intake_draft_session ON bottle_intake_draft(session_id, position);

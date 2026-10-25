@@ -72,11 +72,44 @@ CREATE TABLE inventory_item (
     id TEXT NOT NULL PRIMARY KEY,
     location_id TEXT NOT NULL REFERENCES household_location(id),
     ingredient_id TEXT NOT NULL REFERENCES ingredient(id),
+    product_id TEXT REFERENCES ingredient_product(id),
     level TEXT NOT NULL CHECK (level IN ('FULL', 'MOSTLY_FULL', 'HALF', 'LOW', 'OUT')),
     updated_at INTEGER NOT NULL,
-    updated_by_member_id TEXT NOT NULL REFERENCES household_member(id),
-    UNIQUE(location_id, ingredient_id)
+    updated_by_member_id TEXT NOT NULL REFERENCES household_member(id)
 );
+
+CREATE INDEX inventory_location_ingredient ON inventory_item(location_id, ingredient_id);
+CREATE INDEX inventory_product ON inventory_item(product_id);
+
+CREATE TABLE bottle_intake_session (
+    id TEXT NOT NULL PRIMARY KEY,
+    status TEXT NOT NULL CHECK (status IN ('OPEN', 'CONFIRMED')),
+    location_id TEXT NOT NULL REFERENCES household_location(id),
+    default_level TEXT NOT NULL CHECK (default_level IN ('FULL', 'MOSTLY_FULL', 'HALF', 'LOW', 'OUT')),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    confirmed_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE bottle_intake_draft (
+    id TEXT NOT NULL PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES bottle_intake_session(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    barcode TEXT,
+    product_id TEXT REFERENCES ingredient_product(id),
+    ingredient_name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    brand TEXT,
+    product_name TEXT,
+    photo_data BLOB,
+    photo_sha256 TEXT,
+    location_id TEXT NOT NULL REFERENCES household_location(id),
+    level TEXT NOT NULL CHECK (level IN ('FULL', 'MOSTLY_FULL', 'HALF', 'LOW', 'OUT')),
+    created_at INTEGER NOT NULL,
+    UNIQUE(session_id, position)
+);
+
+CREATE INDEX bottle_intake_draft_session ON bottle_intake_draft(session_id, position);
 
 CREATE UNIQUE INDEX ingredient_name_category
 ON ingredient(canonical_name COLLATE NOCASE, category COLLATE NOCASE);
@@ -202,23 +235,98 @@ insertIngredientIgnore:
 INSERT OR IGNORE INTO ingredient(id, canonical_name, category, created_at) VALUES (?, ?, ?, ?);
 
 selectInventoryId:
-SELECT id FROM inventory_item WHERE location_id = ? AND ingredient_id = ?;
+SELECT id FROM inventory_item WHERE location_id = ? AND ingredient_id = ? ORDER BY updated_at, id LIMIT 1;
+
+selectInventoryForIngredient:
+SELECT id, location_id, ingredient_id, product_id, level, updated_at, updated_by_member_id
+FROM inventory_item WHERE location_id = ? AND ingredient_id = ? ORDER BY updated_at, id;
+
+selectInventoryById:
+SELECT id, location_id, ingredient_id, product_id, level, updated_at, updated_by_member_id
+FROM inventory_item WHERE id = ?;
 
 insertInventory:
-INSERT INTO inventory_item(id, location_id, ingredient_id, level, updated_at, updated_by_member_id)
-VALUES (?, ?, ?, ?, ?, ?);
+INSERT INTO inventory_item(id, location_id, ingredient_id, product_id, level, updated_at, updated_by_member_id)
+VALUES (?, ?, ?, ?, ?, ?, ?);
 
-updateInventory:
-UPDATE inventory_item SET level = ?, updated_at = ?, updated_by_member_id = ?
-WHERE location_id = ? AND ingredient_id = ?;
+updateInventoryById:
+UPDATE inventory_item SET product_id = ?, level = ?, updated_at = ?, updated_by_member_id = ? WHERE id = ?;
+
+updateAllInventoryForIngredient:
+UPDATE inventory_item SET level = ?, updated_at = ?, updated_by_member_id = ? WHERE location_id = ? AND ingredient_id = ?;
 
 selectPantryForLocation:
-SELECT ingredient.id AS ingredient_id, ingredient.canonical_name, ingredient.category, inventory_item.level,
-       (SELECT photo_data FROM ingredient_product WHERE ingredient_id = ingredient.id ORDER BY created_at LIMIT 1) AS photo_data
+SELECT inventory_item.id AS inventory_id, inventory_item.product_id, ingredient.id AS ingredient_id,
+       ingredient.canonical_name, ingredient.category, ingredient_product.product_name,
+       ingredient_product.brand, ingredient_product.barcode, inventory_item.level,
+       COALESCE(ingredient_product.photo_data,
+           (SELECT photo_data FROM ingredient_product WHERE ingredient_id = ingredient.id ORDER BY created_at LIMIT 1)
+       ) AS photo_data
 FROM inventory_item
 JOIN ingredient ON ingredient.id = inventory_item.ingredient_id
+LEFT JOIN ingredient_product ON ingredient_product.id = inventory_item.product_id
 WHERE inventory_item.location_id = ?
-ORDER BY ingredient.category COLLATE NOCASE, ingredient.canonical_name COLLATE NOCASE;
+ORDER BY ingredient.category COLLATE NOCASE, ingredient.canonical_name COLLATE NOCASE,
+         ingredient_product.product_name COLLATE NOCASE, inventory_item.updated_at, inventory_item.id;
+
+selectOpenBottleIntakeSession:
+SELECT * FROM bottle_intake_session WHERE status = 'OPEN' ORDER BY updated_at DESC, id LIMIT 1;
+
+selectBottleIntakeSession:
+SELECT * FROM bottle_intake_session WHERE id = ?;
+
+insertBottleIntakeSession:
+INSERT INTO bottle_intake_session(id, status, location_id, default_level, created_at, updated_at, confirmed_count)
+VALUES (?, 'OPEN', ?, ?, ?, ?, 0);
+
+updateBottleIntakeSessionHome:
+UPDATE bottle_intake_session SET location_id = ?, updated_at = ? WHERE id = ? AND status = 'OPEN';
+
+updateBottleIntakeSessionDefaultLevel:
+UPDATE bottle_intake_session SET default_level = ?, updated_at = ? WHERE id = ? AND status = 'OPEN';
+
+confirmBottleIntakeSession:
+UPDATE bottle_intake_session SET status = 'CONFIRMED', updated_at = ?, confirmed_count = ? WHERE id = ? AND status = 'OPEN';
+
+selectBottleIntakeDrafts:
+SELECT id, session_id, position, barcode, product_id, ingredient_name, category, brand, product_name,
+       photo_data, photo_sha256, location_id, level, created_at
+FROM bottle_intake_draft WHERE session_id = ? ORDER BY position, id;
+
+selectBottleIntakeDraft:
+SELECT * FROM bottle_intake_draft WHERE id = ? AND session_id = ?;
+
+selectNextBottleIntakePosition:
+SELECT COALESCE(MAX(position) + 1, 0) AS next_position FROM bottle_intake_draft WHERE session_id = ?;
+
+insertBottleIntakeDraft:
+INSERT INTO bottle_intake_draft(
+    id, session_id, position, barcode, product_id, ingredient_name, category, brand, product_name,
+    photo_data, photo_sha256, location_id, level, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+deleteBottleIntakeSession:
+DELETE FROM bottle_intake_session WHERE id = ? AND status = 'OPEN';
+
+updateBottleIntakeDraft:
+UPDATE bottle_intake_draft SET barcode = ?, product_id = ?, ingredient_name = ?, category = ?, brand = ?,
+    product_name = ?, photo_data = ?, photo_sha256 = ?, location_id = ?, level = ?
+WHERE id = ? AND session_id = ?;
+
+updateBottleIntakeDraftsHome:
+UPDATE bottle_intake_draft SET location_id = ? WHERE session_id = ?;
+
+updateBottleIntakeDraftsLevel:
+UPDATE bottle_intake_draft SET level = ? WHERE session_id = ?;
+
+deleteBottleIntakeDraft:
+DELETE FROM bottle_intake_draft WHERE id = ? AND session_id = ?;
+
+deleteBottleIntakeDrafts:
+DELETE FROM bottle_intake_draft WHERE session_id = ?;
+
+deleteConfirmedBottleIntakeSessions:
+DELETE FROM bottle_intake_session WHERE status = 'CONFIRMED';
 
 selectRecipeFamilies:
 SELECT cocktail_family.id AS family_id, cocktail_family.canonical_name,
@@ -412,7 +520,7 @@ SELECT id, ingredient_id, brand, product_name, barcode, photo_mime_type, photo_d
 FROM ingredient_product WHERE id = ?;
 
 selectAllInventoryForBundle:
-SELECT id, location_id, ingredient_id, level, updated_at, updated_by_member_id FROM inventory_item;
+SELECT id, location_id, ingredient_id, product_id, level, updated_at, updated_by_member_id FROM inventory_item;
 
 selectAllFamiliesForBundle:
 SELECT id, canonical_name, created_at FROM cocktail_family;
@@ -484,7 +592,8 @@ FROM ingredient_product
 WHERE barcode IS NOT NULL;
 
 selectProductsForBarcodeLookup:
-SELECT ingredient.canonical_name AS ingredient_name, ingredient.category, ingredient_product.brand,
+SELECT ingredient_product.id AS product_id, ingredient.id AS ingredient_id,
+       ingredient.canonical_name AS ingredient_name, ingredient.category, ingredient_product.brand,
        ingredient_product.product_name, ingredient_product.barcode
 FROM ingredient_product
 JOIN ingredient ON ingredient.id = ingredient_product.ingredient_id
@@ -497,13 +606,10 @@ updateProductPhoto:
 UPDATE ingredient_product SET photo_mime_type = ?, photo_data = ?, photo_sha256 = ? WHERE id = ?;
 
 insertInventoryBundleIgnore:
-INSERT OR IGNORE INTO inventory_item(id, location_id, ingredient_id, level, updated_at, updated_by_member_id) VALUES (?, ?, ?, ?, ?, ?);
+INSERT OR IGNORE INTO inventory_item(id, location_id, ingredient_id, product_id, level, updated_at, updated_by_member_id) VALUES (?, ?, ?, ?, ?, ?, ?);
 
 updateInventoryBundleById:
-UPDATE inventory_item SET location_id = ?, ingredient_id = ?, level = ?, updated_at = ?, updated_by_member_id = ? WHERE id = ?;
-
-updateInventoryBundleByLocationIngredient:
-UPDATE inventory_item SET level = ?, updated_at = ?, updated_by_member_id = ? WHERE location_id = ? AND ingredient_id = ?;
+UPDATE inventory_item SET location_id = ?, ingredient_id = ?, product_id = ?, level = ?, updated_at = ?, updated_by_member_id = ? WHERE id = ?;
 
 insertFamilyIgnore:
 INSERT OR IGNORE INTO cocktail_family(id, canonical_name, created_at) VALUES (?, ?, ?);

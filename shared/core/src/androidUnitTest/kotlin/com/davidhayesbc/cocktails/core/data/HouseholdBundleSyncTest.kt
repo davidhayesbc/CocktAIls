@@ -15,8 +15,10 @@ import com.davidhayesbc.cocktails.core.interchange.previewRecipeImport
 import com.davidhayesbc.cocktails.core.model.IngredientId
 import com.davidhayesbc.cocktails.core.model.InventoryLevel
 import com.davidhayesbc.cocktails.core.model.RecipeIngredientDraft
+import com.davidhayesbc.cocktails.core.model.RecipeLine
 import com.davidhayesbc.cocktails.core.model.RecipeStyle
 import com.davidhayesbc.cocktails.core.model.RecipeVariantId
+import com.davidhayesbc.cocktails.core.matching.countMissingRequiredIngredients
 import com.davidhayesbc.cocktails.shared.db.CocktailsDatabase
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -30,6 +32,67 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 class HouseholdBundleSyncTest {
+    @Test
+    fun physicalBottleIntakeKeepsDuplicateBottlesIndependentAndTransfersThemAtomically() {
+        val leftDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        CocktailsDatabase.Schema.create(leftDriver)
+        val leftDatabase = CocktailsDatabase(leftDriver)
+        val left = LocalCocktailRepository(leftDatabase)
+        left.initialize(10)
+        val home = left.locations().single().id
+
+        assertTrue(left.addIngredient("Gin", "Spirit", InventoryLevel.LOW, home, 20, "012345678905", "North Star", "Dry Gin"))
+        assertTrue(left.addIngredient("Gin", "Spirit", InventoryLevel.FULL, home, 30, "012345678905", "North Star", "Dry Gin"))
+        val cabin = left.addLocation("Cabin", 31)!!
+        assertTrue(left.addIngredient("Gin", "Spirit", InventoryLevel.HALF, cabin.id, 32, "012345678905", "North Star", "Dry Gin"))
+        val initial = left.pantry(home)
+        assertEquals(2, initial.size)
+        assertEquals(2, initial.map { it.inventoryId }.toSet().size)
+        assertEquals(1, initial.map { it.productId }.toSet().size)
+        assertEquals(setOf(InventoryLevel.LOW, InventoryLevel.FULL), initial.map { it.level }.toSet())
+
+        assertTrue(left.updateBottleLevel(initial.first { it.level == InventoryLevel.LOW }.inventoryId, InventoryLevel.OUT, 40))
+        assertEquals(setOf(InventoryLevel.OUT, InventoryLevel.FULL), left.pantry(home).map { it.level }.toSet())
+        val gin = left.pantry(home).first().ingredientId
+        assertEquals(0, countMissingRequiredIngredients(
+            listOf(RecipeLine(gin, "Gin", 45.0, "ml", optional = false)),
+            left.pantry(home).filter { it.level != InventoryLevel.OUT }.map { it.ingredientId }.toSet(),
+        ))
+
+        val interrupted = left.startBottleIntakeSession(home, InventoryLevel.MOSTLY_FULL, 50)
+        assertTrue(left.addBottleIntakeDraft(interrupted.id, "Rum", "Spirit", home, InventoryLevel.MOSTLY_FULL, 60, "4006381333931") != null)
+        val restartedRepository = LocalCocktailRepository(CocktailsDatabase(leftDriver))
+        assertEquals(1, restartedRepository.openBottleIntakeSession()?.drafts?.size)
+        val before = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(left.exportHouseholdBundle(70))).bundle
+        assertEquals(3, before.records.count { it.type == "INVENTORY_ITEM" })
+        assertFalse(before.records.any { it.type.startsWith("BOTTLE_INTAKE") })
+
+        val rightDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        CocktailsDatabase.Schema.create(rightDriver)
+        val right = LocalCocktailRepository(CocktailsDatabase(rightDriver))
+        right.initialize(80)
+        val preview = assertIs<ImportPreviewResult.Valid>(right.previewHouseholdBundle(before)).preview
+        assertIs<ImportApplyResult.Applied>(right.applyHouseholdBundle(before, preview, emptyMap(), 90))
+        val transferred = right.pantry(home)
+        assertEquals(2, transferred.size)
+        assertEquals(setOf(InventoryLevel.OUT, InventoryLevel.FULL), transferred.map { it.level }.toSet())
+        assertEquals(1, transferred.map { it.productId }.toSet().size)
+        assertEquals(InventoryLevel.HALF, right.pantry(cabin.id).single().level)
+
+        val pending = left.openBottleIntakeSession()!!
+        assertIs<com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult.Confirmed>(left.confirmBottleIntakeSession(pending.id, 100))
+        assertEquals(3, left.pantry(home).size)
+        assertIs<com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult.AlreadyConfirmed>(left.confirmBottleIntakeSession(pending.id, 110))
+        assertEquals(3, left.pantry(home).size)
+
+        val canceled = left.startBottleIntakeSession(home, InventoryLevel.FULL, 120)
+        assertTrue(left.addBottleIntakeDraft(canceled.id, "Brandy", "Spirit", home, InventoryLevel.FULL, 121) != null)
+        assertTrue(left.cancelBottleIntakeSession(canceled.id))
+        assertEquals(null, left.openBottleIntakeSession())
+        leftDriver.close()
+        rightDriver.close()
+    }
+
     @Test
     fun genericRecipeImportRequiresExplicitFamilyLinkAndIsIdempotentWithProvenance() {
         val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
@@ -949,6 +1012,8 @@ Martini,"Vodka | 60 | ml; Vermouth | 10 | ml",Stir,1,SHORT,unrelated-1""",
         assertTrue(repository.addIngredient("Vodka", "Spirit", InventoryLevel.MOSTLY_FULL, homeId, 40, barcode = "0036000291452", brand = "Example", productName = "Example Vodka 750 ml"))
         assertEquals(
             com.davidhayesbc.cocktails.core.model.LocalProductBarcodeMatch(
+                productId = database.householdQueries.selectAllProductsForBundle().executeAsList().single().id,
+                ingredientId = IngredientId(database.householdQueries.selectIngredientsByName("Vodka").executeAsOne()),
                 ingredientName = "Vodka",
                 category = "Spirit",
                 brand = "Example",
@@ -964,7 +1029,8 @@ Martini,"Vodka | 60 | ml; Vermouth | 10 | ml",Stir,1,SHORT,unrelated-1""",
         assertEquals("Example Vodka 750 ml", currentProduct.data["productName"]?.jsonPrimitive?.content)
         assertEquals(1, backup.records.count { it.type == "PRODUCT" })
         assertTrue(backup.revisions.any { it.recordType == "PRODUCT" && it.payload["barcode"]?.jsonPrimitive?.content == "036000291452" })
-        assertEquals(InventoryLevel.MOSTLY_FULL, repository.pantry(homeId).single().level)
+        assertEquals(2, repository.pantry(homeId).size)
+        assertEquals(setOf(InventoryLevel.FULL, InventoryLevel.MOSTLY_FULL), repository.pantry(homeId).map { it.level }.toSet())
 
         val peer = LocalCocktailRepository(database())
         peer.initialize(60)

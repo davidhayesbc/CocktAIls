@@ -48,20 +48,63 @@ data class SpiritUnlock(
 )
 
 data class PantryEntry(
+    val inventoryId: String,
     val ingredientId: IngredientId,
     val name: String,
     val category: String,
     val level: InventoryLevel,
+    val productId: String?,
+    val productName: String?,
+    val brand: String?,
+    val barcode: String?,
     val photoData: ByteArray? = null,
 )
 
 data class LocalProductBarcodeMatch(
+    val productId: String,
+    val ingredientId: IngredientId,
     val ingredientName: String,
     val category: String,
     val brand: String?,
     val productName: String,
     val barcode: String,
 )
+
+enum class BottleIntakeSessionStatus { OPEN, CONFIRMED }
+
+data class BottleIntakeDraft(
+    val id: String,
+    val sessionId: String,
+    val position: Long,
+    val barcode: String?,
+    val productId: String?,
+    val ingredientName: String,
+    val category: String,
+    val brand: String?,
+    val productName: String?,
+    val photoData: ByteArray?,
+    val photoSha256: String?,
+    val locationId: String,
+    val level: InventoryLevel,
+    val createdAt: Long,
+)
+
+data class BottleIntakeSession(
+    val id: String,
+    val status: BottleIntakeSessionStatus,
+    val locationId: String,
+    val defaultLevel: InventoryLevel,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val confirmedCount: Int,
+    val drafts: List<BottleIntakeDraft>,
+)
+
+sealed interface BottleIntakeCommitResult {
+    data class Confirmed(val bottleCount: Int) : BottleIntakeCommitResult
+    data class AlreadyConfirmed(val bottleCount: Int) : BottleIntakeCommitResult
+    data class Invalid(val reason: String) : BottleIntakeCommitResult
+}
 
 data class HomeLocation(
     val id: String,
