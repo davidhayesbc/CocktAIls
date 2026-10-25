@@ -6,8 +6,10 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -40,10 +42,12 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("recipe-servings").performTextClearance()
         composeRule.onNodeWithTag("recipe-servings").performTextInput("1")
         composeRule.onNodeWithText("Save").performClick()
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText(title))
         composeRule.onNodeWithText(title).assertIsDisplayed()
 
         composeRule.activityRule.scenario.recreate()
         composeRule.onNodeWithText("Recipes").performClick()
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText(title))
         composeRule.onNodeWithText(title).assertIsDisplayed()
     }
 
@@ -77,6 +81,7 @@ class OfflineRecipeSmokeTest {
 
         composeRule.onNodeWithText("My Bar").performClick()
         composeRule.onNodeWithText("＋ Add").performClick()
+        composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Scan barcode"))
         composeRule.onNodeWithText("Scan barcode").assertIsDisplayed()
         composeRule.onNodeWithTag("ingredient-name").performTextInput("CI Manual Barcode Gin")
         composeRule.onNodeWithTag("ingredient-barcode").performTextInput("036000291452")
@@ -91,15 +96,20 @@ class OfflineRecipeSmokeTest {
     @Test
     fun bundledCatalogLoadsOfflineAndStaysInstalledAfterActivityRecreation() {
         composeRule.onNodeWithText("Recipes").performClick()
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Add 8 starter recipes"))
         composeRule.onNodeWithText("Add 8 starter recipes").assertIsDisplayed().performClick()
         composeRule.waitUntil(timeoutMillis = 10_000) {
             composeRule.onAllNodesWithText("Daiquiri").fetchSemanticsNodes().isNotEmpty()
         }
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Daiquiri"))
         composeRule.onNodeWithText("Daiquiri").assertIsDisplayed()
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Search recipes or ingredients"))
         composeRule.onNodeWithText("Search recipes or ingredients").performTextInput("Whiskey Sour")
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Whiskey Sour"))
         composeRule.onNodeWithText("Whiskey Sour").assertIsDisplayed()
         composeRule.activityRule.scenario.recreate()
         composeRule.onNodeWithText("Recipes").performClick()
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Daiquiri"))
         composeRule.onNodeWithText("Daiquiri").assertIsDisplayed()
         composeRule.onNodeWithText("Add 8 starter recipes").assertDoesNotExist()
     }

@@ -1112,7 +1112,7 @@ private fun AddIngredientDialog(
         title = { Text("Add to your bar") },
         text = {
             Column(
-                modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()).testTag("ingredient-form-scroll"),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text("Ingredient", style = MaterialTheme.typography.titleMedium)
@@ -1283,82 +1283,89 @@ private fun RecipeBrowser(
             (search.isBlank() || recipe.title.contains(search, ignoreCase = true) || recipe.ingredients.any { it.name.contains(search, true) })
     }
     val families = matching.groupBy { it.familyId }
-    Column(modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-            Text("Recipes", style = MaterialTheme.typography.headlineMedium)
-            TextButton(onClick = onAddRecipe) { Text("＋ Add recipe") }
-        }
-        OutlinedTextField(
-            value = search,
-            onValueChange = { search = it },
-            label = { Text("Search recipes or ingredients") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
-            FilterChip(selected = selectedStyle == null, onClick = { selectedStyle = null }, label = { Text("All styles") })
-            FilterChip(selected = favoritesOnly, onClick = { favoritesOnly = !favoritesOnly }, label = { Text("★ Favorites") })
-            RecipeAvailabilityFilter.entries.forEach { filter ->
-                FilterChip(
-                    selected = availabilityFilter == filter,
-                    onClick = { availabilityFilter = filter },
-                    label = { Text(filter.label) },
-                )
+    LazyColumn(
+        modifier = modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 18.dp).testTag("recipe-browser-scroll"),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item(key = "recipe-browser-heading") {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                Text("Recipes", style = MaterialTheme.typography.headlineMedium)
+                TextButton(onClick = onAddRecipe) { Text("＋ Add recipe") }
             }
-            listOf(RecipeStyle.SHORT, RecipeStyle.LONG, RecipeStyle.SOUR, RecipeStyle.BITTER, RecipeStyle.SWEET, RecipeStyle.HOT, RecipeStyle.COLD).forEach { style ->
-                FilterChip(selected = selectedStyle == style, onClick = { selectedStyle = if (selectedStyle == style) null else style }, label = { Text(style.label) })
+        }
+        item(key = "recipe-browser-search") {
+            OutlinedTextField(
+                value = search,
+                onValueChange = { search = it },
+                label = { Text("Search recipes or ingredients") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        item(key = "recipe-browser-filters") {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                FilterChip(selected = selectedStyle == null, onClick = { selectedStyle = null }, label = { Text("All styles") })
+                FilterChip(selected = favoritesOnly, onClick = { favoritesOnly = !favoritesOnly }, label = { Text("★ Favorites") })
+                RecipeAvailabilityFilter.entries.forEach { filter ->
+                    FilterChip(selected = availabilityFilter == filter, onClick = { availabilityFilter = filter }, label = { Text(filter.label) })
+                }
+                listOf(RecipeStyle.SHORT, RecipeStyle.LONG, RecipeStyle.SOUR, RecipeStyle.BITTER, RecipeStyle.SWEET, RecipeStyle.HOT, RecipeStyle.COLD).forEach { style ->
+                    FilterChip(selected = selectedStyle == style, onClick = { selectedStyle = if (selectedStyle == style) null else style }, label = { Text(style.label) })
+                }
             }
         }
         if (!starterCatalogInstalled) {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
-                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Offline starter collection", style = MaterialTheme.typography.titleLarge)
-                    Text("Add eight classics: Daiquiri, Manhattan, Margarita, Dry Martini, Negroni, Old Fashioned, Sidecar, and Whiskey Sour. These are stored on this phone and work offline. Existing recipes and notes are left as they are.")
-                    Text("Recipe facts are shared under CC BY-SA 3.0. Each recipe includes source and revision history; methods were written for CocktAIls.", style = MaterialTheme.typography.bodySmall)
-                    Button(onClick = onInstallStarterCatalog) { Text("Add 8 starter recipes") }
-                    catalogMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            item(key = "offline-starter-catalog") {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Offline starter collection", style = MaterialTheme.typography.titleLarge)
+                        Text("Add eight classics: Daiquiri, Manhattan, Margarita, Dry Martini, Negroni, Old Fashioned, Sidecar, and Whiskey Sour. These are stored on this phone and work offline. Existing recipes and notes are left as they are.")
+                        Text("Recipe facts are shared under CC BY-SA 3.0. Each recipe includes source and revision history; methods were written for CocktAIls.", style = MaterialTheme.typography.bodySmall)
+                        Button(onClick = onInstallStarterCatalog) { Text("Add 8 starter recipes") }
+                        catalogMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    }
                 }
             }
-        } else catalogMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        } else catalogMessage?.let { message -> item(key = "catalog-status") { Text(message, style = MaterialTheme.typography.bodySmall) } }
         if (recipes.isEmpty()) {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Your recipe book starts here", style = MaterialTheme.typography.titleLarge)
-                    Text("Add your own drinks or browse the offline starter collection above.")
-                    Button(onClick = onAddRecipe) { Text("Add a recipe") }
+            item(key = "empty-recipes") {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Your recipe book starts here", style = MaterialTheme.typography.titleLarge)
+                        Text("Add your own drinks or browse the offline starter collection above.")
+                        Button(onClick = onAddRecipe) { Text("Add a recipe") }
+                    }
                 }
             }
         } else if (matching.isEmpty()) {
-            Text("No recipes match these filters.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            item(key = "no-matching-recipes") { Text("No recipes match these filters.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (recentDrinks.isNotEmpty()) {
-                    item { Text("Recently made", style = MaterialTheme.typography.titleLarge) }
-                    items(recentDrinks.take(5), key = { "recent-${it.eventId}" }) { recent ->
-                        TextButton(onClick = { onOpenRecent(recent.recipeId) }) {
-                            val location = recent.locationName?.let { " · $it" }.orEmpty()
-                            Text("${recent.title} · ${recent.madeBy}$location")
-                        }
+            if (recentDrinks.isNotEmpty()) {
+                item(key = "recently-made-heading") { Text("Recently made", style = MaterialTheme.typography.titleLarge) }
+                items(recentDrinks.take(5), key = { "recent-${it.eventId}" }) { recent ->
+                    TextButton(onClick = { onOpenRecent(recent.recipeId) }) {
+                        val location = recent.locationName?.let { " · $it" }.orEmpty()
+                        Text("${recent.title} · ${recent.madeBy}$location")
                     }
                 }
-                families.forEach { (_, variants) ->
-                    item(key = variants.first().familyId.value) {
-                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-                            Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(variants.first().title, style = MaterialTheme.typography.titleMedium)
-                                TextButton(onClick = { onToggleFavorite(variants.first().familyId, variants.first().familyId !in favoriteFamilyIds) }) {
-                                    Text(if (variants.first().familyId in favoriteFamilyIds) "★ Favorite" else "☆ Add favorite")
-                                }
-                                if (variants.size > 1) Text("${variants.size} versions", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                                Text(
-                                    variants.minOf(::missingCount).let { if (it == 0) "Ready to make" else "Missing $it ingredient${if (it == 1) "" else "s"}" },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                variants.forEach { variant ->
-                                    TextButton(onClick = { onSelectRecipe(variant) }) {
-                                        Text(if (variants.size == 1) "Open recipe" else variant.title)
-                                    }
+            }
+            families.forEach { (_, variants) ->
+                item(key = variants.first().familyId.value) {
+                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(variants.first().title, style = MaterialTheme.typography.titleMedium)
+                            TextButton(onClick = { onToggleFavorite(variants.first().familyId, variants.first().familyId !in favoriteFamilyIds) }) {
+                                Text(if (variants.first().familyId in favoriteFamilyIds) "★ Favorite" else "☆ Add favorite")
+                            }
+                            if (variants.size > 1) Text("${variants.size} versions", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                            Text(
+                                variants.minOf(::missingCount).let { if (it == 0) "Ready to make" else "Missing $it ingredient${if (it == 1) "" else "s"}" },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            variants.forEach { variant ->
+                                TextButton(onClick = { onSelectRecipe(variant) }) {
+                                    Text(if (variants.size == 1) "Open recipe" else variant.title)
                                 }
                             }
                         }

@@ -9,11 +9,13 @@ import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Rule
@@ -42,6 +44,8 @@ class BarcodeScannerLifecycleTest {
         assertEquals(PackageManager.PERMISSION_DENIED, composeRule.activity.checkSelfPermission(Manifest.permission.CAMERA))
         composeRule.onNodeWithText("My Bar").performClick()
         composeRule.onNodeWithText("＋ Add").performClick()
+        composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Scan barcode"))
+        composeRule.onNodeWithText("Scan barcode").assertIsDisplayed()
         composeRule.onNodeWithText("Scan barcode").performClick()
         clickPermissionPrompt("don't allow", "deny")
         composeRule.onNodeWithText("Camera access wasn't granted. Enter the barcode manually instead.").assertIsDisplayed()
@@ -59,6 +63,8 @@ class BarcodeScannerLifecycleTest {
         assertEquals(PackageManager.PERMISSION_DENIED, composeRule.activity.checkSelfPermission(Manifest.permission.CAMERA))
         composeRule.onNodeWithText("My Bar").performClick()
         composeRule.onNodeWithText("＋ Add").performClick()
+        composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Scan barcode"))
+        composeRule.onNodeWithText("Scan barcode").assertIsDisplayed()
         composeRule.onNodeWithText("Scan barcode").performClick()
         clickPermissionPrompt("while using the app", "only this time", "allow")
         composeRule.onNodeWithText("Scan a bottle").assertIsDisplayed()

@@ -246,9 +246,12 @@ jobs:
           echo '--- KVM acceleration check ---'
           cat "$RUNNER_TEMP/cocktails-kvm-check.log"
           echo '--- permission prompt screenshots ---'
-          for screenshot in /sdcard/Android/data/com.davidhayesbc.cocktails/cache/camera-permission-*.png; do
-            [[ -f "$screenshot" ]] || continue
-            timeout 15 "$adb" pull "$screenshot" "$RUNNER_TEMP/$(basename "$screenshot")"
+          app_cache=/sdcard/Android/data/com.davidhayesbc.cocktails/cache
+          for test_name in deniedCameraPermissionKeepsManualBarcodeEntryAvailable scannerCanBeOpenedClosedReopenedAndActivityRecreated; do
+            screenshot="$app_cache/camera-permission-$test_name.png"
+            if timeout 10 "$adb" -s emulator-5554 shell test -f "$screenshot"; then
+              timeout 15 "$adb" -s emulator-5554 pull "$screenshot" "$RUNNER_TEMP/$(basename "$screenshot")"
+            fi
           done
 
       - name: Upload emulator diagnostics
