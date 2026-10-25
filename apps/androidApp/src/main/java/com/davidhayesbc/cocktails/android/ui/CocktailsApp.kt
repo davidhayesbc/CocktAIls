@@ -58,12 +58,14 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.davidhayesbc.cocktails.core.data.LocalCocktailRepository
+import com.davidhayesbc.cocktails.core.data.CatalogInstallResult
 import com.davidhayesbc.cocktails.core.matching.HomeLocationArea
 import com.davidhayesbc.cocktails.core.matching.HomeLocationMatch
 import com.davidhayesbc.cocktails.core.matching.matchHomeLocation
@@ -231,6 +233,8 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var selectedRecipe by remember { mutableStateOf<RecipeDetail?>(null) }
     var showAddNote by remember { mutableStateOf(false) }
     var recipes by remember { mutableStateOf(repository.recipes()) }
+    var starterCatalogInstalled by remember(repository) { mutableStateOf(repository.hasStarterCatalog()) }
+    var catalogMessage by remember { mutableStateOf<String?>(null) }
     var recipeFamilies by remember { mutableStateOf(repository.recipeFamilies()) }
     var recentDrinks by remember { mutableStateOf(repository.recentlyMade()) }
     var favoritesVersion by remember { mutableStateOf(0) }
@@ -565,6 +569,30 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 onToggleFavorite = { familyId, favorite ->
                     if (repository.setFamilyFavorite(selectedMemberId, familyId, favorite, System.currentTimeMillis())) favoritesVersion++
                 },
+                starterCatalogInstalled = starterCatalogInstalled,
+                catalogMessage = catalogMessage,
+                onInstallStarterCatalog = {
+                    coroutineScope.launch {
+                        catalogMessage = "Adding the offline starter recipes…"
+                        val result = runCatching {
+                            withContext(Dispatchers.IO) {
+                                val pack = context.assets.open("iba-wikipedia-starter/recipes.json").bufferedReader().use { it.readText() }
+                                repository.installCatalogPack(pack, System.currentTimeMillis())
+                            }
+                        }
+                        result.onSuccess { installResult ->
+                            when (installResult) {
+                                is CatalogInstallResult.Installed -> {
+                                    recipes = repository.recipes()
+                                    recipeFamilies = repository.recipeFamilies()
+                                    starterCatalogInstalled = repository.hasStarterCatalog()
+                                    catalogMessage = "Added ${installResult.added} recipes; ${installResult.alreadyPresent} were already in your collection."
+                                }
+                                is CatalogInstallResult.Invalid -> catalogMessage = installResult.reason
+                            }
+                        }.onFailure { catalogMessage = "Could not add the starter recipes: ${it.message ?: "the bundled pack could not be read"}." }
+                    }
+                },
             ) else RecipeDetailScreen(
                 modifier = Modifier.padding(contentPadding),
                 recipe = selectedRecipe!!,
@@ -582,7 +610,24 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                         recentDrinks = repository.recentlyMade()
                     }
                 },
-                onEdit = { recipeToEdit = selectedRecipe; showAddRecipe = true },
+                onEdit = {
+                    val current = selectedRecipe!!
+                    if (current.sourceKind == "CATALOG") {
+                        repository.duplicateRecipeVariant(current.id, System.currentTimeMillis())?.let { copyId ->
+                            recipes = repository.recipes()
+                            recipeFamilies = repository.recipeFamilies()
+                            val copy = recipes.firstOrNull { it.id == copyId }
+                            if (copy != null) {
+                                selectedRecipe = copy
+                                recipeToEdit = copy
+                                showAddRecipe = true
+                            }
+                        }
+                    } else {
+                        recipeToEdit = current
+                        showAddRecipe = true
+                    }
+                },
                 onChangeSourceAssociation = { sourceId, targetId ->
                     val selectedId = selectedRecipe!!.id
                     if (repository.reassociateRecipeSource(sourceId, targetId, System.currentTimeMillis())) {
@@ -1050,17 +1095,37 @@ private fun AddIngredientDialog(
                 modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                Text("Ingredient", style = MaterialTheme.typography.titleMedium)
                 OutlinedTextField(
                     value = name,
-                    onValueChange = { name = it },
+                    onValueChange = { name = it; saveError = null },
                     label = { Text("Ingredient name") },
                     singleLine = true,
+                    supportingText = { Text("Example: London dry gin") },
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
                     modifier = Modifier.fillMaxWidth().testTag("ingredient-name"),
                 )
+                Text("Category", style = MaterialTheme.typography.labelMedium)
+                OutlinedButton(onClick = { categoryMenuExpanded = true }, modifier = Modifier.fillMaxWidth()) { Text(category) }
+                DropdownMenu(expanded = categoryMenuExpanded, onDismissRequest = { categoryMenuExpanded = false }) {
+                    CATEGORIES.forEach { option ->
+                        DropdownMenuItem(text = { Text(option) }, onClick = { category = option; categoryMenuExpanded = false })
+                    }
+                }
+                Text("Stock at selected home", style = MaterialTheme.typography.labelMedium)
+                OutlinedButton(onClick = { levelMenuExpanded = true }, modifier = Modifier.fillMaxWidth()) { Text(level.label) }
+                DropdownMenu(expanded = levelMenuExpanded, onDismissRequest = { levelMenuExpanded = false }) {
+                    InventoryLevel.entries.forEach { option ->
+                        DropdownMenuItem(text = { Text(option.label) }, onClick = { level = option; levelMenuExpanded = false })
+                    }
+                }
+                Text("Product details · optional", style = MaterialTheme.typography.titleMedium)
                 OutlinedTextField(
                     value = barcode,
-                    onValueChange = onBarcodeChanged,
+                    onValueChange = { onBarcodeChanged(it); saveError = null },
                     label = { Text("UPC / EAN barcode") },
+                    supportingText = { Text("Scan the label or enter the digits. This works offline.") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().testTag("ingredient-barcode"),
                 )
@@ -1070,6 +1135,7 @@ private fun AddIngredientDialog(
                     onValueChange = { brand = it },
                     label = { Text("Brand (optional)") },
                     singleLine = true,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
@@ -1077,6 +1143,7 @@ private fun AddIngredientDialog(
                     onValueChange = { productName = it },
                     label = { Text("Bottle / product name (optional)") },
                     singleLine = true,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedButton(onClick = onPickPhoto, modifier = Modifier.fillMaxWidth()) {
@@ -1095,36 +1162,6 @@ private fun AddIngredientDialog(
                 )
                 if (barcodeMessage != null) Text(barcodeMessage, style = MaterialTheme.typography.bodySmall)
                 if (saveError != null) Text(saveError!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Column {
-                        TextButton(onClick = { categoryMenuExpanded = true }) { Text(category) }
-                        DropdownMenu(expanded = categoryMenuExpanded, onDismissRequest = { categoryMenuExpanded = false }) {
-                            CATEGORIES.forEach { option ->
-                                DropdownMenuItem(
-                                    text = { Text(option) },
-                                    onClick = {
-                                        category = option
-                                        categoryMenuExpanded = false
-                                    },
-                                )
-                            }
-                        }
-                    }
-                    Column {
-                        TextButton(onClick = { levelMenuExpanded = true }) { Text(level.label) }
-                        DropdownMenu(expanded = levelMenuExpanded, onDismissRequest = { levelMenuExpanded = false }) {
-                            InventoryLevel.entries.forEach { option ->
-                                DropdownMenuItem(
-                                    text = { Text(option.label) },
-                                    onClick = {
-                                        level = option
-                                        levelMenuExpanded = false
-                                    },
-                                )
-                            }
-                        }
-                    }
-                }
             }
         },
         confirmButton = {
@@ -1144,9 +1181,17 @@ private fun AddLocationDialog(onDismiss: () -> Unit, onSave: (String) -> Unit) {
         onDismissRequest = onDismiss,
         title = { Text("Add a home") },
         text = {
-            OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Home or bar name") }, singleLine = true)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Inventory is kept separately for each home or bar.", style = MaterialTheme.typography.bodyMedium)
+                OutlinedTextField(
+                    value = name, onValueChange = { name = it }, label = { Text("Location name") }, singleLine = true,
+                    supportingText = { Text("Example: Home, cabin, or travel bar") },
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
+                    modifier = Modifier.fillMaxWidth().testTag("location-name"),
+                )
+            }
         },
-        confirmButton = { Button(onClick = { onSave(name) }, enabled = name.isNotBlank()) { Text("Save") } },
+        confirmButton = { Button(onClick = { onSave(name.trim()) }, enabled = name.isNotBlank()) { Text("Save location") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
@@ -1197,6 +1242,9 @@ private fun RecipeBrowser(
     pantry: List<PantryEntry>,
     favoriteFamilyIds: Set<CocktailFamilyId>,
     recentDrinks: List<RecentDrink>,
+    starterCatalogInstalled: Boolean,
+    catalogMessage: String?,
+    onInstallStarterCatalog: () -> Unit,
     onAddRecipe: () -> Unit,
     onSelectRecipe: (RecipeDetail) -> Unit,
     onOpenRecent: (com.davidhayesbc.cocktails.core.model.RecipeVariantId) -> Unit,
@@ -1241,11 +1289,22 @@ private fun RecipeBrowser(
                 FilterChip(selected = selectedStyle == style, onClick = { selectedStyle = if (selectedStyle == style) null else style }, label = { Text(style.label) })
             }
         }
+        if (!starterCatalogInstalled) {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Offline starter collection", style = MaterialTheme.typography.titleLarge)
+                    Text("Add eight classics: Daiquiri, Manhattan, Margarita, Dry Martini, Negroni, Old Fashioned, Sidecar, and Whiskey Sour. These are stored on this phone and work offline. Existing recipes and notes are left as they are.")
+                    Text("Recipe facts are shared under CC BY-SA 3.0. Each recipe includes source and revision history; methods were written for CocktAIls.", style = MaterialTheme.typography.bodySmall)
+                    Button(onClick = onInstallStarterCatalog) { Text("Add 8 starter recipes") }
+                    catalogMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                }
+            }
+        } else catalogMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         if (recipes.isEmpty()) {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Your recipe book starts here", style = MaterialTheme.typography.titleLarge)
-                    Text("Add your own drinks now. An attributed offline recipe pack can be added once its source records are cleared.")
+                    Text("Add your own drinks or browse the offline starter collection above.")
                     Button(onClick = onAddRecipe) { Text("Add a recipe") }
                 }
             }
@@ -1307,6 +1366,7 @@ private fun RecipeDetailScreen(
     onArchive: () -> Unit,
 ) {
     var confirmArchive by remember(recipe.id) { mutableStateOf(false) }
+    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
     var sourceToManage by remember(recipe.id) { mutableStateOf<com.davidhayesbc.cocktails.core.model.RecipeSourceInfo?>(null) }
     var sourceTargetId by remember(recipe.id) { mutableStateOf(recipe.id.value) }
     var sourceMenuExpanded by remember { mutableStateOf(false) }
@@ -1319,7 +1379,7 @@ private fun RecipeDetailScreen(
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                 TextButton(onClick = onToggleFavorite) { Text(if (isFavorite) "★ Favorite" else "☆ Favorite") }
-                TextButton(onClick = onEdit) { Text("Edit") }
+                TextButton(onClick = onEdit) { Text(if (recipe.sourceKind == "CATALOG") "Make editable copy" else "Edit") }
                 TextButton(onClick = onDuplicate) { Text("Duplicate") }
                 TextButton(onClick = onMarkMade) { Text("✓ Made it") }
             }
@@ -1351,7 +1411,16 @@ private fun RecipeDetailScreen(
                         Text(source.name + if (source.linked) " · linked" else " · unlinked", style = MaterialTheme.typography.titleSmall)
                         source.recordId?.let { Text("Source record: $it", style = MaterialTheme.typography.bodySmall) }
                         source.license?.let { Text("License: $it", style = MaterialTheme.typography.bodySmall) }
+                        source.licenseUrl?.let { url -> TextButton(onClick = { runCatching { uriHandler.openUri(url) } }) { Text("Read license terms") } }
                         source.attribution?.let { Text("Attribution: $it", style = MaterialTheme.typography.bodySmall) }
+                        source.url?.let { url -> TextButton(onClick = { runCatching { uriHandler.openUri(url) } }) { Text("View source revision") } }
+                        source.historyUrl?.let { url -> TextButton(onClick = { runCatching { uriHandler.openUri(url) } }) { Text("View article history") } }
+                        source.repositoryUrl?.let { url ->
+                            TextButton(onClick = { runCatching { uriHandler.openUri(url) } }) { Text("View source dataset") }
+                            source.repositoryRevision?.let { Text("Pinned dataset revision: $it", style = MaterialTheme.typography.bodySmall) }
+                        }
+                        source.originalIngredients?.let { Text("Original source measures: $it", style = MaterialTheme.typography.bodySmall) }
+                        source.modifications?.takeIf(String::isNotBlank)?.let { Text("Modifications: $it", style = MaterialTheme.typography.bodySmall) }
                         if (source.canReassociate) TextButton(onClick = {
                             sourceToManage = source
                             sourceTargetId = recipe.id.value
@@ -1445,7 +1514,7 @@ private fun parseRecipeIngredientDrafts(text: String): List<RecipeIngredientDraf
         if (parts.size == 1) RecipeIngredientDraft(parts.first())
         else {
             val amountText = parts.getOrNull(1).orEmpty()
-            val amount = if (amountText.isBlank()) null else amountText.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0.0 } ?: return null
+            val amount = if (amountText.isBlank()) null else amountText.replace(',', '.').toDoubleOrNull()?.takeIf { it.isFinite() && it > 0.0 } ?: return null
             val unit = parts.getOrNull(2)?.takeIf(String::isNotBlank)
             val preparation = parts.getOrNull(3)?.takeIf(String::isNotBlank)
             val optionalText = parts.getOrNull(4)?.lowercase().orEmpty()
@@ -1477,20 +1546,40 @@ private fun AddRecipeDialog(
     var familyId by remember(initialRecipe?.id) { mutableStateOf(initialRecipe?.familyId?.value) }
     var familyMenu by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    val dialogContentMaxHeight = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp * 0.62f
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (initialRecipe == null) "Add a recipe" else "Edit recipe") },
         text = {
             Column(
-                modifier = Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
+                modifier = Modifier.heightIn(max = dialogContentMaxHeight).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                OutlinedTextField(title, { title = it }, label = { Text("Drink name") }, singleLine = true, modifier = Modifier.testTag("recipe-title"))
-                OutlinedTextField(ingredients, { ingredients = it; error = null }, label = { Text("Ingredient · name | amount | unit | prep | optional") }, minLines = 3, modifier = Modifier.testTag("recipe-ingredients"))
-                OutlinedTextField(servings, { servings = it; error = null }, label = { Text("Original servings") }, singleLine = true, modifier = Modifier.testTag("recipe-servings"))
-                if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
-                OutlinedTextField(instructions, { instructions = it }, label = { Text("Method (optional)") }, minLines = 2)
-                TextButton(onClick = { familyMenu = true }) {
+                Text(if (initialRecipe == null) "Recipe details" else "Update this household version", style = MaterialTheme.typography.titleMedium)
+                OutlinedTextField(
+                    title, { title = it; error = null }, label = { Text("Drink name") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
+                    modifier = Modifier.fillMaxWidth().testTag("recipe-title"),
+                )
+                OutlinedTextField(
+                    ingredients, { ingredients = it; error = null },
+                    label = { Text("Ingredients") }, minLines = 3,
+                    supportingText = { Text("One per line: name | amount | unit | prep | optional. Example: Gin | 45 | ml") },
+                    modifier = Modifier.fillMaxWidth().testTag("recipe-ingredients"),
+                )
+                OutlinedTextField(
+                    servings, { servings = it; error = null }, label = { Text("Original yield (servings)") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.fillMaxWidth().testTag("recipe-servings"),
+                )
+                OutlinedTextField(
+                    instructions, { instructions = it }, label = { Text("Method · optional") }, minLines = 2,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                    modifier = Modifier.fillMaxWidth().testTag("recipe-method"),
+                )
+                if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                Text("Recipe grouping", style = MaterialTheme.typography.titleMedium)
+                OutlinedButton(onClick = { familyMenu = true }, modifier = Modifier.fillMaxWidth()) {
                     val familyName = families.firstOrNull { it.familyId.value == familyId }?.name
                     Text(if (initialRecipe == null && familyName == null) "New cocktail family" else "Family: ${familyName ?: "Select family"}  ▾")
                 }
@@ -1503,7 +1592,7 @@ private fun AddRecipeDialog(
                         DropdownMenuItem(text = { Text("$action ${family.name}") }, onClick = { familyId = family.familyId.value; familyMenu = false })
                     }
                 }
-                TextButton(onClick = { styleMenu = true }) { Text("Style: ${style.label} ▾") }
+                OutlinedButton(onClick = { styleMenu = true }, modifier = Modifier.fillMaxWidth()) { Text("Style: ${style.label} ▾") }
                 DropdownMenu(expanded = styleMenu, onDismissRequest = { styleMenu = false }) {
                     RecipeStyle.entries.forEach { option ->
                         DropdownMenuItem(text = { Text(option.label) }, onClick = { style = option; styleMenu = false })
@@ -1515,7 +1604,7 @@ private fun AddRecipeDialog(
             Button(
                 onClick = {
                     val parsed = parseRecipeIngredientDrafts(ingredients)
-                    val parsedServings = servings.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0.0 }
+                    val parsedServings = servings.replace(',', '.').toDoubleOrNull()?.takeIf { it.isFinite() && it > 0.0 }
                     if (parsed == null) error = "Enter each ingredient as a name or name | amount | unit | prep | optional. Amounts must be positive numbers."
                     else if (parsedServings == null) error = "Servings must be a positive number."
                     else if (!onSave(title, parsed, instructions, parsedServings, style, familyId)) error = "Check the recipe details and try again."
@@ -1992,9 +2081,12 @@ private fun AddMemberDialog(
         onDismissRequest = onDismiss,
         title = { Text("Household members") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 Text("Tasting notes will be saved under the selected member.")
-                OutlinedButton(onClick = { expanded = true }) {
+                OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
                     Text("Using ${members.firstOrNull { it.id == selectedMemberId }?.name ?: "member"}  ▾")
                 }
                 DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
@@ -2002,11 +2094,15 @@ private fun AddMemberDialog(
                         DropdownMenuItem(text = { Text(member.name) }, onClick = { onSelectMember(member.id); expanded = false })
                     }
                 }
-                OutlinedTextField(name, { name = it }, label = { Text("Add another member") }, singleLine = true)
+                OutlinedTextField(
+                    name, { name = it }, label = { Text("Add another member") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
+                    modifier = Modifier.fillMaxWidth().testTag("member-name"),
+                )
             }
         },
         confirmButton = {
-            Button(onClick = { onAdd(name); name = "" }, enabled = name.isNotBlank()) { Text("Add member") }
+            Button(onClick = { onAdd(name.trim()); name = "" }, enabled = name.isNotBlank()) { Text("Add member") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Done") } },
     )

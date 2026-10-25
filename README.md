@@ -15,10 +15,11 @@ An offline-first cocktail library and household bar companion for Android. The a
 - `apps/androidApp/`: first-release native Android app (Compose).
 - `apps/iosApp/`: future native iPhone app (SwiftUI); requires macOS/Xcode to build and sign.
 - `shared/core/`: Kotlin Multiplatform domain, persistence, matching, and import/export behavior.
-- `catalogs/core/`: separately versioned, provenance-aware offline recipe data pack.
+- `catalog-packs/iba-wikipedia-starter/`: separately licensed, attributed offline starter recipe pack.
+- `catalogs/core/`: catalog pack policy and directory notes.
 - `docs/`: product, architecture, and delivery decisions.
 
-The first release targets Android. Shared Kotlin Multiplatform domain/data logic and a portable file format are intended to support a future native iPhone app. It is designed around local storage and versioned file exchange. It should ship with a small, separately versioned core recipe catalog and support source-aware imports. Dot's research identifies candidate recipe sources, but record-level attribution and redistribution review is still required before bundling a source dataset. Product database selection is also pending. Network services and language models remain optional capabilities layered on later.
+The first release targets Android. Shared Kotlin Multiplatform domain/data logic and a portable file format are intended to support a future native iPhone app. Household records stay on-device and can be shared by versioned file exchange. The Recipes screen offers an optional local install of eight source-attributed classics; see the pack notice and [bounded source review](docs/planning/CATALOG_DATA_REVIEW.md). Other cocktail or product datasets require separate source and license review. Network services and language models remain optional capabilities layered on later.
 
 ## Build the Android app
 
@@ -28,7 +29,7 @@ Requirements: JDK 17 or newer, Android SDK Platform 36 and Build Tools 36.0.0, a
 ./gradlew :apps:androidApp:assembleDebug
 ```
 
-The debug APK is created at `apps/androidApp/build/outputs/apk/debug/androidApp-debug.apk`. The app currently supports local manual ingredient entry and approximate stock levels. The default location is Home; recipe recommendations wait for the licensed core catalog.
+The debug APK is created at `apps/androidApp/build/outputs/apk/debug/androidApp-debug.apk`. The Android app supports local ingredient and recipe entry, multiple homes, approximate stock levels, the offline starter recipes, recipe search/availability filters, tasting notes, shop suggestions, barcode capture/manual entry, photos, and manual backup/restore. See the Phase 1 status for current checks and remaining physical-device validation.
 
 ## Current state
 

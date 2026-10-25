@@ -2,9 +2,9 @@
 
 ## Decision
 
-The eight-record text-only IBA candidate has a bounded public source-history review, but is **not included in the app or repository**. Catalog-pack creation is deferred/outside Phase 1. If it is considered later, keep the factual ingredient/amount subset separate under CC BY-SA 3.0 with the attribution and modification manifest below. This is a practical, scoped review, not a blanket legal-clearance claim.
+The bounded eight-record text-only starter pack is included in `catalog-packs/iba-wikipedia-starter/`. It contains only the factual ingredient/amount fields listed below, concise methods newly authored by CocktAIls, and required per-record provenance. This is a practical, scoped review, not a blanket legal-clearance claim. The pack is separately licensed CC BY-SA 3.0; app code remains under its own license.
 
-The review supports factual ingredient lists and measures with newly authored concise methods. Avoid images, copied explanatory prose, and verbatim methods whose authorship/redistribution scope is uncertain.
+The review supports factual ingredient lists and measures with newly authored concise methods. The included pack avoids images, copied explanatory prose, and verbatim methods whose authorship/redistribution scope is uncertain.
 
 ## Evidence already reviewed
 
@@ -39,4 +39,4 @@ The public histories for all eight pinned revisions were reviewed through their 
 - Whiskey sour revision 286304679 records a split pointing to the Wikipedia “Sour (cocktail)” ancestry.
 - The archived 2023 page footer states CC BY-SA 3.0. The current footer's later 4.0 notice does not replace the archived notice for these pinned revisions.
 
-For any future pack, retain only the eight factual ingredient/amount rows; write concise methods anew; include the article links, page revision IDs, contributor/extractor attribution, pinned repository commit, CC BY-SA 3.0 notice, and explicit normalization/modification notes. No images or verbatim explanatory/history text. The residual Martini suppressed-diff uncertainty and the general limits of a bounded public-source review mean this is not a guarantee about every jurisdiction or rights claim. Do not broaden the reviewed candidate under this result; use a source with clearer record-level redistribution evidence for additions.
+The distributed pack retains only the eight factual ingredient/amount rows; methods are newly written; article revision links, history links, contributor/extractor attribution, pinned repository commit, CC BY-SA 3.0 notice, and normalization/modification notes are included. No images or verbatim explanatory/history text are bundled. The residual Martini suppressed-diff uncertainty and the general limits of a bounded public-source review mean this is not a guarantee about every jurisdiction or rights claim. Do not broaden the reviewed subset under this result; use a source with clearer record-level redistribution evidence for additions.

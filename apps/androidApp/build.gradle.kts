@@ -22,6 +22,8 @@ android {
         versionCode = providers.environmentVariable("GITHUB_RUN_NUMBER").orNull?.toIntOrNull() ?: 1
         versionName = providers.environmentVariable("COCKTAILS_VERSION_NAME").orNull ?: "0.1.0"
     }
+
+    sourceSets["main"].assets.srcDir(rootProject.file("catalog-packs"))
 }
 
 kotlin {

@@ -134,9 +134,9 @@ Help a household keep track of its ingredients at multiple homes, discover drink
 
 ## 8. Open questions
 
-- Cocktail catalog candidates and redistribution: research is available, but exact source records and attribution remain to be audited before inclusion.
+- The bounded eight-record text-only starter pack is included under CC BY-SA 3.0; see `docs/planning/CATALOG_DATA_REVIEW.md`. No additional catalog sources are cleared.
 - Product/barcode source: measure target-market coverage and size; decide whether a separate Open Food Facts-derived pack is worthwhile after ODbL review.
-- How should catalog updates be delivered without a developer-operated backend: app releases, user-imported data packs, or an optional hosted static file?
+- How should future catalog updates beyond the bundled starter pack be delivered without a developer-operated backend: app releases, user-imported data packs, or an optional hosted static file?
 - Should users be able to import arbitrary JSON/CSV only, or should the first release include one source-specific adapter after the selected source is cleared?
 - How should exports handle imported content with license terms that require attribution, ShareAlike, or restrict redistribution? At minimum, show included source/license details and let the user exclude a source pack.
 - Android barcode/OCR implementation and offline availability: verify during technical discovery.

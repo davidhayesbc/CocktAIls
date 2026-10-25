@@ -78,6 +78,7 @@ data class RecipeDetail(
     val style: RecipeStyle,
     val ingredients: List<RecipeLine>,
     val sources: List<RecipeSourceInfo> = emptyList(),
+    val sourceKind: String = "HOUSEHOLD",
 )
 
 data class RecipeSourceInfo(
@@ -89,6 +90,12 @@ data class RecipeSourceInfo(
     val attribution: String?,
     val linked: Boolean,
     val canReassociate: Boolean,
+    val historyUrl: String? = null,
+    val modifications: String? = null,
+    val originalIngredients: String? = null,
+    val licenseUrl: String? = null,
+    val repositoryUrl: String? = null,
+    val repositoryRevision: String? = null,
 )
 
 data class RecipeLine(

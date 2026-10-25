@@ -133,7 +133,7 @@ All shared records use stable UUIDv7 IDs. Editable records have immutable revisi
 
 ## Immediate next steps
 
-1. Complete the record-level attribution/license audit for candidate recipe sources and decide which, if any, source to use.
+1. Keep the reviewed eight-record Wikipedia factual-field pack bounded as documented; review any additional source records separately before inclusion.
 2. Confirm package ID, minimum Android version/distribution plan, and visual style.
 3. Scaffold the Android project and establish CI/build verification.
-4. Implement the domain model and offline manual-entry slice before catalog import or AI integration.
+4. Implement the domain model and offline manual-entry slice before broader catalog import or AI integration. The separately licensed eight-record reviewed starter pack is now installed through an explicit local action.

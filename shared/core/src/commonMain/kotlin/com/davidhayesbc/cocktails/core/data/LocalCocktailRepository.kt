@@ -25,6 +25,8 @@ import com.davidhayesbc.cocktails.core.matching.HomeLocationArea
 import com.davidhayesbc.cocktails.core.model.newUuidV7
 import com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup
 import com.davidhayesbc.cocktails.core.interchange.HouseholdBundle
+import com.davidhayesbc.cocktails.core.interchange.CatalogPackDecodeResult
+import com.davidhayesbc.cocktails.core.interchange.decodeCatalogPack
 import com.davidhayesbc.cocktails.core.interchange.RecipeImportApplyResult
 import com.davidhayesbc.cocktails.core.interchange.RecipeImportPreview
 import com.davidhayesbc.cocktails.core.interchange.RecipeImportProvenance
@@ -223,6 +225,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             ingredients = queries.selectRecipeIngredients(row.variant_id).executeAsList().map {
                 RecipeLine(IngredientId(it.ingredient_id), it.canonical_name, it.amount_value, it.amount_unit, it.optional != 0L, it.preparation)
             },
+            sourceKind = row.source_kind,
             sources = queries.selectRecipeSourcesForVariant(row.variant_id).executeAsList().map { source ->
                 val sourceNotes = parseImportedSourceNotes(source.modifications)
                 RecipeSourceInfo(
@@ -234,9 +237,97 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                     attribution = source.attribution,
                     linked = sourceAssociationLinked(source.modifications),
                     canReassociate = sourceNotes != null,
+                    historyUrl = source.modifications?.let(::parseSourceHistoryUrl),
+                    modifications = parseSourceModificationDisplay(source.modifications),
+                    originalIngredients = source.modifications?.let(::parseSourceOriginalIngredients),
+                    licenseUrl = source.modifications?.let(::parseSourceLicenseUrl),
+                    repositoryUrl = source.modifications?.let(::parseSourceRepositoryUrl),
+                    repositoryRevision = source.modifications?.let(::parseSourceRepositoryRevision),
                 )
             },
         )
+    }
+
+    fun hasStarterCatalog(): Boolean = queries.selectAllSourcesForBundle().executeAsList().any { source ->
+        source.source_record_id?.startsWith("cocktails-wikipedia-iba-starter:") == true
+    }
+
+    /** Adds an audited bundled pack without overwriting any existing or archived household records. */
+    fun installCatalogPack(packJson: String, nowMillis: Long): CatalogInstallResult {
+        val pack = when (val decoded = decodeCatalogPack(packJson)) {
+            is CatalogPackDecodeResult.Invalid -> return CatalogInstallResult.Invalid(decoded.reason)
+            is CatalogPackDecodeResult.Valid -> decoded.pack
+        }
+        return try {
+            database.transactionWithResult {
+                val householdId = queries.selectFirstHousehold().executeAsOne().id
+                val memberId = preferredMemberId() ?: queries.selectFirstMember(householdId).executeAsOne().id
+                val existingSources = queries.selectAllSourcesForBundle().executeAsList()
+                var added = 0
+                var skipped = 0
+                for ((rowIndex, recipe) in pack.records.withIndex()) {
+                    val sourceRecordId = "${pack.id}:${recipe.recordId}"
+                    if (existingSources.any { it.source_name == pack.sourceName && it.source_record_id == sourceRecordId }) {
+                        skipped++
+                        continue
+                    }
+                    val familyId = newUuidV7(nowMillis + rowIndex * 20L)
+                    val variantId = newUuidV7(nowMillis + rowIndex * 20L + 1)
+                    val sourceId = newUuidV7(nowMillis + rowIndex * 20L + 2)
+                    queries.insertRecipeFamily(familyId, recipe.title, nowMillis)
+                    writeRevision(familyId, "COCKTAIL_FAMILY", memberId, nowMillis, jsonObject("name" to jsonString(recipe.title)))
+                    queries.insertCatalogRecipeVariant(variantId, familyId, recipe.title, recipe.instructions, "", recipe.servings, recipe.style.name, nowMillis)
+                    val ingredientIds = recipe.ingredients.map { it.name to it.category }.distinctBy { "${it.first.lowercase()}\u0000${it.second.lowercase()}" }
+                    ingredientIds.forEachIndexed { index, (name, category) ->
+                        queries.insertIngredientIgnore(newUuidV7(nowMillis + rowIndex * 100L + index + 100), name, category, nowMillis)
+                    }
+                    val ids = ingredientIds.associate { (name, category) ->
+                        "${name.lowercase()}\u0000${category.lowercase()}" to queries.selectIngredientByNameAndCategory(name, category).executeAsOne()
+                    }
+                    recipe.ingredients.forEachIndexed { index, line ->
+                        val ingredientId = ids.getValue("${line.name.lowercase()}\u0000${line.category.lowercase()}")
+                        queries.insertRecipeIngredient(
+                            id = newUuidV7(nowMillis + rowIndex * 100L + index + 500),
+                            variant_id = variantId,
+                            ingredient_id = ingredientId,
+                            amount_value = line.amount,
+                            amount_unit = line.unit,
+                            preparation = line.preparation,
+                            optional = 0L,
+                            sort_order = index.toLong(),
+                        )
+                    }
+                    val linesPayload = recipe.ingredients.joinToString(prefix = "[", postfix = "]") { line ->
+                        jsonObject(
+                            "name" to jsonString(line.name), "amount" to (line.amount?.toString() ?: "null"),
+                            "unit" to (line.unit?.let(::jsonString) ?: "null"), "preparation" to (line.preparation?.let(::jsonString) ?: "null"),
+                            "optional" to "false",
+                        )
+                    }
+                    val variantRevision = writeRevision(
+                        variantId, "RECIPE_VARIANT", memberId, nowMillis,
+                        jsonObject("familyId" to jsonString(familyId), "title" to jsonString(recipe.title), "instructions" to jsonString(recipe.instructions),
+                            "style" to jsonString(recipe.style.name), "servings" to recipe.servings.toString(), "ingredients" to linesPayload),
+                    )
+                    queries.updateRecipeVariantRevision(variantRevision, variantId)
+                    val modifications = jsonObject(
+                        "catalogPackId" to jsonString(pack.id), "catalogPackVersion" to pack.version.toString(),
+                        "licenseUrl" to jsonString(pack.licenseUrl),
+                        "repositoryUrl" to jsonString(pack.repositoryUrl), "repositoryRevision" to jsonString(pack.repositoryRevision),
+                        "historyUrl" to jsonString(recipe.historyUrl), "modifications" to jsonString(recipe.modifications),
+                        "originalIngredients" to jsonString(recipe.originalIngredients),
+                        "associationState" to jsonString("LINKED"),
+                    )
+                    queries.insertRecipeSource(sourceId, variantId, pack.sourceName, sourceRecordId, recipe.permanentUrl, pack.licenseName, pack.attribution, modifications, nowMillis)
+                    writeRecipeSourceRevision(sourceId, memberId, nowMillis)
+                    added++
+                }
+                bundleStore.export(nowMillis)
+                CatalogInstallResult.Installed(added, skipped)
+            }
+        } catch (exception: Exception) {
+            CatalogInstallResult.Invalid("Catalog was not installed: ${exception.message ?: "database validation failed"}.")
+        }
     }
 
     /** Reversible, explicit link management for a previously imported source record. */
@@ -593,10 +684,14 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             queries.updateRecipeVariantRevision(revisionId, variantId)
             copySourcesFromVariant?.let { sourceVariantId ->
                 queries.selectRecipeSourcesForVariant(sourceVariantId).executeAsList().forEachIndexed { index, source ->
+                    val copiedSourceId = newUuidV7(nowMillis + index + 500)
+                    val copiedRecordId = "household-copy:$variantId:${source.id}"
+                    val copiedNotes = copySourceModifications(source.modifications, source.id, source.source_record_id)
                     queries.insertRecipeSource(
-                        newUuidV7(nowMillis + index + 500), variantId, source.source_name, source.source_record_id,
-                        source.source_url, source.license_name, source.attribution, source.modifications, source.imported_at,
+                        copiedSourceId, variantId, source.source_name, copiedRecordId,
+                        source.source_url, source.license_name, source.attribution, copiedNotes, source.imported_at,
                     )
+                    writeRecipeSourceRevision(copiedSourceId, memberId, nowMillis)
                 }
             }
         }
@@ -615,6 +710,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         targetFamilyId: CocktailFamilyId? = null,
     ): Boolean {
         val existing = recipes().firstOrNull { it.id == variantId } ?: return false
+        if (existing.sourceKind == "CATALOG") return false
         val cleanTitle = title.trim()
         val cleanInstructions = instructions.trim()
         val cleanLines = ingredientLines.map { line ->
@@ -979,6 +1075,11 @@ private const val AUTO_HOME_SELECTION_OVERRIDE_KEY = "automatic_home_selection_o
 private const val MIN_HOME_RADIUS_METERS = 50.0
 private const val MAX_HOME_RADIUS_METERS = 10_000.0
 
+sealed interface CatalogInstallResult {
+    data class Installed(val added: Int, val alreadyPresent: Int) : CatalogInstallResult
+    data class Invalid(val reason: String) : CatalogInstallResult
+}
+
 private fun homeAreaKey(locationId: String, coordinate: String): String = "home_area:$locationId:$coordinate"
 
 private fun jsonObject(vararg fields: Pair<String, String>): String =
@@ -1103,6 +1204,45 @@ private fun parseImportedSourceNotes(modifications: String?): StagedRecipeImport
 private fun sourceAssociationLinked(modifications: String?): Boolean = try {
     modifications?.let { Json.parseToJsonElement(it).jsonObject["associationState"]?.jsonPrimitive?.contentOrNull } != "UNLINKED"
 } catch (_: Exception) { true }
+
+private fun parseSourceHistoryUrl(modifications: String?): String? = try {
+    modifications?.let { Json.parseToJsonElement(it).jsonObject["historyUrl"]?.jsonPrimitive?.contentOrNull }
+} catch (_: Exception) { null }
+
+private fun parseSourceModificationDisplay(modifications: String?): String? = try {
+    modifications?.let { Json.parseToJsonElement(it).jsonObject["modifications"]?.jsonPrimitive?.contentOrNull }
+        ?: modifications?.takeUnless { it.startsWith("{") }
+} catch (_: Exception) { null }
+
+private fun parseSourceOriginalIngredients(modifications: String?): String? = try {
+    modifications?.let { Json.parseToJsonElement(it).jsonObject["originalIngredients"]?.jsonPrimitive?.contentOrNull }
+} catch (_: Exception) { null }
+
+private fun parseSourceLicenseUrl(modifications: String?): String? = try {
+    modifications?.let { Json.parseToJsonElement(it).jsonObject["licenseUrl"]?.jsonPrimitive?.contentOrNull }
+} catch (_: Exception) { null }
+
+private fun parseSourceRepositoryUrl(modifications: String?): String? = try {
+    modifications?.let { Json.parseToJsonElement(it).jsonObject["repositoryUrl"]?.jsonPrimitive?.contentOrNull }
+} catch (_: Exception) { null }
+
+private fun parseSourceRepositoryRevision(modifications: String?): String? = try {
+    modifications?.let { Json.parseToJsonElement(it).jsonObject["repositoryRevision"]?.jsonPrimitive?.contentOrNull }
+} catch (_: Exception) { null }
+
+private fun copySourceModifications(modifications: String?, sourceId: String, sourceRecordId: String?): String {
+    val original = try {
+        modifications?.let { Json.parseToJsonElement(it).jsonObject } ?: JsonObject(emptyMap())
+    } catch (_: Exception) {
+        JsonObject(mapOf("originalModifications" to JsonPrimitive(modifications.orEmpty())))
+    }
+    val copy = JsonObject(original + mapOf(
+        "associationState" to JsonPrimitive("LINKED"),
+        "copiedFromSourceId" to JsonPrimitive(sourceId),
+        "copiedFromRecordId" to (sourceRecordId?.let(::JsonPrimitive) ?: JsonNull),
+    ))
+    return Json.encodeToString(JsonObject.serializer(), copy)
+}
 
 private fun withSourceAssociationState(modifications: String?, linked: Boolean): String {
     val existing = try {

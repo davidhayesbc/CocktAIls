@@ -1,0 +1,141 @@
+{
+  "format": "cocktails.catalog-pack.v1",
+  "id": "cocktails-wikipedia-iba-starter",
+  "version": 1,
+  "sourceName": "Wikipedia (extracted by Rasmus Bååth)",
+  "license": "CC BY-SA 3.0",
+  "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
+  "attribution": "Wikipedia contributors; extracted by Rasmus Bååth in rasmusab/iba-cocktails. Licensed CC BY-SA 3.0. See the bundled NOTICE.md for source revisions, histories, and modifications.",
+  "repositoryUrl": "https://github.com/rasmusab/iba-cocktails/blob/9148d3302f582b06695684f3bb446631ab99d160/wikipedia/iba-cocktails-wiki.csv",
+  "repositoryRevision": "9148d3302f582b06695684f3bb446631ab99d160",
+  "recipes": [
+    {
+      "recordId": "wikipedia:Daiquiri:1137204541",
+      "title": "Daiquiri",
+      "style": "SOUR",
+      "servings": 1,
+      "instructions": "Shake the rum, lime juice, and sugar with ice until chilled. Fine-strain into a chilled coupe.",
+      "permanentUrl": "https://en.wikipedia.org/w/index.php?title=Daiquiri&oldid=1137204541",
+      "historyUrl": "https://en.wikipedia.org/w/index.php?title=Daiquiri&action=history",
+      "originalIngredients": "60 ml white Cuban rum,20 ml fresh lime juice,2 bar spoons superfine sugar",
+      "modifications": "Retained factual ingredient quantities from the pinned source row. Ingredient names and recipe structure normalized for CocktAIls; SOUR style label assigned by CocktAIls; method newly authored. No source garnish was added.",
+      "ingredients": [
+        {"name":"White Cuban rum","category":"Spirit","amount":60,"unit":"ml"},
+        {"name":"Lime juice","category":"Other","amount":20,"unit":"ml","preparation":"fresh"},
+        {"name":"Superfine sugar","category":"Other","amount":2,"unit":"bar spoons"}
+      ]
+    },
+    {
+      "recordId": "wikipedia:Manhattan_(cocktail):1138697614",
+      "title": "Manhattan",
+      "style": "SHORT",
+      "servings": 1,
+      "instructions": "Stir the whiskey, vermouth, and bitters with ice until very cold. Strain into a chilled cocktail glass.",
+      "permanentUrl": "https://en.wikipedia.org/w/index.php?title=Manhattan_(cocktail)&oldid=1138697614",
+      "historyUrl": "https://en.wikipedia.org/w/index.php?title=Manhattan_(cocktail)&action=history",
+      "originalIngredients": "50 ml Rye whiskey,20 ml Sweet red vermouth,1 dash Angostura bitters",
+      "modifications": "Retained factual ingredient quantities from the pinned source row. Ingredient names and recipe structure normalized for CocktAIls; SHORT style label assigned by CocktAIls; method newly authored. No source garnish was added.",
+      "ingredients": [
+        {"name":"Rye whiskey","category":"Spirit","amount":50,"unit":"ml"},
+        {"name":"Sweet red vermouth","category":"Other","amount":20,"unit":"ml"},
+        {"name":"Angostura bitters","category":"Other","amount":1,"unit":"dash"}
+      ]
+    },
+    {
+      "recordId": "wikipedia:Margarita:1141361671",
+      "title": "Margarita",
+      "style": "SOUR",
+      "servings": 1,
+      "instructions": "Shake the tequila, triple sec, and lime juice with ice. Strain into a chilled cocktail glass.",
+      "permanentUrl": "https://en.wikipedia.org/w/index.php?title=Margarita&oldid=1141361671",
+      "historyUrl": "https://en.wikipedia.org/w/index.php?title=Margarita&action=history",
+      "originalIngredients": "50 ml tequila 100% agave,20 ml triple sec,15 ml freshly squeezed lime juice",
+      "modifications": "Retained factual ingredient quantities from the pinned source row. Ingredient names and recipe structure normalized for CocktAIls; SOUR style label assigned by CocktAIls; method newly authored. No source garnish was added.",
+      "ingredients": [
+        {"name":"100% agave tequila","category":"Spirit","amount":50,"unit":"ml"},
+        {"name":"Triple sec","category":"Other","amount":20,"unit":"ml"},
+        {"name":"Lime juice","category":"Other","amount":15,"unit":"ml","preparation":"freshly squeezed"}
+      ]
+    },
+    {
+      "recordId": "wikipedia:Martini_(cocktail):1143040738",
+      "title": "Dry Martini",
+      "style": "SHORT",
+      "servings": 1,
+      "instructions": "Stir the gin and dry vermouth with ice until thoroughly chilled. Strain into a chilled cocktail glass.",
+      "permanentUrl": "https://en.wikipedia.org/w/index.php?title=Martini_(cocktail)&oldid=1143040738",
+      "historyUrl": "https://en.wikipedia.org/w/index.php?title=Martini_(cocktail)&action=history",
+      "originalIngredients": "60 ml (2.0 US fl oz) gin,10 ml (0.34 US fl oz) dry vermouth",
+      "modifications": "Structured amounts use the source metric quantities. Ingredient names normalized; SHORT style label assigned by CocktAIls; method newly authored. No source garnish was added.",
+      "ingredients": [
+        {"name":"Gin","category":"Spirit","amount":60,"unit":"ml"},
+        {"name":"Dry vermouth","category":"Other","amount":10,"unit":"ml"}
+      ]
+    },
+    {
+      "recordId": "wikipedia:Negroni:1140297831",
+      "title": "Negroni",
+      "style": "BITTER",
+      "servings": 1,
+      "instructions": "Stir the gin, sweet vermouth, and bitter aperitif with ice. Strain over fresh ice in a rocks glass.",
+      "permanentUrl": "https://en.wikipedia.org/w/index.php?title=Negroni&oldid=1140297831",
+      "historyUrl": "https://en.wikipedia.org/w/index.php?title=Negroni&action=history",
+      "originalIngredients": "3 cl gin,3 cl sweet red vermouth,3 cl Campari",
+      "modifications": "Retained source quantities as 3 cl per ingredient. BITTER style label assigned by CocktAIls; method newly authored. No source garnish was added.",
+      "ingredients": [
+        {"name":"Gin","category":"Spirit","amount":3,"unit":"cl"},
+        {"name":"Sweet red vermouth","category":"Other","amount":3,"unit":"cl"},
+        {"name":"Campari","category":"Other","amount":3,"unit":"cl"}
+      ]
+    },
+    {
+      "recordId": "wikipedia:Old_fashioned_(cocktail):1137422023",
+      "title": "Old Fashioned",
+      "style": "SHORT",
+      "servings": 1,
+      "instructions": "Add the sugar cube and bitters to a rocks glass with a little water. Muddle to dissolve, add whiskey and ice, then stir until chilled.",
+      "permanentUrl": "https://en.wikipedia.org/w/index.php?title=Old_fashioned_(cocktail)&oldid=1137422023",
+      "historyUrl": "https://en.wikipedia.org/w/index.php?title=Old_fashioned_(cocktail)&action=history",
+      "originalIngredients": "45 ml bourbon or rye whiskey,1 sugar cube,Few dashes Angostura bitters,Few dashes plain water",
+      "modifications": "Retained the source's alternative bourbon-or-rye whiskey, one sugar cube, few dashes of Angostura bitters, and few dashes of plain water. SHORT style label assigned by CocktAIls; method newly authored. No source garnish was added.",
+      "ingredients": [
+        {"name":"Bourbon or rye whiskey","category":"Spirit","amount":45,"unit":"ml"},
+        {"name":"Sugar cube","category":"Other","amount":1,"unit":"cube"},
+        {"name":"Angostura bitters","category":"Other","amount":null,"unit":"few dashes"},
+        {"name":"Water","category":"Other","amount":null,"unit":"few dashes"}
+      ]
+    },
+    {
+      "recordId": "wikipedia:Sidecar_(cocktail):1138247115",
+      "title": "Sidecar",
+      "style": "SOUR",
+      "servings": 1,
+      "instructions": "Shake the cognac, triple sec, and lemon juice with ice. Strain into a chilled cocktail glass.",
+      "permanentUrl": "https://en.wikipedia.org/w/index.php?title=Sidecar_(cocktail)&oldid=1138247115",
+      "historyUrl": "https://en.wikipedia.org/w/index.php?title=Sidecar_(cocktail)&action=history",
+      "originalIngredients": "5 cl cognac,2 cl triple sec,2 cl lemon juice",
+      "modifications": "Retained source quantities of 5 cl cognac, 2 cl triple sec, and 2 cl lemon juice. SOUR style label assigned by CocktAIls; method newly authored. No source garnish was added.",
+      "ingredients": [
+        {"name":"Cognac","category":"Spirit","amount":5,"unit":"cl"},
+        {"name":"Triple sec","category":"Other","amount":2,"unit":"cl"},
+        {"name":"Lemon juice","category":"Other","amount":2,"unit":"cl"}
+      ]
+    },
+    {
+      "recordId": "wikipedia:Whiskey_sour:1135216366",
+      "title": "Whiskey Sour",
+      "style": "SOUR",
+      "servings": 1,
+      "instructions": "Shake the whiskey, lemon juice, and simple syrup with ice until chilled. Strain over fresh ice or into a chilled glass.",
+      "permanentUrl": "https://en.wikipedia.org/w/index.php?title=Whiskey_sour&oldid=1135216366",
+      "historyUrl": "https://en.wikipedia.org/w/index.php?title=Whiskey_sour&action=history",
+      "originalIngredients": "4.5 cl (3 parts) bourbon whiskey,3 cl (2 parts) fresh lemon juice,1.5 cl (1 part) simple syrup",
+      "modifications": "Retained source quantities of 4.5 cl (3 parts) bourbon whiskey, 3 cl (2 parts) fresh lemon juice, and 1.5 cl (1 part) simple syrup. SOUR style label assigned by CocktAIls; method newly authored. No egg white or garnish was added because neither appears in the pinned row.",
+      "ingredients": [
+        {"name":"Bourbon whiskey","category":"Spirit","amount":4.5,"unit":"cl"},
+        {"name":"Lemon juice","category":"Other","amount":3,"unit":"cl","preparation":"fresh"},
+        {"name":"Simple syrup","category":"Other","amount":1.5,"unit":"cl"}
+      ]
+    }
+  ]
+}

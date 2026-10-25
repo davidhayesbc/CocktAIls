@@ -1,6 +1,6 @@
 # ADR-0006: Separate catalog packs and provenance-aware imports
 
-- **Status:** Accepted direction; source records pending audit
+- **Status:** Accepted; bounded Wikipedia starter pack included
 - **Date:** 2026-10-25
 
 ## Context
@@ -14,7 +14,7 @@ The app needs a useful offline recipe catalog, while users also need to add thei
 - Treat catalog source records as immutable/read-only. A household member may favorite or annotate a source record; editing creates a household-owned copy linked to the source record and preserving its original provenance.
 - Provide a staged import pipeline: decode source format, validate, normalize, capture provenance/license metadata, preview additions/duplicates/updates/conflicts, then commit transactionally.
 - Support the app's own versioned bundle first. Add source-specific import adapters only after rights and format are reviewed. Generic CSV/JSON import can be supported where mapping is explicit; a public API is not automatically permission to redistribute its results.
-- The Wikipedia CSV subset of `rasmusab/iba-cocktails` remains a candidate only. Its eight-record, factual-field review is documented in `docs/planning/CATALOG_DATA_REVIEW.md`; pack creation is deferred/outside Phase 1. Do not infer rights for the separately scraped `iba-web/` directory or expand the audited subset without a new review.
+- The eight-record factual subset from the pinned Wikipedia CSV is included as `catalog-packs/iba-wikipedia-starter/`, following the bounded source review in `docs/planning/CATALOG_DATA_REVIEW.md`. This does not clear other records, source prose, images, or the separately scraped `iba-web/` directory. Keep the pack and its CC BY-SA 3.0 notice separate from app code. Do not expand the audited subset without a new review.
 - Keep product/barcode datasets separate from recipes and code. Defer a bundled Open Food Facts-derived dataset until coverage, size, and ODbL obligations are reviewed. Manual barcode entry remains available.
 - Exclude NC-only datasets and uncleared images/prose from the default distributable packs. Do not treat a repository's code license as clearance for all record contents.
 

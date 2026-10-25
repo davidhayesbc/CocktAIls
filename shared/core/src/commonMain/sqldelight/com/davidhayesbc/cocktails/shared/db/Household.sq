@@ -247,6 +247,10 @@ insertRecipeVariant:
 INSERT INTO recipe_variant(id, family_id, title, source_kind, instructions, preparation, servings, style, created_at)
 VALUES (?, ?, ?, 'HOUSEHOLD', ?, ?, ?, ?, ?);
 
+insertCatalogRecipeVariant:
+INSERT INTO recipe_variant(id, family_id, title, source_kind, instructions, preparation, servings, style, created_at)
+VALUES (?, ?, ?, 'CATALOG', ?, ?, ?, ?, ?);
+
 updateRecipeVariantRevision:
 UPDATE recipe_variant SET revision_id = ? WHERE id = ?;
 
@@ -273,7 +277,8 @@ SELECT id, canonical_name FROM ingredient WHERE category = 'Spirit' COLLATE NOCA
 
 selectRecipeVariants:
 SELECT recipe_variant.id AS variant_id, recipe_variant.family_id, recipe_variant.title,
-       recipe_variant.instructions, recipe_variant.preparation, recipe_variant.servings, recipe_variant.style
+       recipe_variant.instructions, recipe_variant.preparation, recipe_variant.servings, recipe_variant.style,
+       recipe_variant.source_kind
 FROM recipe_variant
 WHERE NOT EXISTS (
     SELECT 1 FROM tombstone
