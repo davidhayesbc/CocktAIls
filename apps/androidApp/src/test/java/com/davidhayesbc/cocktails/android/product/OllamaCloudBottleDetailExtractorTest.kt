@@ -70,6 +70,19 @@ class OllamaCloudBottleDetailExtractorTest {
     }
 
     @Test
+    fun conflictingBottleSizesRemainUnresolvedInsteadOfSelectingOne() {
+        val sourceText = "UPC 5011333150725. Three Wood is listed in 700 mL and 750 mL bottles."
+        val candidate = """{"facts":[{"field":"product_name","value":"Three Wood","evidence":"Three Wood"},{"field":"quantity","value":"750 mL","evidence":"750 mL bottles"}]}"""
+
+        val result = parseBottleFactCandidate(candidate, "Ollama Cloud", "model", "https://shop.example/item", sourceText)
+
+        val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
+        assertTrue(BottleFactField.QUANTITY in suggestions.unresolvedFields)
+        assertTrue(suggestions.facts.none { it.field == BottleFactField.QUANTITY })
+        assertTrue(suggestions.facts.any { it.field == BottleFactField.PRODUCT_NAME })
+    }
+
+    @Test
     fun stripsLinksUrlsQueryStringsHtmlAndControlCharactersBeforeCloudRequest() = runBlocking {
         val pageText = "Gin brand [official page](https://example.org/gin?token=private123)\nRaw https://shop.example/item?email=person%40example.org\u0001"
         val transport = FakeTransport(OllamaCloudHttpResponse.Success(response(

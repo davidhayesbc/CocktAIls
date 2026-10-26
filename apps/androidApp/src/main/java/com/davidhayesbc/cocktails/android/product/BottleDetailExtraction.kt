@@ -40,6 +40,7 @@ internal data class BottleDetailSuggestions(
     val model: String,
     val sourceUrl: String,
     val facts: List<BottleFactEvidence>,
+    val unresolvedFields: Set<BottleFactField> = emptySet(),
 )
 
 internal sealed interface BottleDetailExtractionResult {
@@ -254,12 +255,30 @@ internal fun parseBottleFactCandidate(
         fieldFacts.map { it.value.trim().lowercase(Locale.ROOT) }.distinct().size > 1
     }
     if (conflictingFields) return BottleDetailExtractionResult.InvalidResponse
-    val acceptedFacts = facts.distinctBy(BottleFactEvidence::field).take(MAX_FACTS)
-    if (acceptedFacts.isEmpty()) return BottleDetailExtractionResult.InvalidResponse
+    val unresolvedFields = unresolvedBottleSourceFields(sourceText)
+    val acceptedFacts = facts
+        .filterNot { it.field in unresolvedFields }
+        .distinctBy(BottleFactEvidence::field)
+        .take(MAX_FACTS)
+    if (acceptedFacts.isEmpty() && unresolvedFields.isEmpty()) return BottleDetailExtractionResult.InvalidResponse
     BottleDetailExtractionResult.Found(
-        BottleDetailSuggestions(provider, model, sourceUrl, acceptedFacts),
+        BottleDetailSuggestions(provider, model, sourceUrl, acceptedFacts, unresolvedFields),
     )
 }.getOrDefault(BottleDetailExtractionResult.InvalidResponse)
+
+/** Keep source-level bottle-size disagreements visible and unresolved instead of selecting one. */
+internal fun unresolvedBottleSourceFields(sourceText: String): Set<BottleFactField> {
+    val quantities = Regex("""(?i)(?<![\d.,])(\d{1,4}(?:[.,]\d{1,2})?)\s*(mL|L)\b""")
+        .findAll(sourceText)
+        .mapNotNull { match ->
+            val amount = match.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return@mapNotNull null
+            val milliliters = if (match.groupValues[2].equals("L", ignoreCase = true)) amount * 1_000 else amount
+            milliliters.takeIf { it in 1.0..20_000.0 }
+        }
+        .map { kotlin.math.round(it).toLong() }
+        .toSet()
+    return if (quantities.size > 1) setOf(BottleFactField.QUANTITY) else emptySet()
+}
 
 private fun isSupportedAbvCandidate(value: String, evidence: String): Boolean {
     val valueNumber = Regex("""^\s*(\d{1,3}(?:[.,]\d{1,2})?)\s*%?\s*$""")

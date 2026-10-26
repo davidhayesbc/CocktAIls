@@ -121,7 +121,10 @@ internal fun BarcodeScannerDialog(
                                         }
                                     } else if (!continuous && completed.compareAndSet(false, true)) {
                                         ContextCompat.getMainExecutor(context).execute {
-                                            if (!disposed.get()) currentOnDetected(value)
+                                            if (!disposed.get()) {
+                                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                currentOnDetected(value)
+                                            }
                                         }
                                     }
                                     if (continuous) {

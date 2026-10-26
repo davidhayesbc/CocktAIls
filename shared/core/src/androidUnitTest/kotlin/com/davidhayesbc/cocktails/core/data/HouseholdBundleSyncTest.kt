@@ -29,6 +29,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertContentEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class HouseholdBundleSyncTest {
@@ -138,6 +139,30 @@ class HouseholdBundleSyncTest {
         assertTrue(repository.updateBottleIntakeDraft(reopened.copy(ingredientName = "London Dry Gin")))
         assertIs<com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult.Confirmed>(repository.confirmBottleIntakeSession(session.id, 50))
         assertEquals("London Dry Gin", repository.pantry(home).single().name)
+    }
+
+    @Test
+    fun repeatedSameBarcodeDraftsCommitAsSeparatePhysicalBottles() {
+        val database = database()
+        val repository = LocalCocktailRepository(database)
+        repository.initialize(10)
+        val home = repository.locations().single().id
+        val session = repository.startBottleIntakeSession(home, InventoryLevel.FULL, 20)
+
+        val first = repository.addBottleIntakeDraft(
+            session.id, "Test Whisky", "Spirit", home, InventoryLevel.FULL, 30, barcode = "036000291452",
+        )!!
+        val second = repository.addBottleIntakeDraft(
+            session.id, "Test Whisky", "Spirit", home, InventoryLevel.LOW, 31, barcode = "036000291452",
+        )!!
+
+        assertNotEquals(first.id, second.id)
+        assertIs<com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult.Confirmed>(
+            repository.confirmBottleIntakeSession(session.id, 40),
+        )
+        val bottles = repository.pantry(home).filter { it.barcode == "036000291452" }
+        assertEquals(2, bottles.size)
+        assertEquals(setOf(InventoryLevel.FULL, InventoryLevel.LOW), bottles.map { it.level }.toSet())
     }
 
     @Test

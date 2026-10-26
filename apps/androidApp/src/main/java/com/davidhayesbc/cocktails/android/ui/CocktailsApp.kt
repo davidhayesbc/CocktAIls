@@ -144,6 +144,13 @@ import com.davidhayesbc.cocktails.android.product.OPEN_FOOD_FACTS_HOME
 import com.davidhayesbc.cocktails.android.product.OPEN_FOOD_FACTS_LICENSE
 import com.davidhayesbc.cocktails.android.product.ODBL_LICENSE_URL
 import com.davidhayesbc.cocktails.android.product.DBCL_LICENSE_URL
+import com.davidhayesbc.cocktails.android.product.ScannedBottleEnrichmentCoordinator
+import com.davidhayesbc.cocktails.android.product.ScannedBottlePlan
+import com.davidhayesbc.cocktails.android.product.ScannedBottleStage
+import com.davidhayesbc.cocktails.android.product.AutomaticBottleExtractor
+import com.davidhayesbc.cocktails.android.product.automaticBottleExtractor
+import com.davidhayesbc.cocktails.android.product.scannedBottleSearchQuery
+import com.davidhayesbc.cocktails.android.product.sourceMentionsScannedBarcode
 import com.davidhayesbc.cocktails.android.product.FirecrawlCredentialStore
 import com.davidhayesbc.cocktails.android.product.OllamaCloudCredentialStore
 import com.davidhayesbc.cocktails.android.product.BottleEnrichmentJob
@@ -155,6 +162,8 @@ import com.davidhayesbc.cocktails.android.product.FirecrawlSearchProvider
 import com.davidhayesbc.cocktails.android.product.OllamaCloudBottleDetailExtractor
 import com.davidhayesbc.cocktails.android.product.BottleDetailExtractionResult
 import com.davidhayesbc.cocktails.android.product.BottleDetailSuggestions
+import com.davidhayesbc.cocktails.android.product.BottleFactField
+import com.davidhayesbc.cocktails.android.product.unresolvedBottleSourceFields
 import com.davidhayesbc.cocktails.android.product.isValidOllamaModelIdentifier
 import com.davidhayesbc.cocktails.android.product.LocalModelFileStore
 import com.davidhayesbc.cocktails.android.product.LocalModelInstallResult
@@ -194,7 +203,7 @@ private data class InstalledAppVersion(
     val buildStatus: String,
 )
 
-private data class BottleWebSearchState(
+internal data class BottleWebSearchState(
     val searching: Boolean = false,
     val fetchingUrl: String? = null,
     val extracting: Boolean = false,
@@ -202,6 +211,11 @@ private data class BottleWebSearchState(
     val hits: List<WebSearchHit> = emptyList(),
     val page: WebPageText? = null,
     val extractedSuggestions: BottleDetailSuggestions? = null,
+    val openFoodFactsResult: OpenFoodFactsLookupResult? = null,
+    val localMatch: Boolean = false,
+    val automatedScan: Boolean = false,
+    val automaticStage: String? = null,
+    val barcodeVerifiedInPage: Boolean = false,
     val message: String? = null,
 )
 
@@ -405,8 +419,26 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var showBarcodeScanner by remember { mutableStateOf(false) }
     var showBottleIntake by remember { mutableStateOf(false) }
     var showBottleScanner by remember { mutableStateOf(false) }
+    var activeScannedDraftId by remember(context, repository) {
+        val preferences = context.getSharedPreferences("cocktails_local_scan_review", Context.MODE_PRIVATE)
+        val rememberedId = preferences.getString("active_draft_id", null)
+        val openDrafts = repository.openBottleIntakeSession()?.drafts.orEmpty()
+        mutableStateOf(rememberedId?.takeIf { id -> openDrafts.any { it.id == id } })
+    }
     var bottleIntakeCameraMessage by remember { mutableStateOf<String?>(null) }
     var bottleIntakeSession by remember(repository) { mutableStateOf(repository.openBottleIntakeSession()) }
+    LaunchedEffect(activeScannedDraftId, bottleIntakeSession?.id) {
+        val draft = bottleIntakeSession?.drafts?.firstOrNull { it.id == activeScannedDraftId }
+        if (draft != null && bottleWebSearchStates[draft.id]?.automatedScan != true) {
+            val paused = pendingBottleEnrichmentJobs[draft.id]
+            bottleWebSearchStates = bottleWebSearchStates + (draft.id to BottleWebSearchState(
+                automatedScan = true,
+                localMatch = repository.localProductForBarcode(draft.barcode.orEmpty()) != null,
+                message = if (paused != null) "This scan's enrichment was interrupted. Resume only when you choose; no request restarted automatically."
+                else "This bottle draft was kept for review. No online lookup is restarted automatically.",
+            ))
+        }
+    }
     var pendingBottleLabelPhoto by remember { mutableStateOf<ByteArray?>(null) }
     var bottleLabelCaptureMessage by remember { mutableStateOf<String?>(null) }
     var barcodeInput by remember { mutableStateOf("") }
@@ -469,11 +501,13 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         }
     }
 
+    var triggerVerifiedPageExtraction: ((String, AutomaticBottleExtractor) -> Unit)? = null
+
     fun searchBottleSources(draft: BottleIntakeDraft) {
         if (!firecrawlSearchEnabled || !firecrawlKeySaved || firecrawlKeyNeedsReplacement) return
-        val terms = listOfNotNull(draft.brand, draft.productName, draft.ingredientName)
+        val terms = draft.barcode?.let(::scannedBottleSearchQuery) ?: listOfNotNull(draft.brand, draft.productName, draft.ingredientName)
             .map(String::trim).filter(String::isNotEmpty).distinct().joinToString(" ").take(256)
-        if (terms.isBlank()) return
+        if (terms.isNullOrBlank()) return
         bottleWebSearchJobs.remove(draft.id)?.cancel()
         bottleExtractionRequestTokens[draft.id] = (bottleExtractionRequestTokens[draft.id] ?: 0) + 1
         bottleExtractionJobs.remove(draft.id)?.cancel()
@@ -488,7 +522,8 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             return
         }
         refreshPendingBottleEnrichmentJobs()
-        bottleWebSearchStates = bottleWebSearchStates + (draft.id to BottleWebSearchState(searching = true))
+        val previousState = bottleWebSearchStates[draft.id] ?: BottleWebSearchState()
+        bottleWebSearchStates = bottleWebSearchStates + (draft.id to previousState.copy(searching = true, message = null))
         bottleWebSearchJobs[draft.id] = coroutineScope.launch {
             val result = try {
                 firecrawlSearchProvider.search(terms, 5)
@@ -502,14 +537,14 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             refreshPendingBottleEnrichmentJobs()
             if (bottleWebSearchRequestTokens[draft.id] == requestToken && showBottleIntake && bottleIntakeSession?.id == sessionId && bottleIntakeSession?.drafts?.any { it.id == draft.id } == true) {
                 bottleWebSearchStates = bottleWebSearchStates + (draft.id to when (result) {
-                    is WebSearchResult.Found -> BottleWebSearchState(hits = result.hits, message = if (result.hits.isEmpty()) "No usable sources were found. You can continue manually." else null)
-                    WebSearchResult.SetupRequired -> BottleWebSearchState(message = "Add a Firecrawl key and enable search in More before making requests.")
-                    WebSearchResult.AuthenticationRequired -> BottleWebSearchState(message = "Firecrawl did not accept this key. Replace it in More or continue manually.")
-                    WebSearchResult.InvalidQuery -> BottleWebSearchState(message = "This bottle does not have enough searchable product text yet.")
-                    WebSearchResult.QuotaExceeded -> BottleWebSearchState(message = "The Firecrawl plan quota is exhausted. No retry was made; continue manually.")
-                    WebSearchResult.RateLimited -> BottleWebSearchState(message = "Firecrawl is rate limiting requests. Wait before trying again.")
-                    WebSearchResult.Unavailable -> BottleWebSearchState(message = "Firecrawl could not be reached. The local draft is unchanged.")
-                    WebSearchResult.InvalidResponse -> BottleWebSearchState(message = "Firecrawl returned a response this version could not read.")
+                    is WebSearchResult.Found -> previousState.copy(searching = false, hits = result.hits, message = if (result.hits.isEmpty()) "No usable sources were found. You can continue manually." else null)
+                    WebSearchResult.SetupRequired -> previousState.copy(searching = false, message = "Add a Firecrawl key and enable search in More before making requests.")
+                    WebSearchResult.AuthenticationRequired -> previousState.copy(searching = false, message = "Firecrawl did not accept this key. Replace it in More or continue manually.")
+                    WebSearchResult.InvalidQuery -> previousState.copy(searching = false, message = "This bottle does not have a valid UPC/EAN code to search.")
+                    WebSearchResult.QuotaExceeded -> previousState.copy(searching = false, message = "The Firecrawl plan quota is exhausted. No retry was made; continue manually.")
+                    WebSearchResult.RateLimited -> previousState.copy(searching = false, message = "Firecrawl is rate limiting requests. Wait before trying again.")
+                    WebSearchResult.Unavailable -> previousState.copy(searching = false, message = "Firecrawl could not be reached. The local draft is unchanged.")
+                    WebSearchResult.InvalidResponse -> previousState.copy(searching = false, message = "Firecrawl returned a response this version could not read.")
                 })
             }
             if (bottleWebSearchRequestTokens[draft.id] == requestToken) bottleWebSearchJobs.remove(draft.id)
@@ -547,8 +582,16 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             refreshPendingBottleEnrichmentJobs()
             if (bottleWebSearchRequestTokens[draft.id] == requestToken && showBottleIntake && bottleIntakeSession?.id == sessionId && bottleIntakeSession?.drafts?.any { it.id == draft.id } == true) {
                 val previous = bottleWebSearchStates[draft.id] ?: BottleWebSearchState()
-                bottleWebSearchStates = bottleWebSearchStates + (draft.id to when (result) {
-                    is WebPageResult.Found -> previous.copy(fetchingUrl = null, page = result.page)
+                val updated = when (result) {
+                    is WebPageResult.Found -> {
+                        val verified = draft.barcode?.let { sourceMentionsScannedBarcode(it, result.page.markdown) } == true
+                        previous.copy(
+                            fetchingUrl = null,
+                            page = result.page,
+                            barcodeVerifiedInPage = verified,
+                            message = if (previous.automatedScan && !verified) "This source page does not show the scanned barcode. No model extraction was run; choose another source or enter details manually." else null,
+                        )
+                    }
                     WebPageResult.SetupRequired -> previous.copy(fetchingUrl = null, message = "Add a Firecrawl key in More before fetching a selected source.")
                     WebPageResult.AuthenticationRequired -> previous.copy(fetchingUrl = null, message = "Firecrawl did not accept this key. Replace it in More.")
                     WebPageResult.InvalidUrl -> previous.copy(fetchingUrl = null, message = "That source URL cannot be fetched safely.")
@@ -556,7 +599,18 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     WebPageResult.RateLimited -> previous.copy(fetchingUrl = null, message = "Firecrawl is rate limiting requests. Wait before trying again.")
                     WebPageResult.Unavailable -> previous.copy(fetchingUrl = null, message = "Firecrawl could not fetch that page. The local draft is unchanged.")
                     WebPageResult.InvalidResponse -> previous.copy(fetchingUrl = null, message = "Firecrawl returned page data this version could not read.")
-                })
+                }
+                bottleWebSearchStates = bottleWebSearchStates + (draft.id to updated)
+                if (result is WebPageResult.Found && previous.automatedScan && updated.barcodeVerifiedInPage) {
+                    when (automaticBottleExtractor(
+                        onDeviceEnabled = localAiEnabled && localModelFile != null,
+                        ollamaCloudEnabled = ollamaCloudEnabled && ollamaCloudKeySaved && !ollamaCloudKeyNeedsReplacement && isValidOllamaModelIdentifier(ollamaCloudModel),
+                    )) {
+                        AutomaticBottleExtractor.ON_DEVICE -> triggerVerifiedPageExtraction?.invoke(draft.id, AutomaticBottleExtractor.ON_DEVICE)
+                        AutomaticBottleExtractor.OLLAMA_CLOUD -> triggerVerifiedPageExtraction?.invoke(draft.id, AutomaticBottleExtractor.OLLAMA_CLOUD)
+                        null -> bottleWebSearchStates = bottleWebSearchStates + (draft.id to updated.copy(message = "The barcode matched this source. Enable a model provider in More to get suggestions, or review the source manually."))
+                    }
+                }
             }
             if (bottleWebSearchRequestTokens[draft.id] == requestToken) bottleWebSearchJobs.remove(draft.id)
         }
@@ -569,13 +623,24 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         bottleExtractionJobs.remove(draftId)?.cancel()
         bottleEnrichmentQueue.removeDraft(draftId)
         refreshPendingBottleEnrichmentJobs()
-        bottleWebSearchStates = bottleWebSearchStates + (draftId to (bottleWebSearchStates[draftId] ?: BottleWebSearchState()).copy(searching = false, fetchingUrl = null, extracting = false, message = "Canceled locally. If a request had already reached its provider, its quota may still be charged; the bottle draft is unchanged."))
+        bottleWebSearchStates = bottleWebSearchStates + (draftId to (bottleWebSearchStates[draftId] ?: BottleWebSearchState()).copy(
+            searching = false,
+            fetchingUrl = null,
+            extracting = false,
+            automaticStage = null,
+            message = "Canceled locally. If a request had already reached its provider, its quota may still be charged; the bottle draft is unchanged.",
+        ))
     }
+
+    var resumeAutomaticScan: ((BottleIntakeDraft) -> Unit)? = null
 
     fun resumeBottleEnrichment(draft: BottleIntakeDraft, job: BottleEnrichmentJob) {
         if (job.status != BottleEnrichmentStatus.PAUSED || job.draftId != draft.id || job.sessionId != draft.sessionId) return
         when (job.operation) {
-            BottleEnrichmentOperation.FIRECRAWL_SEARCH -> searchBottleSources(draft)
+            BottleEnrichmentOperation.FIRECRAWL_SEARCH -> {
+                if (bottleWebSearchStates[draft.id]?.automatedScan == true) resumeAutomaticScan?.invoke(draft)
+                else searchBottleSources(draft)
+            }
             BottleEnrichmentOperation.FIRECRAWL_FETCH -> {
                 val url = job.sourceUrl ?: return
                 fetchBottleSource(draft, WebSearchHit("Previously selected source", url, null))
@@ -701,6 +766,147 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             }
             if (bottleExtractionRequestTokens[draftId] == requestToken) bottleExtractionJobs.remove(draftId)
         }
+    }
+
+    triggerVerifiedPageExtraction = { draftId, provider ->
+        when (provider) {
+            AutomaticBottleExtractor.ON_DEVICE -> extractBottleDetailsOnDevice(draftId)
+            AutomaticBottleExtractor.OLLAMA_CLOUD -> extractBottleDetails(draftId)
+        }
+    }
+
+    fun startScannedBottleEnrichment(draft: BottleIntakeDraft, localMatch: Boolean) {
+        bottleWebSearchJobs.remove(draft.id)?.cancel()
+        bottleExtractionJobs.remove(draft.id)?.cancel()
+        val requestToken = (bottleWebSearchRequestTokens[draft.id] ?: 0) + 1
+        bottleWebSearchRequestTokens[draft.id] = requestToken
+        bottleWebSearchStates = bottleWebSearchStates + (draft.id to BottleWebSearchState(
+            automatedScan = true,
+            localMatch = localMatch,
+            automaticStage = "Checking the scanned barcode",
+            openFoodFactsResult = null,
+            message = "Review the match before adding this bottle to your bar.",
+        ))
+        bottleWebSearchJobs[draft.id] = coroutineScope.launch {
+            val result: com.davidhayesbc.cocktails.android.product.ScannedBottleOutcome? = try {
+                val scanExtractor = automaticBottleExtractor(
+                    onDeviceEnabled = localAiEnabled && localModelFile != null,
+                    ollamaCloudEnabled = ollamaCloudEnabled && ollamaCloudKeySaved && !ollamaCloudKeyNeedsReplacement && isValidOllamaModelIdentifier(ollamaCloudModel),
+                )
+                val scanPlan = ScannedBottlePlan(
+                    openFoodFactsEnabled = openFoodFactsEnabled,
+                    firecrawlEnabled = firecrawlSearchEnabled && firecrawlKeySaved && !firecrawlKeyNeedsReplacement,
+                    extractor = scanExtractor,
+                )
+                val coordinator = ScannedBottleEnrichmentCoordinator(
+                    lookup = { code -> openFoodFactsClient.lookup(code, installedAppVersion.name) },
+                    search = { query -> firecrawlSearchProvider.search(query, 5) },
+                    fetch = firecrawlSearchProvider::fetch,
+                    extract = { page, provider ->
+                        when (provider) {
+                            AutomaticBottleExtractor.OLLAMA_CLOUD -> ollamaCloudExtractor.extract(page, ollamaCloudModel)
+                            AutomaticBottleExtractor.ON_DEVICE -> {
+                                val modelFile = localModelFileStore.installedModel()
+                                if (modelFile == null) BottleDetailExtractionResult.SetupRequired else {
+                                    val runner = LlamaCppLocalInferenceRunner(context)
+                                    LocalBottleDetailExtractor({ modelFile.absolutePath }, runner).extract(page, LOCAL_MODEL_LABEL)
+                                }
+                            }
+                        }
+                    },
+                )
+                coordinator.processScannedBarcode(
+                    barcode = draft.barcode.orEmpty(),
+                    plan = scanPlan,
+                    onStage = { stage, sourceUrl ->
+                        val stageLabel = when (stage) {
+                            ScannedBottleStage.BARCODE_LOOKUP -> "Checking Open Food Facts"
+                            ScannedBottleStage.WEB_SEARCH -> "Searching Firecrawl by exact barcode"
+                            ScannedBottleStage.SOURCE_FETCH -> "Checking a source page for the barcode"
+                            ScannedBottleStage.DETAIL_EXTRACTION -> if (scanExtractor == AutomaticBottleExtractor.ON_DEVICE) "Extracting details on this phone" else "Extracting details with Ollama Cloud"
+                        }
+                        val queueOperation = when (stage) {
+                            ScannedBottleStage.BARCODE_LOOKUP -> null
+                            ScannedBottleStage.WEB_SEARCH -> BottleEnrichmentOperation.FIRECRAWL_SEARCH
+                            ScannedBottleStage.SOURCE_FETCH -> BottleEnrichmentOperation.FIRECRAWL_FETCH
+                            ScannedBottleStage.DETAIL_EXTRACTION -> if (scanExtractor == AutomaticBottleExtractor.ON_DEVICE) BottleEnrichmentOperation.LOCAL_EXTRACTION else BottleEnrichmentOperation.OLLAMA_EXTRACTION
+                        }
+                        queueOperation?.let { operation ->
+                            bottleEnrichmentQueue.begin(
+                                sessionId = draft.sessionId,
+                                draftId = draft.id,
+                                operation = operation,
+                                sourceUrl = if (operation == BottleEnrichmentOperation.FIRECRAWL_SEARCH) null else sourceUrl,
+                                model = when (operation) {
+                                    BottleEnrichmentOperation.LOCAL_EXTRACTION -> LOCAL_MODEL_LABEL
+                                    BottleEnrichmentOperation.OLLAMA_EXTRACTION -> ollamaCloudModel
+                                    else -> null
+                                },
+                                nowMillis = System.currentTimeMillis(),
+                            )
+                            refreshPendingBottleEnrichmentJobs()
+                        }
+                        val prior = bottleWebSearchStates[draft.id] ?: BottleWebSearchState(automatedScan = true)
+                        bottleWebSearchStates = bottleWebSearchStates + (draft.id to prior.copy(
+                            searching = stage == ScannedBottleStage.WEB_SEARCH,
+                            fetchingUrl = if (stage == ScannedBottleStage.SOURCE_FETCH) "Looking up the first search result…" else prior.fetchingUrl,
+                            extracting = stage == ScannedBottleStage.DETAIL_EXTRACTION,
+                            automaticStage = stageLabel,
+                        ))
+                    },
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            }
+            if (bottleWebSearchRequestTokens[draft.id] != requestToken) return@launch
+            val previous = bottleWebSearchStates[draft.id] ?: BottleWebSearchState(automatedScan = true)
+            val searchResult = result?.search
+            val page = (result?.page as? WebPageResult.Found)?.page
+            val extraction = (result?.extraction as? BottleDetailExtractionResult.Found)?.suggestions
+            val message = when {
+                result == null -> "Automatic lookup could not finish. Your bottle draft is still here; continue manually or retry."
+                result.page is WebPageResult.Found && !result.barcodeVerifiedInPage -> "The fetched page did not show this barcode. No model extraction was run; inspect a source or continue manually."
+                result.extraction is BottleDetailExtractionResult.Found -> "Suggestions are ready. Check the source and each value before applying any details."
+                result.extraction != null -> "The enabled model could not produce verified details. Your draft is unchanged; continue manually."
+                result.search is WebSearchResult.Found && result.selectedHit == null -> "No source result was found for this barcode. Continue manually or search again later."
+                result.search == WebSearchResult.QuotaExceeded -> "Firecrawl's plan quota is exhausted. No retry was made; continue manually."
+                result.search == WebSearchResult.RateLimited -> "Firecrawl is rate limiting requests. Wait before trying again."
+                result.search == WebSearchResult.AuthenticationRequired -> "Firecrawl did not accept this key. Replace it in More or continue manually."
+                result.search == WebSearchResult.SetupRequired -> "Add a Firecrawl key and enable automatic search in More to search this barcode."
+                result.search == WebSearchResult.Unavailable -> "Firecrawl could not be reached. Your bottle draft is unchanged."
+                result.search == WebSearchResult.InvalidResponse -> "Firecrawl returned a result this version could not read."
+                result.page == WebPageResult.QuotaExceeded -> "Firecrawl's plan quota is exhausted before page fetch. No retry was made."
+                result.page == WebPageResult.RateLimited -> "Firecrawl is rate limiting page fetches. Wait before trying again."
+                result.page == WebPageResult.AuthenticationRequired -> "Firecrawl did not accept this key. Replace it in More or continue manually."
+                result.page == WebPageResult.Unavailable -> "Firecrawl could not fetch the result page. The local draft is unchanged."
+                result.page == WebPageResult.InvalidResponse -> "Firecrawl returned page data this version could not read."
+                !previous.automatedScan -> previous.message
+                !firecrawlSearchEnabled -> "Barcode lookup finished. Firecrawl search is off or needs a saved key; you can continue manually."
+                result.openFoodFacts is OpenFoodFactsLookupResult.Found -> "Barcode lookup finished. Open Food Facts details remain separate from your editable bottle fields."
+                else -> "Automatic lookup finished. Review the source and enter any missing details manually."
+            }
+            bottleWebSearchStates = bottleWebSearchStates + (draft.id to previous.copy(
+                searching = false,
+                fetchingUrl = null,
+                extracting = false,
+                automaticStage = null,
+                openFoodFactsResult = result?.openFoodFacts,
+                hits = (searchResult as? WebSearchResult.Found)?.hits.orEmpty(),
+                page = page,
+                barcodeVerifiedInPage = result?.barcodeVerifiedInPage == true,
+                extractedSuggestions = extraction,
+                message = message,
+            ))
+            pendingBottleEnrichmentJobs[draft.id]?.let { bottleEnrichmentQueue.remove(it.id) }
+            refreshPendingBottleEnrichmentJobs()
+            bottleWebSearchJobs.remove(draft.id)
+        }
+    }
+
+    resumeAutomaticScan = { draft ->
+        startScannedBottleEnrichment(draft, localMatch = repository.localProductForBarcode(draft.barcode.orEmpty()) != null)
     }
 
     fun saveOllamaCloudSettings(apiKey: String, model: String): Boolean {
@@ -1015,6 +1221,12 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         }
     }
 
+    fun beginBottleBarcodeScan() {
+        bottleIntakeCameraMessage = null
+        if (context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) showBottleScanner = true
+        else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+    }
+
     fun beginLocationAction(action: LocationAction) {
         if (context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
             performLocationAction(action)
@@ -1107,10 +1319,15 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                         }
                     }
                 },
-                onScan = {
-                    bottleIntakeCameraMessage = null
-                    if (context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) showBottleScanner = true
-                    else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                onScan = ::beginBottleBarcodeScan,
+                activeReviewDraftId = activeScannedDraftId,
+                onAcceptAndScanNext = { draftId ->
+                    val draft = bottleIntakeSession?.drafts?.firstOrNull { it.id == draftId }
+                    if (draft != null && draftId == activeScannedDraftId && draft.ingredientName.isNotBlank() && draft.ingredientName != "Unidentified bottle") {
+                        activeScannedDraftId = null
+                        context.getSharedPreferences("cocktails_local_scan_review", Context.MODE_PRIVATE).edit().remove("active_draft_id").apply()
+                        beginBottleBarcodeScan()
+                    }
                 },
                 onAddManual = { name, category, barcode, brand, productName, level, photo ->
                     val created = repository.addBottleIntakeDraft(
@@ -1132,11 +1349,17 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     cancelBottleSourceSearch(draft.id)
                     bottleWebSearchStates = bottleWebSearchStates - draft.id
                     repository.removeBottleIntakeDraft(draft.sessionId, draft.id)
+                    if (activeScannedDraftId == draft.id) {
+                        activeScannedDraftId = null
+                        context.getSharedPreferences("cocktails_local_scan_review", Context.MODE_PRIVATE).edit().remove("active_draft_id").apply()
+                    }
                     bottleIntakeSession = repository.openBottleIntakeSession()
                 },
                 onUpdate = { draft ->
                     val prior = bottleIntakeSession?.drafts?.firstOrNull { it.id == draft.id }
-                    if (prior != null && (prior.ingredientName != draft.ingredientName || prior.brand != draft.brand || prior.productName != draft.productName)) {
+                    if (prior != null && bottleWebSearchStates[draft.id]?.automatedScan != true &&
+                        (prior.ingredientName != draft.ingredientName || prior.brand != draft.brand || prior.productName != draft.productName)
+                    ) {
                         cancelBottleSourceSearch(draft.id)
                         bottleWebSearchStates = bottleWebSearchStates - draft.id
                     }
@@ -1155,6 +1378,8 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                             refreshPantry()
                             bottleIntakeSession = null
                             showBottleIntake = false
+                            activeScannedDraftId = null
+                            context.getSharedPreferences("cocktails_local_scan_review", Context.MODE_PRIVATE).edit().remove("active_draft_id").apply()
                             pendingBottleLabelPhoto = null
                             bottleLabelCaptureMessage = null
                         }
@@ -1168,6 +1393,8 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     repository.cancelBottleIntakeSession(bottleIntakeSession!!.id)
                     clearPendingBottleCapture()
                     bottleIntakeSession = null
+                    activeScannedDraftId = null
+                    context.getSharedPreferences("cocktails_local_scan_review", Context.MODE_PRIVATE).edit().remove("active_draft_id").apply()
                     pendingBottleLabelPhoto = null
                     bottleLabelCaptureMessage = null
                     showBottleIntake = false
@@ -1521,11 +1748,11 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
 
     if (showBottleScanner && bottleIntakeSession != null) {
         BarcodeScannerDialog(
-            continuous = true,
+            continuous = false,
             onDetected = { scanned ->
                 if (normalizeGtinForLookup(scanned) != null) {
                     val local = repository.localProductForBarcode(scanned)
-                    repository.addBottleIntakeDraft(
+                    val draft = repository.addBottleIntakeDraft(
                         sessionId = bottleIntakeSession!!.id,
                         ingredientName = local?.ingredientName ?: "Unidentified bottle",
                         category = local?.category ?: "Spirit",
@@ -1536,7 +1763,15 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                         brand = local?.brand,
                         productName = local?.productName,
                     )
+                    showBottleScanner = false
                     bottleIntakeSession = repository.openBottleIntakeSession()
+                    if (draft != null) {
+                        activeScannedDraftId = draft.id
+                        context.getSharedPreferences("cocktails_local_scan_review", Context.MODE_PRIVATE).edit().putString("active_draft_id", draft.id).apply()
+                        startScannedBottleEnrichment(draft, localMatch = local != null)
+                    } else {
+                        bottleIntakeCameraMessage = "The scanned bottle could not be added. Try scanning again or enter it manually."
+                    }
                 }
             },
             onDismiss = { showBottleScanner = false; bottleIntakeSession = repository.openBottleIntakeSession() },
@@ -1780,7 +2015,7 @@ private fun MakeScreen(
 }
 
 @Composable
-private fun BottleIntakeScreen(
+internal fun BottleIntakeScreen(
     modifier: Modifier,
     session: BottleIntakeSession,
     homes: List<HomeLocation>,
@@ -1790,6 +2025,7 @@ private fun BottleIntakeScreen(
     webSearchEnabled: Boolean,
     webSearchStates: Map<String, BottleWebSearchState>,
     pendingEnrichmentJobs: Map<String, BottleEnrichmentJob>,
+    activeReviewDraftId: String?,
     ollamaCloudEnabled: Boolean,
     localAiEnabled: Boolean,
     onSearchDraft: (BottleIntakeDraft) -> Unit,
@@ -1802,6 +2038,7 @@ private fun BottleIntakeScreen(
     onDiscardCapturedLabel: () -> Unit,
     onAttachCapturedLabel: (BottleIntakeDraft) -> Unit,
     onScan: () -> Unit,
+    onAcceptAndScanNext: (String) -> Unit,
     onAddManual: (String, String, String?, String?, String?, InventoryLevel, ByteArray?) -> Boolean,
     onRemove: (BottleIntakeDraft) -> Unit,
     onUpdate: (BottleIntakeDraft) -> Boolean,
@@ -1844,7 +2081,11 @@ private fun BottleIntakeScreen(
                         InventoryLevel.entries.forEach { level -> DropdownMenuItem(text = { Text(level.label) }, onClick = { onLevelChanged(level); showLevelMenu = false }) }
                     }
                 }
-                Button(onClick = onScan, modifier = Modifier.fillMaxWidth().testTag("batch-scan-bottles")) { Text("Scan bottles") }
+                Button(
+                    onClick = onScan,
+                    enabled = activeReviewDraftId == null,
+                    modifier = Modifier.fillMaxWidth().testTag("batch-scan-bottles"),
+                ) { Text(if (activeReviewDraftId == null) "Scan a bottle" else "Review this bottle before scanning the next one") }
                 permissionMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 OutlinedButton(onClick = onCaptureLabel, modifier = Modifier.fillMaxWidth().testTag("capture-bottle-label")) { Text("Capture a label photo") }
                 captureMessage?.let { Text(it, color = if (capturePhoto == null && !it.startsWith("Photo capture canceled")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -1870,6 +2111,8 @@ private fun BottleIntakeScreen(
                         pendingEnrichmentJob = pendingEnrichmentJobs[draft.id],
                         ollamaCloudEnabled = ollamaCloudEnabled,
                         localAiEnabled = localAiEnabled,
+                        activeReview = draft.id == activeReviewDraftId,
+                        onAcceptAndScanNext = { onAcceptAndScanNext(draft.id) },
                         onSearch = { onSearchDraft(draft) },
                         onFetchSource = { hit -> onFetchDraftSource(draft, hit) },
                         onExtractDetails = { onExtractDraftDetails(draft.id) },
@@ -1931,6 +2174,8 @@ private fun BottleDraftCard(
     pendingEnrichmentJob: BottleEnrichmentJob?,
     ollamaCloudEnabled: Boolean,
     localAiEnabled: Boolean,
+    activeReview: Boolean,
+    onAcceptAndScanNext: () -> Unit,
     onSearch: () -> Unit,
     onFetchSource: (WebSearchHit) -> Unit,
     onExtractDetails: () -> Unit,
@@ -1946,6 +2191,32 @@ private fun BottleDraftCard(
     }
     var homeMenu by remember(draft.id) { mutableStateOf(false) }
     var levelMenu by remember(draft.id) { mutableStateOf(false) }
+    LaunchedEffect(draft.id, webSearchState.extractedSuggestions, webSearchState.automatedScan, webSearchState.barcodeVerifiedInPage) {
+        val suggestions = webSearchState.extractedSuggestions
+        if (activeReview && webSearchState.automatedScan && webSearchState.barcodeVerifiedInPage && suggestions != null) {
+            val suggestedName = suggestions.facts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }?.value?.trim().orEmpty()
+            val suggestedBrand = suggestions.facts.firstOrNull { it.field == BottleFactField.BRAND }?.value?.trim().orEmpty()
+            val nextName = if ((name.isBlank() || name == "Unidentified bottle") && suggestedName.isNotEmpty()) suggestedName else name
+            val nextProductName = productName.ifBlank { suggestedName }
+            val nextBrand = brand.ifBlank { suggestedBrand }
+            if (nextName != name || nextProductName != productName || nextBrand != brand) {
+                val saved = onUpdate(draft.copy(
+                    ingredientName = nextName,
+                    productName = nextProductName.ifBlank { null },
+                    brand = nextBrand.ifBlank { null },
+                ))
+                if (saved) {
+                    name = nextName
+                    productName = nextProductName
+                    brand = nextBrand
+                    nameValidationMessage = null
+                    onValidityChanged(draft.id, nextName.isNotBlank())
+                } else {
+                    nameValidationMessage = "The suggestions could not be copied into this local draft. Your bottle is still here; edit it manually."
+                }
+            }
+        }
+    }
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             OutlinedTextField(
@@ -1980,12 +2251,12 @@ private fun BottleDraftCard(
                 brand = value
                 val saved = onUpdate(draft.copy(ingredientName = name, brand = value.trim().ifEmpty { null }, productName = productName.trim().ifEmpty { null }))
                 onValidityChanged(draft.id, name.isNotBlank() && saved)
-            }, label = { Text("Brand · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            }, label = { Text("Brand · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("bottle-intake-draft-brand-${draft.position}"))
             OutlinedTextField(productName, { value ->
                 productName = value
                 val saved = onUpdate(draft.copy(ingredientName = name, brand = brand.trim().ifEmpty { null }, productName = value.trim().ifEmpty { null }))
                 onValidityChanged(draft.id, name.isNotBlank() && saved)
-            }, label = { Text("Product · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            }, label = { Text("Product · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("bottle-intake-draft-product-${draft.position}"))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { homeMenu = true }) { Text(homes.firstOrNull { it.id == draft.locationId }?.name ?: "Home") }
                 DropdownMenu(expanded = homeMenu, onDismissRequest = { homeMenu = false }) {
@@ -2001,13 +2272,29 @@ private fun BottleDraftCard(
                 val photo = remember(bytes) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap() }
                 if (photo != null) Image(photo, contentDescription = "${draft.ingredientName} label photo", modifier = Modifier.fillMaxWidth().heightIn(max = 120.dp))
             }
-            Text("Web sources · Firecrawl", style = MaterialTheme.typography.titleSmall)
-            Text("Search sends this bottle's name and brand, not its barcode or home. Fetch sends the source URL. Requests use your plan quota.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Product suggestions", style = MaterialTheme.typography.titleSmall)
+            if (webSearchState.localMatch) Text("Matched an existing product in this household before any online lookup.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            webSearchState.automaticStage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+            if (webSearchState.automatedScan) {
+                webSearchState.openFoodFactsResult?.let { result ->
+                    when (result) {
+                        is OpenFoodFactsLookupResult.Found -> OpenFoodFactsSuggestionCard(result.suggestion, result.fromCache)
+                        OpenFoodFactsLookupResult.NotFound -> Text("Open Food Facts has no matching record for this barcode.")
+                        OpenFoodFactsLookupResult.DifferentProductType -> Text("Open Food Facts lists this barcode as another product type. Review sources carefully.")
+                        OpenFoodFactsLookupResult.InvalidBarcode -> Text("The scanned code was not accepted as a UPC/EAN by Open Food Facts.")
+                        OpenFoodFactsLookupResult.LocallyThrottled -> Text("Open Food Facts is locally rate limited. You can still use the other enabled sources.")
+                        OpenFoodFactsLookupResult.ProviderRateLimited -> Text("Open Food Facts is rate limiting this network. No retry was made.")
+                        OpenFoodFactsLookupResult.Unavailable -> Text("Open Food Facts is unavailable. You can still review other enabled sources.")
+                        OpenFoodFactsLookupResult.InvalidResponse -> Text("Open Food Facts returned data this app could not validate.")
+                    }
+                }
+            }
+            Text("An enabled Firecrawl search sends this barcode and normal network metadata. A selected source URL is fetched with your plan quota. No home, pantry, member details, label photo, or tasting note is sent.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onSearch, enabled = webSearchEnabled && !webSearchState.searching && webSearchState.fetchingUrl == null, modifier = Modifier.testTag("search-bottle-${draft.id}")) {
+                OutlinedButton(onClick = onSearch, enabled = webSearchEnabled && !webSearchState.searching && webSearchState.fetchingUrl == null && webSearchState.automaticStage == null, modifier = Modifier.testTag("search-bottle-${draft.id}")) {
                     Text(if (webSearchState.searching) "Searching…" else "Search web")
                 }
-                if (webSearchState.searching || webSearchState.fetchingUrl != null || webSearchState.extracting) TextButton(onClick = onCancelSearch) { Text("Cancel") }
+                if (webSearchState.searching || webSearchState.fetchingUrl != null || webSearchState.extracting || webSearchState.automaticStage != null) TextButton(onClick = onCancelSearch) { Text("Cancel") }
             }
             pendingEnrichmentJob?.takeIf { it.status == BottleEnrichmentStatus.PAUSED }?.let { job ->
                 Text(
@@ -2037,17 +2324,26 @@ private fun BottleDraftCard(
             webSearchState.page?.let { page ->
                 Text(page.title ?: "Selected source", style = MaterialTheme.typography.titleSmall)
                 Text(page.sourceUrl, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                Text("Source page text is untrusted and remains attributed. Nothing is copied into your bottle fields automatically.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    if (webSearchState.barcodeVerifiedInPage && webSearchState.automatedScan) "This page contains the scanned barcode. Evidence-backed suggestions are filled into this review only; edit or reject them before accepting."
+                    else if (webSearchState.barcodeVerifiedInPage) "This page contains the scanned barcode. Suggestions remain separate until you choose to apply them."
+                    else "Source page text is untrusted and does not show the scanned barcode. Do not use it to identify this bottle.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Text(page.markdown.take(1_200), style = MaterialTheme.typography.bodySmall)
+                unresolvedBottleSourceFields(page.markdown).forEach { field ->
+                    Text("${field.label} appears with conflicting values on this page. No value was selected.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
                 OutlinedButton(
                     onClick = onExtractDetails,
-                    enabled = ollamaCloudEnabled && !webSearchState.extracting,
+                    enabled = ollamaCloudEnabled && !webSearchState.extracting && (!webSearchState.automatedScan || webSearchState.barcodeVerifiedInPage),
                     modifier = Modifier.testTag("extract-bottle-${draft.id}"),
                 ) { Text(if (webSearchState.extracting) "Extracting…" else "Suggest details with Ollama Cloud") }
                 if (!ollamaCloudEnabled) Text("Enable Ollama Cloud extraction in More to use this option.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 OutlinedButton(
                     onClick = onExtractDetailsOnDevice,
-                    enabled = localAiEnabled && !webSearchState.extracting,
+                    enabled = localAiEnabled && !webSearchState.extracting && (!webSearchState.automatedScan || webSearchState.barcodeVerifiedInPage),
                     modifier = Modifier.testTag("extract-bottle-local-${draft.id}"),
                 ) { Text(if (webSearchState.extracting && webSearchState.extractingWith == "On-device Qwen3") "Running on this phone…" else "Suggest details on this phone") }
                 if (!localAiEnabled) Text("Install the Qwen3 model and enable on-device suggestions in More to use this option.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -2062,12 +2358,47 @@ private fun BottleDraftCard(
                 webSearchState.extractedSuggestions?.let { suggestions ->
                     Text("Suggestions · ${suggestions.provider} · ${suggestions.model}", style = MaterialTheme.typography.titleSmall)
                     Text("Source: ${suggestions.sourceUrl}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                    Text("Check each quoted passage yourself. These suggestions are temporary and have not changed your bottle draft.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        if (webSearchState.automatedScan) "Check each quoted passage. Values are in this uncommitted draft for review; accepting the bottle is the only step that adds it to your bar."
+                        else "Check each quoted passage yourself. These suggestions have not changed your bottle draft.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    suggestions.unresolvedFields.forEach { field ->
+                        Text("${field.label} is unclear in this source. No value was selected; check it manually.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
                     suggestions.facts.forEach { fact ->
                         Text("${fact.field.label}: ${fact.value}", style = MaterialTheme.typography.bodyMedium)
                         Text("Evidence: “${fact.quote}”", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        when (fact.field) {
+                            BottleFactField.PRODUCT_NAME -> if (!webSearchState.automatedScan) OutlinedButton(onClick = {
+                                val acceptedName = fact.value.trim()
+                                val ingredient = if (name == "Unidentified bottle") acceptedName else name
+                                if (acceptedName.isNotEmpty() && onUpdate(draft.copy(ingredientName = ingredient, productName = acceptedName, brand = brand.trim().ifEmpty { null }))) {
+                                    name = ingredient
+                                    productName = acceptedName
+                                    onValidityChanged(draft.id, ingredient.isNotBlank())
+                                }
+                            }) { Text("Use product suggestion") }
+                            BottleFactField.BRAND -> if (!webSearchState.automatedScan) OutlinedButton(onClick = {
+                                val acceptedBrand = fact.value.trim()
+                                if (acceptedBrand.isNotEmpty() && onUpdate(draft.copy(ingredientName = name, productName = productName.trim().ifEmpty { null }, brand = acceptedBrand))) {
+                                    brand = acceptedBrand
+                                    onValidityChanged(draft.id, name.isNotBlank())
+                                }
+                            }) { Text("Use brand suggestion") }
+                            BottleFactField.QUANTITY, BottleFactField.ABV_PERCENT -> Text("This value is shown for review but is not stored in bottle inventory yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
+            }
+            if (activeReview) {
+                if (name == "Unidentified bottle") Text("Edit the bottle name before accepting this scan.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                Button(
+                    onClick = onAcceptAndScanNext,
+                    enabled = name.isNotBlank() && name != "Unidentified bottle" && !webSearchState.searching && webSearchState.fetchingUrl == null && !webSearchState.extracting && webSearchState.automaticStage == null,
+                    modifier = Modifier.fillMaxWidth().testTag("accept-scanned-bottle-${draft.id}"),
+                ) { Text("Accept bottle · scan next") }
             }
         }
     }
@@ -2894,7 +3225,7 @@ private fun HouseholdScreen(
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Column(Modifier.weight(1f)) {
                 Text("Open Food Facts barcode lookup", style = MaterialTheme.typography.titleSmall)
-                Text("Optional. Sends only the barcode plus normal network metadata. Off by default.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("When enabled, each scanned barcode is checked automatically. Sends only the code plus normal network metadata. Off by default.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Switch(checked = openFoodFactsEnabled, onCheckedChange = onOpenFoodFactsEnabledChanged, modifier = Modifier.testTag("online-product-lookup-toggle"))
         }
@@ -2910,8 +3241,8 @@ private fun HouseholdScreen(
         )
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Column(Modifier.weight(1f)) {
-                Text("Allow Firecrawl search", style = MaterialTheme.typography.titleSmall)
-                Text("No search starts automatically. Each search uses your Firecrawl plan quota.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Allow automatic Firecrawl search", style = MaterialTheme.typography.titleSmall)
+                Text("When enabled, a scan starts one search for its exact barcode and fetches one result for review. Requests use your plan quota.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Switch(
                 checked = firecrawlSearchEnabled,
@@ -2920,7 +3251,7 @@ private fun HouseholdScreen(
                 modifier = Modifier.testTag("firecrawl-search-toggle"),
             )
         }
-        Text("When you request a search, Firecrawl receives the search terms and network request metadata. No home, pantry list, member name, photo, or barcode is sent by default. Page retrieval sends the selected result URL. Results stay source attributed and are not added to shared backups.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("A scanned lookup sends the barcode in the search query and the fetched result URL to Firecrawl, along with normal network metadata. Manual searches send the entered bottle name and brand. No home, pantry list, member name, or photo is sent. Search results and page text stay temporary during review and are not added to shared backups.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("Search credentials are sent only to the fixed Firecrawl HTTPS API. The app does not store or use a shared project key.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onConfigureFirecrawl, modifier = Modifier.testTag("configure-firecrawl-key")) { Text(if (firecrawlKeySaved) "Replace Firecrawl key" else "Add Firecrawl key") }
@@ -2939,8 +3270,8 @@ private fun HouseholdScreen(
         )
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Column(Modifier.weight(1f)) {
-                Text("Allow Ollama Cloud extraction", style = MaterialTheme.typography.titleSmall)
-                Text("Nothing is sent until you choose Extract on a fetched source.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Allow automatic Ollama Cloud extraction", style = MaterialTheme.typography.titleSmall)
+                Text("When enabled, a source page is sent after it contains the exact scanned barcode. Local AI takes priority when both are enabled.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Switch(
                 checked = ollamaCloudEnabled,
@@ -2949,7 +3280,7 @@ private fun HouseholdScreen(
                 modifier = Modifier.testTag("ollama-cloud-extraction-toggle"),
             )
         }
-        Text("When you choose extraction, Ollama Cloud receives selected source page text (up to 24,000 characters) after links, URLs and control characters are removed, plus your chosen model identifier and normal network metadata. Review the page first; it may still contain personal details. The app does not send barcode, home, pantry, member, photo, or recipe data. Model output is untrusted and must include exact source quotes; suggestions stay on this screen and never change bottle fields automatically.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("After a scanned barcode is found in the fetched page, Ollama Cloud receives up to 24,000 characters of that page after links, URLs and control characters are removed, plus your chosen model identifier and normal network metadata. Page text may still contain personal details. The app does not send home, pantry, member, photo, or recipe data. Model output must include exact source quotes; suggestions stay in the review and never change fields automatically.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("Ollama Cloud's chat API does not support constrained JSON output. The app asks for JSON, validates it and rejects unsupported claims; this is not a guarantee of complete or correct extraction.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onConfigureOllamaCloud, modifier = Modifier.testTag("configure-ollama-cloud")) { Text(if (ollamaCloudKeySaved) "Replace key / model" else "Add key / model") }
@@ -2964,7 +3295,7 @@ private fun HouseholdScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text("Model weights: Qwen3-0.6B-GGUF · Apache-2.0. Native runtime: llama.cpp · MIT. This is text extraction only; no image recognition.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text("On-device extraction sends the selected page text to this phone's local model; it does not call a network service. Output is not constrained JSON and is rejected unless exact source evidence passes validation.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("When enabled, an exact-barcode-matched page is automatically processed by this phone's local model. Page text stays on-device. Output is not constrained JSON and is rejected unless exact source evidence passes validation.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Column(Modifier.weight(1f)) {
                 Text("Allow on-device model suggestions", style = MaterialTheme.typography.titleSmall)
@@ -3013,7 +3344,7 @@ private fun FirecrawlCredentialDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("The key is encrypted with this phone's Android Keystore. It is sent only in the Authorization header to api.firecrawl.dev and is never included in household backups or diagnostics.")
-                Text("Saving the key does not enable searches. Turn on Allow Firecrawl search separately, then choose when to search. Requests consume your Firecrawl plan quota; the app will not upgrade your plan or enable paid top-ups.", style = MaterialTheme.typography.bodySmall)
+                Text("Saving the key does not enable searches. Turn on Allow automatic Firecrawl search separately. Scans then search by barcode and fetch one result; requests consume your Firecrawl plan quota. The app will not upgrade your plan or enable paid top-ups.", style = MaterialTheme.typography.bodySmall)
                 OutlinedTextField(
                     value = apiKey,
                     onValueChange = { apiKey = it; error = null },

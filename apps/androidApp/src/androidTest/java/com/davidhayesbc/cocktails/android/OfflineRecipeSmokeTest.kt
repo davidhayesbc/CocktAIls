@@ -25,6 +25,20 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.activity.compose.setContent
+import com.davidhayesbc.cocktails.android.ui.BottleIntakeScreen
+import com.davidhayesbc.cocktails.android.ui.BottleWebSearchState
+import com.davidhayesbc.cocktails.android.ui.theme.CocktailsTheme
+import com.davidhayesbc.cocktails.android.product.BottleDetailSuggestions
+import com.davidhayesbc.cocktails.android.product.BottleFactEvidence
+import com.davidhayesbc.cocktails.android.product.BottleFactField
+import com.davidhayesbc.cocktails.android.product.WebPageText
+import com.davidhayesbc.cocktails.android.product.WebSearchHit
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.test.SemanticsMatcher
@@ -39,6 +53,9 @@ import com.davidhayesbc.cocktails.core.data.CatalogInstallResult
 import com.davidhayesbc.cocktails.core.data.LocalCocktailRepository
 import com.davidhayesbc.cocktails.core.matching.countMissingRequiredIngredients
 import com.davidhayesbc.cocktails.core.model.InventoryLevel
+import com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult
+import com.davidhayesbc.cocktails.core.model.BottleIntakeDraft
+import com.davidhayesbc.cocktails.core.model.HomeLocation
 import com.davidhayesbc.cocktails.core.model.IngredientId
 import com.davidhayesbc.cocktails.shared.db.CocktailsDatabase
 import org.junit.Assert.assertEquals
@@ -105,6 +122,128 @@ class OfflineRecipeSmokeTest {
             assertEquals(2, bottles.map { it.inventoryId }.toSet().size)
         } finally {
             driver.close()
+        }
+    }
+
+    @Test
+    fun scannedBottleReviewPrefillsEvidenceAndAcceptsBeforeNextScan() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val databaseName = "scanned-review-${System.currentTimeMillis()}.db"
+        context.deleteDatabase(databaseName)
+        val driver = AndroidSqliteDriver(CocktailsDatabase.Schema, context, databaseName)
+        val repository = LocalCocktailRepository(CocktailsDatabase(driver))
+        repository.initialize(1)
+        val home = repository.locations().single()
+        val session = repository.startBottleIntakeSession(home.id, InventoryLevel.FULL, 2)
+        val barcode = "5011333150725"
+        val first = repository.addBottleIntakeDraft(
+            session.id, "Unidentified bottle", "Spirit", home.id, InventoryLevel.FULL, 3, barcode = barcode,
+        )!!
+        val sourceUrl = "https://shop.example/auchentoshan-three-wood"
+        val page = WebPageText(
+            title = "Auchentoshan Three Wood",
+            sourceUrl = sourceUrl,
+            markdown = "UPC 5011333150725 · Product name Auchentoshan Three Wood · Brand: Auchentoshan · Available in 700 mL and 750 mL · 43% ABV",
+            provider = "Firecrawl",
+        )
+        val suggestions = BottleDetailSuggestions(
+            provider = "On-device Qwen3",
+            model = "qwen3-0.6b-q8",
+            sourceUrl = sourceUrl,
+            facts = listOf(
+                BottleFactEvidence(BottleFactField.PRODUCT_NAME, "Auchentoshan Three Wood", "Product name Auchentoshan Three Wood"),
+                BottleFactEvidence(BottleFactField.BRAND, "Auchentoshan", "Brand: Auchentoshan"),
+                BottleFactEvidence(BottleFactField.ABV_PERCENT, "43%", "43% ABV"),
+            ),
+            unresolvedFields = setOf(BottleFactField.QUANTITY),
+        )
+        var activeSession by mutableStateOf(repository.openBottleIntakeSession()!!)
+        var activeDraftId by mutableStateOf<String?>(first.id)
+        var webStates by mutableStateOf(mapOf(first.id to BottleWebSearchState(
+            automatedScan = true,
+            automaticStage = null,
+            barcodeVerifiedInPage = true,
+            page = page,
+            extractedSuggestions = suggestions,
+            message = "Suggestions are ready. Review the source before accepting.",
+        )))
+        var nextScanRequested by mutableStateOf(false)
+        var secondDraftId by mutableStateOf<String?>(null)
+
+        try {
+            composeRule.setContent {
+                CocktailsTheme {
+                    BottleIntakeScreen(
+                        modifier = Modifier.fillMaxSize(),
+                        session = activeSession,
+                        homes = listOf(home),
+                        capturePhoto = null,
+                        captureMessage = null,
+                        permissionMessage = null,
+                        webSearchEnabled = false,
+                        webSearchStates = webStates,
+                        pendingEnrichmentJobs = emptyMap(),
+                        activeReviewDraftId = activeDraftId,
+                        ollamaCloudEnabled = false,
+                        localAiEnabled = false,
+                        onSearchDraft = {},
+                        onFetchDraftSource = { _, _ -> },
+                        onExtractDraftDetails = {},
+                        onExtractDraftDetailsOnDevice = {},
+                        onResumeEnrichment = { _, _ -> },
+                        onCancelDraftSearch = {},
+                        onCaptureLabel = {},
+                        onDiscardCapturedLabel = {},
+                        onAttachCapturedLabel = {},
+                        onScan = { nextScanRequested = true },
+                        onAcceptAndScanNext = { draftId ->
+                            assertEquals(first.id, draftId)
+                            nextScanRequested = true
+                            val next = repository.addBottleIntakeDraft(
+                                session.id, "Unidentified bottle", "Spirit", home.id, InventoryLevel.FULL, 4, barcode = barcode,
+                            )!!
+                            secondDraftId = next.id
+                            activeDraftId = next.id
+                            webStates = webStates + (next.id to BottleWebSearchState(automatedScan = true, message = "Review the next bottle."))
+                            activeSession = repository.openBottleIntakeSession()!!
+                        },
+                        onAddManual = { _, _, _, _, _, _, _ -> false },
+                        onRemove = { draft -> repository.removeBottleIntakeDraft(draft.sessionId, draft.id); activeSession = repository.openBottleIntakeSession()!! },
+                        onUpdate = { draft ->
+                            val updated = repository.updateBottleIntakeDraft(draft)
+                            if (updated) activeSession = repository.openBottleIntakeSession()!!
+                            updated
+                        },
+                        onHomeChanged = {},
+                        onLevelChanged = {},
+                        onConfirm = { BottleIntakeCommitResult.Invalid("Test review only") },
+                        onCancel = {},
+                        onDismiss = {},
+                    )
+                }
+            }
+
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("This page contains the scanned barcode. Evidence-backed suggestions are filled into this review only; edit or reject them before accepting."))
+            composeRule.onNodeWithText("This page contains the scanned barcode. Evidence-backed suggestions are filled into this review only; edit or reject them before accepting.").assertIsDisplayed()
+            composeRule.onNodeWithText("Bottle size is unclear in this source. No value was selected; check it manually.").assertIsDisplayed()
+            composeRule.onNodeWithTag("bottle-intake-draft-name-0").assert(
+                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("Auchentoshan Three Wood")),
+            )
+            composeRule.onNodeWithTag("bottle-intake-draft-brand-0").assert(
+                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("Auchentoshan")),
+            )
+            assertEquals("Auchentoshan Three Wood", repository.openBottleIntakeSession()!!.drafts.first().ingredientName)
+            assertEquals("Auchentoshan Three Wood", repository.openBottleIntakeSession()!!.drafts.first().productName)
+            composeRule.onNodeWithTag("accept-scanned-bottle-${first.id}").assertIsEnabled().performClick()
+            assertTrue(nextScanRequested)
+            assertTrue(secondDraftId != null)
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-name-1"))
+            composeRule.onNodeWithTag("bottle-intake-draft-name-1").assertIsDisplayed()
+            assertEquals(2, repository.openBottleIntakeSession()!!.drafts.size)
+        } finally {
+            composeRule.runOnUiThread { composeRule.activity.setContent {} }
+            driver.close()
+            context.deleteDatabase(databaseName)
         }
     }
 
