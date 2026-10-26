@@ -94,6 +94,53 @@ class HouseholdBundleSyncTest {
     }
 
     @Test
+    fun invalidBarcodeAddDoesNotPersistAndCorrectedRetryRetainsLabelPhoto() {
+        val database = database()
+        val repository = LocalCocktailRepository(database)
+        repository.initialize(10)
+        val home = repository.locations().single().id
+        val session = repository.startBottleIntakeSession(home, InventoryLevel.FULL, 20)
+        val photo = byteArrayOf(
+            0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 0xc0.toByte(), 0, 11, 8, 0, 1, 0, 1, 1, 1, 17, 0,
+            0xff.toByte(), 0xda.toByte(), 0, 8, 1, 1, 0, 0, 63, 0, 0, 0xff.toByte(), 0xd9.toByte(),
+        )
+
+        assertEquals(null, repository.addBottleIntakeDraft(
+            session.id, "Test Gin", "Spirit", home, InventoryLevel.FULL, 30,
+            barcode = "036000291453", photoJpeg = photo,
+        ))
+        assertTrue(repository.openBottleIntakeSession()!!.drafts.isEmpty())
+        val corrected = repository.addBottleIntakeDraft(
+            session.id, "Test Gin", "Spirit", home, InventoryLevel.FULL, 31,
+            barcode = "036000291452", photoJpeg = photo,
+        )
+        assertContentEquals(photo, corrected?.photoData)
+        val confirmed = assertIs<com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult.Confirmed>(
+            repository.confirmBottleIntakeSession(session.id, 40),
+        )
+        assertEquals(1, confirmed.bottleCount)
+        assertContentEquals(photo, database.householdQueries.selectAllProductsForBundle().executeAsOne().photo_data)
+    }
+
+    @Test
+    fun blankEditedDraftPersistsAcrossReopenAndBlocksConfirmUntilCorrected() {
+        val database = database()
+        val repository = LocalCocktailRepository(database)
+        repository.initialize(10)
+        val home = repository.locations().single().id
+        val session = repository.startBottleIntakeSession(home, InventoryLevel.FULL, 20)
+        val initial = repository.addBottleIntakeDraft(session.id, "London Dry Gin", "Spirit", home, InventoryLevel.FULL, 30)!!
+
+        assertTrue(repository.updateBottleIntakeDraft(initial.copy(ingredientName = "")))
+        assertEquals("", repository.openBottleIntakeSession()!!.drafts.single().ingredientName)
+        assertIs<com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult.Invalid>(repository.confirmBottleIntakeSession(session.id, 40))
+        val reopened = repository.openBottleIntakeSession()!!.drafts.single()
+        assertTrue(repository.updateBottleIntakeDraft(reopened.copy(ingredientName = "London Dry Gin")))
+        assertIs<com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult.Confirmed>(repository.confirmBottleIntakeSession(session.id, 50))
+        assertEquals("London Dry Gin", repository.pantry(home).single().name)
+    }
+
+    @Test
     fun genericRecipeImportRequiresExplicitFamilyLinkAndIsIdempotentWithProvenance() {
         val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
         CocktailsDatabase.Schema.create(driver)

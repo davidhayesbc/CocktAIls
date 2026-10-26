@@ -1010,7 +1010,6 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
     }
 
     fun updateBottleIntakeDraft(draft: BottleIntakeDraft): Boolean {
-        if (draft.ingredientName.isBlank()) return false
         val photo = draft.photoData
         if (photo != null && (photo.size > MAX_PRODUCT_PHOTO_BYTES || !isProductPhotoJpeg(photo) ||
                 !photoSha256(photo).equals(draft.photoSha256, ignoreCase = true))) return false

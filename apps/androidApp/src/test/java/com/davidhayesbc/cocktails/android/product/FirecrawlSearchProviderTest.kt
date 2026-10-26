@@ -9,11 +9,11 @@ import org.junit.Test
 class FirecrawlSearchProviderTest {
     @Test
     fun searchIsBoundedExplicitAndDoesNotPlaceTheKeyInTheRequestBody() = runBlocking {
-        val transport = FakeTransport(FirecrawlHttpResponse.Success("""{"success":true,"data":[
+        val transport = FakeTransport(FirecrawlHttpResponse.Success("""{"success":true,"data":{"web":[
             {"title":"Gin producer","url":"https://example.com/gin","description":"Facts"},
             {"title":"Private target","url":"http://127.0.0.1/admin"},
             {"title":"Duplicate","url":"https://example.com/gin"}
-        ]}"""))
+        ],"images":[{"title":"Ignored image result","url":"https://example.com/image"}]}}"""))
         val provider = FirecrawlSearchProvider({ "private-key-canary" }, transport)
 
         val searchResult = provider.search("Example gin", 4)
@@ -85,6 +85,7 @@ class FirecrawlSearchProviderTest {
     @Test
     fun unsuccessfulAndMalformedProviderBodiesFailClosed() {
         assertTrue(parseFirecrawlSearchResponse("""{"success":false,"data":[]}""") is WebSearchResult.InvalidResponse)
+        assertTrue(parseFirecrawlSearchResponse("""{"success":true,"data":[]}""") is WebSearchResult.InvalidResponse)
         assertTrue(parseFirecrawlSearchResponse("not-json") is WebSearchResult.InvalidResponse)
         assertTrue(parseFirecrawlPageResponse("""{"success":true,"data":{"metadata":{}}}""") is WebPageResult.InvalidResponse)
     }
@@ -110,7 +111,7 @@ class FirecrawlSearchProviderTest {
         var calls: Int = 0
         var lastPath: String = ""
         var lastBody: String = ""
-        override fun post(path: String, apiKey: String, body: String, maxResponseBytes: Int): FirecrawlHttpResponse {
+        override suspend fun post(path: String, apiKey: String, body: String, maxResponseBytes: Int): FirecrawlHttpResponse {
             calls += 1
             lastPath = path
             lastBody = body

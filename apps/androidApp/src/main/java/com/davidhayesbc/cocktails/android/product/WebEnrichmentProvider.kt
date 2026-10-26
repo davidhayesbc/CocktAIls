@@ -5,8 +5,12 @@ import java.net.HttpURLConnection
 import java.net.IDN
 import java.net.URI
 import java.net.URL
+import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -14,6 +18,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlin.coroutines.resume
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.buildJsonArray
@@ -82,31 +87,31 @@ internal class FirecrawlSearchProvider(
     private val keyProvider: () -> String?,
     private val transport: FirecrawlTransport = UrlConnectionFirecrawlTransport(),
 ) : WebSearchProvider, WebPageContentProvider {
-    override suspend fun search(query: String, limit: Int): WebSearchResult = withContext(Dispatchers.IO) {
+    override suspend fun search(query: String, limit: Int): WebSearchResult {
         val cleanedQuery = query.trim()
         if (cleanedQuery.isEmpty() || cleanedQuery.length > MAX_QUERY_CHARS || limit !in 1..MAX_SEARCH_RESULTS) {
-            return@withContext WebSearchResult.InvalidQuery
+            return WebSearchResult.InvalidQuery
         }
-        val key = keyProvider()?.trim()?.takeIf(String::isNotEmpty) ?: return@withContext WebSearchResult.SetupRequired
+        val key = keyProvider()?.trim()?.takeIf(String::isNotEmpty) ?: return WebSearchResult.SetupRequired
         val body = buildJsonObject {
             put("query", cleanedQuery)
             put("limit", limit)
             put("sources", buildJsonArray { add(kotlinx.serialization.json.JsonPrimitive("web")) })
         }.toString()
-        when (val response = transport.post(FIRECRAWL_SEARCH_PATH, key, body, MAX_SEARCH_RESPONSE_BYTES)) {
+        return when (val response = transport.post(FIRECRAWL_SEARCH_PATH, key, body, MAX_SEARCH_RESPONSE_BYTES)) {
             is FirecrawlHttpResponse.Failure -> response.status.toWebSearchFailure()
             is FirecrawlHttpResponse.Success -> parseFirecrawlSearchResponse(response.body, limit)
         }
     }
 
-    override suspend fun fetch(url: String): WebPageResult = withContext(Dispatchers.IO) {
-        val safeUrl = normalizePublicHttpsUrl(url) ?: return@withContext WebPageResult.InvalidUrl
-        val key = keyProvider()?.trim()?.takeIf(String::isNotEmpty) ?: return@withContext WebPageResult.SetupRequired
+    override suspend fun fetch(url: String): WebPageResult {
+        val safeUrl = normalizePublicHttpsUrl(url) ?: return WebPageResult.InvalidUrl
+        val key = keyProvider()?.trim()?.takeIf(String::isNotEmpty) ?: return WebPageResult.SetupRequired
         val body = buildJsonObject {
             put("url", safeUrl)
             put("formats", buildJsonArray { add(kotlinx.serialization.json.JsonPrimitive("markdown")) })
         }.toString()
-        when (val response = transport.post(FIRECRAWL_SCRAPE_PATH, key, body, MAX_SCRAPE_RESPONSE_BYTES)) {
+        return when (val response = transport.post(FIRECRAWL_SCRAPE_PATH, key, body, MAX_SCRAPE_RESPONSE_BYTES)) {
             is FirecrawlHttpResponse.Failure -> response.status.toWebPageFailure()
             is FirecrawlHttpResponse.Success -> parseFirecrawlPageResponse(response.body)
         }
@@ -119,49 +124,67 @@ internal sealed interface FirecrawlHttpResponse {
 }
 
 internal interface FirecrawlTransport {
-    fun post(path: String, apiKey: String, body: String, maxResponseBytes: Int): FirecrawlHttpResponse
+    suspend fun post(path: String, apiKey: String, body: String, maxResponseBytes: Int): FirecrawlHttpResponse
 }
 
 /** Uses fixed API paths, HTTPS, bounded responses, finite timeouts, no redirects and no retry loop. */
 internal class UrlConnectionFirecrawlTransport : FirecrawlTransport {
-    override fun post(path: String, apiKey: String, body: String, maxResponseBytes: Int): FirecrawlHttpResponse {
+    override suspend fun post(path: String, apiKey: String, body: String, maxResponseBytes: Int): FirecrawlHttpResponse = suspendCancellableCoroutine { continuation ->
         require(path == FIRECRAWL_SEARCH_PATH || path == FIRECRAWL_SCRAPE_PATH)
-        val connection = (URL("$FIRECRAWL_API_ORIGIN$path").openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 8_000
-            readTimeout = 20_000
-            instanceFollowRedirects = false
-            doOutput = true
-            setRequestProperty("Authorization", "Bearer $apiKey")
-            setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "CocktAIls Android")
-        }
-        return try {
-            connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            val status = connection.responseCode
-            if (status !in 200..299) {
-                FirecrawlHttpResponse.Failure(status)
-            } else {
-                val stream = connection.inputStream
-                val buffer = ByteArrayOutputStream()
-                stream.use { input ->
-                    val chunk = ByteArray(8 * 1024)
-                    var total = 0
-                    while (true) {
-                        val count = input.read(chunk)
-                        if (count < 0) break
-                        total += count
-                        if (total > maxResponseBytes) return FirecrawlHttpResponse.Failure(413)
-                        buffer.write(chunk, 0, count)
+        val connectionRef = AtomicReference<HttpURLConnection?>(null)
+        val requestJob = CoroutineScope(Dispatchers.IO).launch {
+            val connection = try {
+                (URL("$FIRECRAWL_API_ORIGIN$path").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 8_000
+                    readTimeout = 20_000
+                    instanceFollowRedirects = false
+                    doOutput = true
+                    setRequestProperty("Authorization", "Bearer $apiKey")
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    setRequestProperty("Accept", "application/json")
+                    setRequestProperty("User-Agent", "CocktAIls Android")
+                }
+            } catch (_: Exception) {
+                if (continuation.isActive) runCatching { continuation.resume(FirecrawlHttpResponse.Failure(0)) }
+                return@launch
+            }
+            connectionRef.set(connection)
+            if (!continuation.isActive) {
+                connection.disconnect()
+                return@launch
+            }
+            val result = try {
+                connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                val status = connection.responseCode
+                if (status !in 200..299) {
+                    FirecrawlHttpResponse.Failure(status)
+                } else {
+                    val buffer = ByteArrayOutputStream()
+                    connection.inputStream.use { input ->
+                        val chunk = ByteArray(8 * 1024)
+                        var total = 0
+                        while (true) {
+                            val count = input.read(chunk)
+                            if (count < 0) break
+                            total += count
+                            if (total > maxResponseBytes) return@use FirecrawlHttpResponse.Failure(413)
+                            buffer.write(chunk, 0, count)
+                        }
+                        FirecrawlHttpResponse.Success(buffer.toString(Charsets.UTF_8.name()))
                     }
                 }
-                FirecrawlHttpResponse.Success(buffer.toString(Charsets.UTF_8.name()))
+            } catch (_: Exception) {
+                FirecrawlHttpResponse.Failure(0)
+            } finally {
+                connection.disconnect()
+                connectionRef.set(null)
             }
-        } catch (_: Exception) {
-            FirecrawlHttpResponse.Failure(0)
-        } finally {
-            connection.disconnect()
+            if (continuation.isActive) runCatching { continuation.resume(result) }
+        }
+        continuation.invokeOnCancellation {
+            requestJob.cancel()
+            connectionRef.getAndSet(null)?.disconnect()
         }
     }
 }
@@ -169,7 +192,7 @@ internal class UrlConnectionFirecrawlTransport : FirecrawlTransport {
 internal fun parseFirecrawlSearchResponse(raw: String, limit: Int = MAX_SEARCH_RESULTS): WebSearchResult = runCatching {
     val root = Json.parseToJsonElement(raw).jsonObject
     if (root["success"]?.jsonPrimitive?.booleanOrNull != true) return WebSearchResult.InvalidResponse
-    val data = root["data"] as? JsonArray ?: return WebSearchResult.InvalidResponse
+    val data = (root["data"] as? JsonObject)?.get("web") as? JsonArray ?: return WebSearchResult.InvalidResponse
     val hits = data.mapNotNull { value ->
         val item = value as? JsonObject ?: return@mapNotNull null
         val title = item.string("title")?.trim()?.take(MAX_RESULT_TITLE_CHARS)?.takeIf(String::isNotEmpty)

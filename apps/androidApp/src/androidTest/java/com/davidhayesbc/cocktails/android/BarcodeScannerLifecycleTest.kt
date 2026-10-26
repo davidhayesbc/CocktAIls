@@ -41,7 +41,7 @@ class BarcodeScannerLifecycleTest {
     fun denialKeepsManualEntryAvailableThenGrantOpensScannerAcrossLifecycle() {
         assertEquals(PackageManager.PERMISSION_DENIED, composeRule.activity.checkSelfPermission(Manifest.permission.CAMERA))
         composeRule.onNodeWithText("My Bar").performClick()
-        composeRule.onNodeWithText("＋ Add").performClick()
+        composeRule.onNodeWithTag("inventory-add-ingredient").performClick()
         composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Scan barcode"))
         composeRule.onNodeWithText("Scan barcode").assertIsDisplayed()
         composeRule.onNodeWithText("Scan barcode").performClick()
@@ -60,7 +60,7 @@ class BarcodeScannerLifecycleTest {
         composeRule.onNodeWithText("CI Manual Barcode Gin").assertIsDisplayed()
         assertEquals(PackageManager.PERMISSION_DENIED, composeRule.activity.checkSelfPermission(Manifest.permission.CAMERA))
 
-        composeRule.onNodeWithText("＋ Add").performClick()
+        composeRule.onNodeWithTag("inventory-add-ingredient").performClick()
         composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Scan barcode"))
         composeRule.onNodeWithText("Scan barcode").assertIsDisplayed()
         composeRule.onNodeWithText("Scan barcode").performClick()

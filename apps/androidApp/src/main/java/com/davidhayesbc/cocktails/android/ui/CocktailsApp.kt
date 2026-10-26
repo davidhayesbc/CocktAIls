@@ -59,6 +59,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -137,7 +139,17 @@ import com.davidhayesbc.cocktails.android.product.OPEN_FOOD_FACTS_LICENSE
 import com.davidhayesbc.cocktails.android.product.ODBL_LICENSE_URL
 import com.davidhayesbc.cocktails.android.product.DBCL_LICENSE_URL
 import com.davidhayesbc.cocktails.android.product.FirecrawlCredentialStore
+import com.davidhayesbc.cocktails.android.product.OllamaCloudCredentialStore
+import com.davidhayesbc.cocktails.android.product.BottleEnrichmentJob
+import com.davidhayesbc.cocktails.android.product.BottleEnrichmentOperation
+import com.davidhayesbc.cocktails.android.product.BottleEnrichmentQueue
+import com.davidhayesbc.cocktails.android.product.BottleEnrichmentStatus
+import com.davidhayesbc.cocktails.android.product.SharedPreferencesBottleEnrichmentQueueStorage
 import com.davidhayesbc.cocktails.android.product.FirecrawlSearchProvider
+import com.davidhayesbc.cocktails.android.product.OllamaCloudBottleDetailExtractor
+import com.davidhayesbc.cocktails.android.product.BottleDetailExtractionResult
+import com.davidhayesbc.cocktails.android.product.BottleDetailSuggestions
+import com.davidhayesbc.cocktails.android.product.isValidOllamaModelIdentifier
 import com.davidhayesbc.cocktails.android.product.WebSearchHit
 import com.davidhayesbc.cocktails.android.product.WebPageText
 import com.davidhayesbc.cocktails.android.product.WebSearchResult
@@ -171,8 +183,10 @@ private data class InstalledAppVersion(
 private data class BottleWebSearchState(
     val searching: Boolean = false,
     val fetchingUrl: String? = null,
+    val extracting: Boolean = false,
     val hits: List<WebSearchHit> = emptyList(),
     val page: WebPageText? = null,
+    val extractedSuggestions: BottleDetailSuggestions? = null,
     val message: String? = null,
 )
 
@@ -252,6 +266,16 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     val firecrawlSearchProvider = remember(firecrawlCredentialStore) {
         FirecrawlSearchProvider(keyProvider = firecrawlCredentialStore::readApiKey)
     }
+    val ollamaCloudCredentialStore = remember(context) { OllamaCloudCredentialStore(context) }
+    val ollamaCloudExtractor = remember(ollamaCloudCredentialStore) {
+        OllamaCloudBottleDetailExtractor(keyProvider = ollamaCloudCredentialStore::readApiKey)
+    }
+    val bottleEnrichmentQueue = remember(context) {
+        BottleEnrichmentQueue(SharedPreferencesBottleEnrichmentQueueStorage(context)).also { it.recoverInterrupted() }
+    }
+    var pendingBottleEnrichmentJobs by remember(bottleEnrichmentQueue) {
+        mutableStateOf(bottleEnrichmentQueue.jobs().associateBy { it.draftId })
+    }
     var openFoodFactsEnabled by remember(context) {
         mutableStateOf(context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).getBoolean("open_food_facts_enabled", false))
     }
@@ -259,13 +283,54 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var firecrawlKeyNeedsReplacement by remember(context) {
         mutableStateOf(firecrawlCredentialStore.hasSavedKey() && firecrawlCredentialStore.readApiKey() == null)
     }
+    var firecrawlCredentialMessage by remember { mutableStateOf<String?>(null) }
     var firecrawlSearchEnabled by remember(context) {
-        mutableStateOf(context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).getBoolean("firecrawl_search_enabled", false))
+        mutableStateOf(context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).getBoolean("firecrawl_search_enabled", false) && firecrawlCredentialStore.readApiKey() != null)
+    }
+    var ollamaCloudKeySaved by remember(context) { mutableStateOf(ollamaCloudCredentialStore.hasSavedKey()) }
+    var ollamaCloudKeyNeedsReplacement by remember(context) {
+        mutableStateOf(ollamaCloudCredentialStore.hasSavedKey() && ollamaCloudCredentialStore.readApiKey() == null)
+    }
+    var ollamaCloudEnabled by remember(context) {
+        val preferences = context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE)
+        val savedModel = preferences.getString("ollama_cloud_model", "").orEmpty()
+        mutableStateOf(preferences.getBoolean("ollama_cloud_enabled", false) && ollamaCloudCredentialStore.readApiKey() != null && isValidOllamaModelIdentifier(savedModel))
+    }
+    var ollamaCredentialMessage by remember { mutableStateOf<String?>(null) }
+    var ollamaCloudModel by remember(context) {
+        mutableStateOf(context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).getString("ollama_cloud_model", "").orEmpty())
     }
     var showFirecrawlCredentialDialog by remember { mutableStateOf(false) }
+    var showOllamaCloudSettingsDialog by remember { mutableStateOf(false) }
     var bottleWebSearchStates by remember { mutableStateOf<Map<String, BottleWebSearchState>>(emptyMap()) }
     val bottleWebSearchJobs = remember { mutableMapOf<String, Job>() }
     val bottleWebSearchRequestTokens = remember { mutableMapOf<String, Int>() }
+    val bottleExtractionJobs = remember { mutableMapOf<String, Job>() }
+    val bottleExtractionRequestTokens = remember { mutableMapOf<String, Int>() }
+
+    fun refreshPendingBottleEnrichmentJobs() {
+        pendingBottleEnrichmentJobs = bottleEnrichmentQueue.jobs().associateBy { it.draftId }
+    }
+
+    fun cancelAllBottleEnrichmentRequests(sessionId: String?, keepPaused: Boolean) {
+        val ids = bottleWebSearchJobs.keys + bottleExtractionJobs.keys
+        ids.forEach { id ->
+            bottleWebSearchRequestTokens[id] = (bottleWebSearchRequestTokens[id] ?: 0) + 1
+            bottleExtractionRequestTokens[id] = (bottleExtractionRequestTokens[id] ?: 0) + 1
+        }
+        bottleWebSearchJobs.values.forEach(Job::cancel)
+        bottleWebSearchJobs.clear()
+        bottleExtractionJobs.values.forEach(Job::cancel)
+        bottleExtractionJobs.clear()
+        if (keepPaused && sessionId != null) {
+            bottleEnrichmentQueue.jobs().filter { it.sessionId == sessionId }.forEach { job ->
+                if (job.status == BottleEnrichmentStatus.RUNNING) bottleEnrichmentQueue.pause(job.id, System.currentTimeMillis())
+            }
+        } else if (sessionId != null) {
+            bottleEnrichmentQueue.removeSession(sessionId)
+        }
+        refreshPendingBottleEnrichmentJobs()
+    }
     val installedAppVersion = remember(context) {
         @Suppress("DEPRECATION")
         val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
@@ -378,9 +443,19 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             .map(String::trim).filter(String::isNotEmpty).distinct().joinToString(" ").take(256)
         if (terms.isBlank()) return
         bottleWebSearchJobs.remove(draft.id)?.cancel()
+        bottleExtractionRequestTokens[draft.id] = (bottleExtractionRequestTokens[draft.id] ?: 0) + 1
+        bottleExtractionJobs.remove(draft.id)?.cancel()
         val requestToken = (bottleWebSearchRequestTokens[draft.id] ?: 0) + 1
         bottleWebSearchRequestTokens[draft.id] = requestToken
         val sessionId = draft.sessionId
+        val queueJob = bottleEnrichmentQueue.begin(
+            sessionId, draft.id, BottleEnrichmentOperation.FIRECRAWL_SEARCH, nowMillis = System.currentTimeMillis(),
+        )
+        if (queueJob == null) {
+            bottleWebSearchStates = bottleWebSearchStates + (draft.id to BottleWebSearchState(message = "The local enrichment queue is full or could not be saved. Your draft is unchanged."))
+            return
+        }
+        refreshPendingBottleEnrichmentJobs()
         bottleWebSearchStates = bottleWebSearchStates + (draft.id to BottleWebSearchState(searching = true))
         bottleWebSearchJobs[draft.id] = coroutineScope.launch {
             val result = try {
@@ -390,6 +465,9 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             } catch (_: Exception) {
                 WebSearchResult.Unavailable
             }
+            if (result is WebSearchResult.Found) bottleEnrichmentQueue.remove(queueJob.id)
+            else bottleEnrichmentQueue.pause(queueJob.id, System.currentTimeMillis())
+            refreshPendingBottleEnrichmentJobs()
             if (bottleWebSearchRequestTokens[draft.id] == requestToken && showBottleIntake && bottleIntakeSession?.id == sessionId && bottleIntakeSession?.drafts?.any { it.id == draft.id } == true) {
                 bottleWebSearchStates = bottleWebSearchStates + (draft.id to when (result) {
                     is WebSearchResult.Found -> BottleWebSearchState(hits = result.hits, message = if (result.hits.isEmpty()) "No usable sources were found. You can continue manually." else null)
@@ -410,9 +488,20 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         if (!firecrawlSearchEnabled || !firecrawlKeySaved || firecrawlKeyNeedsReplacement) return
         val sessionId = draft.sessionId
         bottleWebSearchJobs.remove(draft.id)?.cancel()
+        bottleExtractionRequestTokens[draft.id] = (bottleExtractionRequestTokens[draft.id] ?: 0) + 1
+        bottleExtractionJobs.remove(draft.id)?.cancel()
         val requestToken = (bottleWebSearchRequestTokens[draft.id] ?: 0) + 1
         bottleWebSearchRequestTokens[draft.id] = requestToken
-        bottleWebSearchStates = bottleWebSearchStates + (draft.id to (bottleWebSearchStates[draft.id] ?: BottleWebSearchState()).copy(fetchingUrl = hit.url, page = null, message = null))
+        val queueJob = bottleEnrichmentQueue.begin(
+            sessionId, draft.id, BottleEnrichmentOperation.FIRECRAWL_FETCH,
+            sourceUrl = hit.url, nowMillis = System.currentTimeMillis(),
+        )
+        if (queueJob == null) {
+            bottleWebSearchStates = bottleWebSearchStates + (draft.id to (bottleWebSearchStates[draft.id] ?: BottleWebSearchState()).copy(message = "The local enrichment queue is full or could not be saved. Your draft is unchanged."))
+            return
+        }
+        refreshPendingBottleEnrichmentJobs()
+        bottleWebSearchStates = bottleWebSearchStates + (draft.id to (bottleWebSearchStates[draft.id] ?: BottleWebSearchState()).copy(fetchingUrl = hit.url, extracting = false, page = null, extractedSuggestions = null, message = null))
         bottleWebSearchJobs[draft.id] = coroutineScope.launch {
             val result = try {
                 firecrawlSearchProvider.fetch(hit.url)
@@ -421,6 +510,9 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             } catch (_: Exception) {
                 WebPageResult.Unavailable
             }
+            if (result is WebPageResult.Found) bottleEnrichmentQueue.remove(queueJob.id)
+            else bottleEnrichmentQueue.pause(queueJob.id, System.currentTimeMillis())
+            refreshPendingBottleEnrichmentJobs()
             if (bottleWebSearchRequestTokens[draft.id] == requestToken && showBottleIntake && bottleIntakeSession?.id == sessionId && bottleIntakeSession?.drafts?.any { it.id == draft.id } == true) {
                 val previous = bottleWebSearchStates[draft.id] ?: BottleWebSearchState()
                 bottleWebSearchStates = bottleWebSearchStates + (draft.id to when (result) {
@@ -441,7 +533,87 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     fun cancelBottleSourceSearch(draftId: String) {
         bottleWebSearchRequestTokens[draftId] = (bottleWebSearchRequestTokens[draftId] ?: 0) + 1
         bottleWebSearchJobs.remove(draftId)?.cancel()
-        bottleWebSearchStates = bottleWebSearchStates + (draftId to (bottleWebSearchStates[draftId] ?: BottleWebSearchState()).copy(searching = false, fetchingUrl = null, message = "Request canceled. The bottle draft is unchanged."))
+        bottleExtractionRequestTokens[draftId] = (bottleExtractionRequestTokens[draftId] ?: 0) + 1
+        bottleExtractionJobs.remove(draftId)?.cancel()
+        bottleEnrichmentQueue.removeDraft(draftId)
+        refreshPendingBottleEnrichmentJobs()
+        bottleWebSearchStates = bottleWebSearchStates + (draftId to (bottleWebSearchStates[draftId] ?: BottleWebSearchState()).copy(searching = false, fetchingUrl = null, extracting = false, message = "Canceled locally. If a request had already reached its provider, its quota may still be charged; the bottle draft is unchanged."))
+    }
+
+    fun resumeBottleEnrichment(draft: BottleIntakeDraft, job: BottleEnrichmentJob) {
+        if (job.status != BottleEnrichmentStatus.PAUSED || job.draftId != draft.id || job.sessionId != draft.sessionId) return
+        when (job.operation) {
+            BottleEnrichmentOperation.FIRECRAWL_SEARCH -> searchBottleSources(draft)
+            BottleEnrichmentOperation.FIRECRAWL_FETCH -> {
+                val url = job.sourceUrl ?: return
+                fetchBottleSource(draft, WebSearchHit("Previously selected source", url, null))
+            }
+            BottleEnrichmentOperation.OLLAMA_EXTRACTION -> {
+                val url = job.sourceUrl ?: return
+                bottleWebSearchStates = bottleWebSearchStates + (draft.id to (bottleWebSearchStates[draft.id] ?: BottleWebSearchState()).copy(
+                    message = "The interrupted page text was not saved. The source will be fetched again, using Firecrawl quota; then choose extraction again.",
+                ))
+                fetchBottleSource(draft, WebSearchHit("Previously selected source", url, null))
+            }
+        }
+    }
+
+    fun extractBottleDetails(draftId: String) {
+        if (!ollamaCloudEnabled || !ollamaCloudKeySaved || ollamaCloudKeyNeedsReplacement || !isValidOllamaModelIdentifier(ollamaCloudModel)) return
+        val page = bottleWebSearchStates[draftId]?.page ?: return
+        bottleExtractionJobs.remove(draftId)?.cancel()
+        val requestToken = (bottleExtractionRequestTokens[draftId] ?: 0) + 1
+        bottleExtractionRequestTokens[draftId] = requestToken
+        val currentDraft = bottleIntakeSession?.drafts?.firstOrNull { it.id == draftId } ?: return
+        val pageUrl = bottleWebSearchStates[draftId]?.page?.sourceUrl ?: return
+        val queueJob = bottleEnrichmentQueue.begin(
+            currentDraft.sessionId, draftId, BottleEnrichmentOperation.OLLAMA_EXTRACTION,
+            sourceUrl = pageUrl, model = ollamaCloudModel, nowMillis = System.currentTimeMillis(),
+        )
+        if (queueJob == null) {
+            bottleWebSearchStates = bottleWebSearchStates + (draftId to (bottleWebSearchStates[draftId] ?: BottleWebSearchState()).copy(message = "The local enrichment queue is full or could not be saved. Your draft is unchanged."))
+            return
+        }
+        refreshPendingBottleEnrichmentJobs()
+        bottleWebSearchStates = bottleWebSearchStates + (draftId to (bottleWebSearchStates[draftId] ?: BottleWebSearchState()).copy(extracting = true, extractedSuggestions = null, message = null))
+        bottleExtractionJobs[draftId] = coroutineScope.launch {
+            val result = try {
+                ollamaCloudExtractor.extract(page, ollamaCloudModel)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                BottleDetailExtractionResult.Unavailable
+            }
+            if (result is BottleDetailExtractionResult.Found) bottleEnrichmentQueue.remove(queueJob.id)
+            else bottleEnrichmentQueue.pause(queueJob.id, System.currentTimeMillis())
+            refreshPendingBottleEnrichmentJobs()
+            if (bottleExtractionRequestTokens[draftId] == requestToken && showBottleIntake && bottleIntakeSession?.drafts?.any { it.id == draftId } == true) {
+                val previous = bottleWebSearchStates[draftId] ?: BottleWebSearchState()
+                bottleWebSearchStates = bottleWebSearchStates + (draftId to when (result) {
+                    is BottleDetailExtractionResult.Found -> previous.copy(extracting = false, extractedSuggestions = result.suggestions)
+                    BottleDetailExtractionResult.SetupRequired -> previous.copy(extracting = false, message = "Add an Ollama Cloud key in More before extracting.")
+                    BottleDetailExtractionResult.InvalidModel -> previous.copy(extracting = false, message = "Enter a valid Ollama Cloud model identifier in More.")
+                    BottleDetailExtractionResult.AuthenticationRequired -> previous.copy(extracting = false, message = "Ollama Cloud did not accept this key. Replace it in More.")
+                    BottleDetailExtractionResult.QuotaOrRateLimited -> previous.copy(extracting = false, message = "Ollama Cloud reported a quota or rate limit. No retry was made.")
+                    BottleDetailExtractionResult.Unavailable -> previous.copy(extracting = false, message = "Ollama Cloud could not be reached. Your draft is unchanged.")
+                    BottleDetailExtractionResult.InvalidResponse -> previous.copy(extracting = false, message = "Ollama Cloud returned suggestions without usable source evidence.")
+                })
+            }
+            if (bottleExtractionRequestTokens[draftId] == requestToken) bottleExtractionJobs.remove(draftId)
+        }
+    }
+
+    fun saveOllamaCloudSettings(apiKey: String, model: String): Boolean {
+        val cleanedModel = model.trim()
+        if (!isValidOllamaModelIdentifier(cleanedModel)) return false
+        val preferences = context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE)
+        if (!preferences.edit().putString("ollama_cloud_model", cleanedModel).commit()) return false
+        if (!ollamaCloudCredentialStore.saveApiKey(apiKey)) return false
+        ollamaCloudModel = cleanedModel
+        ollamaCloudKeySaved = true
+        ollamaCloudKeyNeedsReplacement = false
+        ollamaCredentialMessage = null
+        return true
     }
 
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
@@ -911,18 +1083,39 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 firecrawlSearchEnabled = firecrawlSearchEnabled,
                 firecrawlKeySaved = firecrawlKeySaved,
                 firecrawlKeyNeedsReplacement = firecrawlKeyNeedsReplacement,
+                firecrawlCredentialMessage = firecrawlCredentialMessage,
                 onConfigureFirecrawl = { showFirecrawlCredentialDialog = true },
                 onRemoveFirecrawlKey = {
-                    firecrawlCredentialStore.clear()
-                    firecrawlKeySaved = false
-                    firecrawlKeyNeedsReplacement = false
+                    val removed = firecrawlCredentialStore.clear()
+                    firecrawlKeySaved = firecrawlCredentialStore.hasSavedKey()
+                    firecrawlKeyNeedsReplacement = firecrawlKeySaved && firecrawlCredentialStore.readApiKey() == null
                     firecrawlSearchEnabled = false
                     context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).edit().putBoolean("firecrawl_search_enabled", false).apply()
+                    firecrawlCredentialMessage = if (removed) "Firecrawl key removed from this phone." else "Key removal could not be fully confirmed. Search has been disabled; try removing the key again."
                 },
                 onFirecrawlEnabledChanged = { enabled ->
                     val allowed = enabled && firecrawlKeySaved && !firecrawlKeyNeedsReplacement
                     context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).edit().putBoolean("firecrawl_search_enabled", allowed).apply()
                     firecrawlSearchEnabled = allowed
+                },
+                ollamaCloudEnabled = ollamaCloudEnabled,
+                ollamaCloudKeySaved = ollamaCloudKeySaved,
+                ollamaCloudKeyNeedsReplacement = ollamaCloudKeyNeedsReplacement,
+                ollamaCloudModel = ollamaCloudModel,
+                ollamaCredentialMessage = ollamaCredentialMessage,
+                onConfigureOllamaCloud = { showOllamaCloudSettingsDialog = true; ollamaCredentialMessage = null },
+                onRemoveOllamaCloudKey = {
+                    val removed = ollamaCloudCredentialStore.clear()
+                    ollamaCloudKeySaved = ollamaCloudCredentialStore.hasSavedKey()
+                    ollamaCloudKeyNeedsReplacement = ollamaCloudKeySaved && ollamaCloudCredentialStore.readApiKey() == null
+                    ollamaCloudEnabled = false
+                    context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).edit().putBoolean("ollama_cloud_enabled", false).apply()
+                    ollamaCredentialMessage = if (removed) "Ollama Cloud key removed from this phone." else "Key removal could not be fully confirmed. Cloud extraction has been disabled. Replace the key or try removal again."
+                },
+                onOllamaCloudEnabledChanged = { enabled ->
+                    val allowed = enabled && ollamaCloudKeySaved && !ollamaCloudKeyNeedsReplacement && isValidOllamaModelIdentifier(ollamaCloudModel)
+                    context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).edit().putBoolean("ollama_cloud_enabled", allowed).apply()
+                    ollamaCloudEnabled = allowed
                 },
             )
         }
@@ -965,10 +1158,20 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 if (saved) {
                     firecrawlKeySaved = true
                     firecrawlKeyNeedsReplacement = false
+                    firecrawlCredentialMessage = "Firecrawl key encrypted and saved on this phone."
                 }
                 saved
             },
             onDismiss = { showFirecrawlCredentialDialog = false },
+        )
+    }
+
+    if (showOllamaCloudSettingsDialog) {
+        OllamaCloudSettingsDialog(
+            currentModel = ollamaCloudModel,
+            keyNeedsReplacement = ollamaCloudKeyNeedsReplacement,
+            onSave = { key, model -> saveOllamaCloudSettings(key, model) },
+            onDismiss = { showOllamaCloudSettingsDialog = false },
         )
     }
 
@@ -1030,8 +1233,12 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             permissionMessage = bottleIntakeCameraMessage,
             webSearchEnabled = firecrawlSearchEnabled && firecrawlKeySaved && !firecrawlKeyNeedsReplacement,
             webSearchStates = bottleWebSearchStates,
+            pendingEnrichmentJobs = pendingBottleEnrichmentJobs,
+            ollamaCloudEnabled = ollamaCloudEnabled && ollamaCloudKeySaved && !ollamaCloudKeyNeedsReplacement && isValidOllamaModelIdentifier(ollamaCloudModel),
             onSearchDraft = ::searchBottleSources,
             onFetchDraftSource = ::fetchBottleSource,
+            onExtractDraftDetails = ::extractBottleDetails,
+            onResumeEnrichment = ::resumeBottleEnrichment,
             onCancelDraftSearch = ::cancelBottleSourceSearch,
             onCaptureLabel = {
                 bottleLabelCaptureMessage = null
@@ -1046,10 +1253,13 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             onAttachCapturedLabel = { draft ->
                 val photo = pendingBottleLabelPhoto
                 if (photo != null) {
-                    repository.updateBottleIntakeDraft(draft.copy(photoData = photo, photoSha256 = photoSha256(photo)))
-                    pendingBottleLabelPhoto = null
-                    bottleLabelCaptureMessage = null
-                    bottleIntakeSession = repository.openBottleIntakeSession()
+                    if (repository.updateBottleIntakeDraft(draft.copy(photoData = photo, photoSha256 = photoSha256(photo)))) {
+                        pendingBottleLabelPhoto = null
+                        bottleLabelCaptureMessage = null
+                        bottleIntakeSession = repository.openBottleIntakeSession()
+                    } else {
+                        bottleLabelCaptureMessage = "The label photo could not be attached. It is still available here; try again or discard it."
+                    }
                 }
             },
             onScan = {
@@ -1058,7 +1268,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
             },
             onAddManual = { name, category, barcode, brand, productName, level, photo ->
-                repository.addBottleIntakeDraft(
+                val created = repository.addBottleIntakeDraft(
                     sessionId = bottleIntakeSession!!.id,
                     ingredientName = name,
                     category = category,
@@ -1070,7 +1280,8 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     productName = productName,
                     photoJpeg = photo,
                 )
-                bottleIntakeSession = repository.openBottleIntakeSession()
+                if (created != null) bottleIntakeSession = repository.openBottleIntakeSession()
+                created != null
             },
             onRemove = { draft ->
                 cancelBottleSourceSearch(draft.id)
@@ -1084,8 +1295,9 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     cancelBottleSourceSearch(draft.id)
                     bottleWebSearchStates = bottleWebSearchStates - draft.id
                 }
-                repository.updateBottleIntakeDraft(draft)
-                bottleIntakeSession = repository.openBottleIntakeSession()
+                val saved = repository.updateBottleIntakeDraft(draft)
+                if (saved) bottleIntakeSession = repository.openBottleIntakeSession()
+                saved
             },
             onHomeChanged = { home -> repository.setBottleIntakeHome(bottleIntakeSession!!.id, home, System.currentTimeMillis()); bottleIntakeSession = repository.openBottleIntakeSession() },
             onLevelChanged = { level -> repository.setBottleIntakeDefaultLevel(bottleIntakeSession!!.id, level, System.currentTimeMillis()); bottleIntakeSession = repository.openBottleIntakeSession() },
@@ -1093,8 +1305,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 val result = repository.confirmBottleIntakeSession(bottleIntakeSession!!.id, System.currentTimeMillis())
                 when (result) {
                     is BottleIntakeCommitResult.Confirmed, is BottleIntakeCommitResult.AlreadyConfirmed -> {
-                        bottleWebSearchJobs.values.forEach(Job::cancel)
-                        bottleWebSearchJobs.clear()
+                        cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = false)
                         bottleWebSearchStates = emptyMap()
                         refreshPantry()
                         bottleIntakeSession = null
@@ -1107,8 +1318,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 result
             },
             onCancel = {
-                bottleWebSearchJobs.values.forEach(Job::cancel)
-                bottleWebSearchJobs.clear()
+                cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = false)
                 bottleWebSearchStates = emptyMap()
                 repository.cancelBottleIntakeSession(bottleIntakeSession!!.id)
                 clearPendingBottleCapture()
@@ -1118,8 +1328,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 showBottleIntake = false
             },
             onDismiss = {
-                bottleWebSearchJobs.values.forEach(Job::cancel)
-                bottleWebSearchJobs.clear()
+                cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = true)
                 bottleWebSearchStates = emptyMap()
                 showBottleIntake = false
                 bottleIntakeSession = repository.openBottleIntakeSession()
@@ -1399,22 +1608,28 @@ private fun BottleIntakeDialog(
     permissionMessage: String?,
     webSearchEnabled: Boolean,
     webSearchStates: Map<String, BottleWebSearchState>,
+    pendingEnrichmentJobs: Map<String, BottleEnrichmentJob>,
+    ollamaCloudEnabled: Boolean,
     onSearchDraft: (BottleIntakeDraft) -> Unit,
     onFetchDraftSource: (BottleIntakeDraft, WebSearchHit) -> Unit,
+    onExtractDraftDetails: (String) -> Unit,
+    onResumeEnrichment: (BottleIntakeDraft, BottleEnrichmentJob) -> Unit,
     onCancelDraftSearch: (String) -> Unit,
     onCaptureLabel: () -> Unit,
     onDiscardCapturedLabel: () -> Unit,
     onAttachCapturedLabel: (BottleIntakeDraft) -> Unit,
     onScan: () -> Unit,
-    onAddManual: (String, String, String?, String?, String?, InventoryLevel, ByteArray?) -> Unit,
+    onAddManual: (String, String, String?, String?, String?, InventoryLevel, ByteArray?) -> Boolean,
     onRemove: (BottleIntakeDraft) -> Unit,
-    onUpdate: (BottleIntakeDraft) -> Unit,
+    onUpdate: (BottleIntakeDraft) -> Boolean,
     onHomeChanged: (String) -> Unit,
     onLevelChanged: (InventoryLevel) -> Unit,
     onConfirm: () -> BottleIntakeCommitResult,
     onCancel: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     var name by remember { mutableStateOf("") }
     var category by remember { mutableStateOf("Spirit") }
     var barcode by remember { mutableStateOf("") }
@@ -1423,6 +1638,9 @@ private fun BottleIntakeDialog(
     var showHomeMenu by remember { mutableStateOf(false) }
     var showLevelMenu by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var invalidDraftIds by remember(session.id) {
+        mutableStateOf(session.drafts.filter { it.ingredientName.isBlank() }.mapTo(mutableSetOf()) { it.id })
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1460,25 +1678,36 @@ private fun BottleIntakeDialog(
                         draft = draft,
                         homes = homes,
                         onUpdate = onUpdate,
+                        onValidityChanged = { id, valid -> invalidDraftIds = (if (valid) invalidDraftIds - id else invalidDraftIds + id).toMutableSet() },
                         onRemove = onRemove,
                         webSearchEnabled = webSearchEnabled,
                         webSearchState = webSearchStates[draft.id] ?: BottleWebSearchState(),
+                        pendingEnrichmentJob = pendingEnrichmentJobs[draft.id],
+                        ollamaCloudEnabled = ollamaCloudEnabled,
                         onSearch = { onSearchDraft(draft) },
                         onFetchSource = { hit -> onFetchDraftSource(draft, hit) },
+                        onExtractDetails = { onExtractDraftDetails(draft.id) },
+                        onResumeEnrichment = { job -> onResumeEnrichment(draft, job) },
                         onCancelSearch = { onCancelDraftSearch(draft.id) },
                     )
                 }
                 Text("Add one manually", style = MaterialTheme.typography.titleSmall)
                 OutlinedTextField(name, { name = it; error = null }, label = { Text("Ingredient / spirit") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("batch-manual-name"))
                 OutlinedTextField(category, { category = it }, label = { Text("Category") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(barcode, { barcode = it }, label = { Text("Barcode (optional)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(barcode, { barcode = it; error = null }, label = { Text("Barcode (optional)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth().testTag("batch-manual-barcode"))
                 OutlinedTextField(brand, { brand = it }, label = { Text("Brand (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(productName, { productName = it }, label = { Text("Product name (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedButton(onClick = {
-                    if (name.isBlank()) error = "Enter an ingredient name, or scan its barcode first."
-                    else {
-                        onAddManual(name, category, barcode.trim().ifEmpty { null }, brand.trim().ifEmpty { null }, productName.trim().ifEmpty { null }, session.defaultLevel, capturePhoto)
-                        name = ""; barcode = ""; brand = ""; productName = ""; if (capturePhoto != null) onDiscardCapturedLabel(); error = null
+                    val cleanedBarcode = barcode.trim().ifEmpty { null }
+                    when {
+                        name.isBlank() -> error = "Enter an ingredient name, or scan its barcode first."
+                        cleanedBarcode != null && normalizeGtinForLookup(cleanedBarcode) == null -> error = "That barcode is not a valid UPC/EAN. Correct it or clear it; your name and photo are still here."
+                        !onAddManual(name, category, cleanedBarcode, brand.trim().ifEmpty { null }, productName.trim().ifEmpty { null }, session.defaultLevel, capturePhoto) -> error = "The bottle could not be saved. Your fields and label photo are still here; correct the input or try again."
+                        else -> {
+                            focusManager.clearFocus()
+                            keyboardController?.hide()
+                            name = ""; barcode = ""; brand = ""; productName = ""; if (capturePhoto != null) onDiscardCapturedLabel(); error = null
+                        }
                     }
                 }, modifier = Modifier.fillMaxWidth().testTag("batch-add-manual-bottle")) { Text("Add bottle to draft") }
                 if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
@@ -1491,7 +1720,7 @@ private fun BottleIntakeDialog(
                     is BottleIntakeCommitResult.Invalid -> error = result.reason
                     else -> Unit
                 }
-            }, enabled = session.drafts.isNotEmpty(), modifier = Modifier.testTag("batch-confirm")) { Text("Confirm ${session.drafts.size} bottles") }
+            }, enabled = session.drafts.isNotEmpty() && invalidDraftIds.isEmpty(), modifier = Modifier.testTag("batch-confirm")) { Text("Confirm ${session.drafts.size} bottles") }
         },
         dismissButton = {
             Row { TextButton(onClick = onCancel) { Text("Discard batch") }; TextButton(onClick = onDismiss) { Text("Keep for later") } }
@@ -1503,25 +1732,67 @@ private fun BottleIntakeDialog(
 private fun BottleDraftCard(
     draft: BottleIntakeDraft,
     homes: List<HomeLocation>,
-    onUpdate: (BottleIntakeDraft) -> Unit,
+    onUpdate: (BottleIntakeDraft) -> Boolean,
+    onValidityChanged: (String, Boolean) -> Unit,
     onRemove: (BottleIntakeDraft) -> Unit,
     webSearchEnabled: Boolean,
     webSearchState: BottleWebSearchState,
+    pendingEnrichmentJob: BottleEnrichmentJob?,
+    ollamaCloudEnabled: Boolean,
     onSearch: () -> Unit,
     onFetchSource: (WebSearchHit) -> Unit,
+    onExtractDetails: () -> Unit,
+    onResumeEnrichment: (BottleEnrichmentJob) -> Unit,
     onCancelSearch: () -> Unit,
 ) {
     var name by remember(draft.id) { mutableStateOf(draft.ingredientName) }
     var brand by remember(draft.id) { mutableStateOf(draft.brand.orEmpty()) }
     var productName by remember(draft.id) { mutableStateOf(draft.productName.orEmpty()) }
+    var nameValidationMessage by remember(draft.id) {
+        mutableStateOf<String?>(if (draft.ingredientName.isBlank()) "Enter a bottle name before confirming this batch." else null)
+    }
     var homeMenu by remember(draft.id) { mutableStateOf(false) }
     var levelMenu by remember(draft.id) { mutableStateOf(false) }
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            OutlinedTextField(name, { name = it; onUpdate(draft.copy(ingredientName = it)) }, label = { Text("Bottle ${draft.position + 1}") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(
+                name,
+                { value ->
+                    name = value
+                    if (value.isBlank()) {
+                        val saved = onUpdate(draft.copy(
+                            ingredientName = value,
+                            brand = brand.trim().ifEmpty { null },
+                            productName = productName.trim().ifEmpty { null },
+                        ))
+                        nameValidationMessage = if (saved) {
+                            "Enter a bottle name before confirming this batch."
+                        } else {
+                            "This name could not be saved to the local draft. Try again."
+                        }
+                        onValidityChanged(draft.id, false)
+                    } else {
+                        val saved = onUpdate(draft.copy(ingredientName = value, brand = brand.trim().ifEmpty { null }, productName = productName.trim().ifEmpty { null }))
+                        nameValidationMessage = if (saved) null else "This name could not be saved to the local draft. Try again."
+                        onValidityChanged(draft.id, saved)
+                    }
+                },
+                label = { Text("Bottle ${draft.position + 1}") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().testTag("bottle-intake-draft-name-${draft.position}"),
+            )
+            nameValidationMessage?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
             draft.barcode?.let { Text("Barcode: $it", style = MaterialTheme.typography.bodySmall) }
-            OutlinedTextField(brand, { brand = it; onUpdate(draft.copy(brand = it.trim().ifEmpty { null })) }, label = { Text("Brand · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(productName, { productName = it; onUpdate(draft.copy(productName = it.trim().ifEmpty { null })) }, label = { Text("Product · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(brand, { value ->
+                brand = value
+                val saved = onUpdate(draft.copy(ingredientName = name, brand = value.trim().ifEmpty { null }, productName = productName.trim().ifEmpty { null }))
+                onValidityChanged(draft.id, name.isNotBlank() && saved)
+            }, label = { Text("Brand · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(productName, { value ->
+                productName = value
+                val saved = onUpdate(draft.copy(ingredientName = name, brand = brand.trim().ifEmpty { null }, productName = value.trim().ifEmpty { null }))
+                onValidityChanged(draft.id, name.isNotBlank() && saved)
+            }, label = { Text("Product · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { homeMenu = true }) { Text(homes.firstOrNull { it.id == draft.locationId }?.name ?: "Home") }
                 DropdownMenu(expanded = homeMenu, onDismissRequest = { homeMenu = false }) {
@@ -1531,7 +1802,7 @@ private fun BottleDraftCard(
                 DropdownMenu(expanded = levelMenu, onDismissRequest = { levelMenu = false }) {
                     InventoryLevel.entries.forEach { level -> DropdownMenuItem(text = { Text(level.label) }, onClick = { onUpdate(draft.copy(level = level)); levelMenu = false }) }
                 }
-                TextButton(onClick = { onRemove(draft) }) { Text("Remove") }
+                TextButton(onClick = { onValidityChanged(draft.id, true); onRemove(draft) }) { Text("Remove") }
             }
             draft.photoData?.let { bytes ->
                 val photo = remember(bytes) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap() }
@@ -1543,7 +1814,21 @@ private fun BottleDraftCard(
                 OutlinedButton(onClick = onSearch, enabled = webSearchEnabled && !webSearchState.searching && webSearchState.fetchingUrl == null, modifier = Modifier.testTag("search-bottle-${draft.id}")) {
                     Text(if (webSearchState.searching) "Searching…" else "Search web")
                 }
-                if (webSearchState.searching || webSearchState.fetchingUrl != null) TextButton(onClick = onCancelSearch) { Text("Cancel") }
+                if (webSearchState.searching || webSearchState.fetchingUrl != null || webSearchState.extracting) TextButton(onClick = onCancelSearch) { Text("Cancel") }
+            }
+            pendingEnrichmentJob?.takeIf { it.status == BottleEnrichmentStatus.PAUSED }?.let { job ->
+                Text(
+                    when (job.operation) {
+                        BottleEnrichmentOperation.FIRECRAWL_SEARCH -> "A previous Firecrawl search was interrupted. It will not restart automatically."
+                        BottleEnrichmentOperation.FIRECRAWL_FETCH -> "A selected source fetch was interrupted. It will not restart automatically."
+                        BottleEnrichmentOperation.OLLAMA_EXTRACTION -> "An Ollama Cloud extraction was interrupted. Source text and model output were not saved."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(onClick = { onResumeEnrichment(job) }, modifier = Modifier.testTag("resume-enrichment-${draft.id}")) {
+                    Text(if (job.operation == BottleEnrichmentOperation.FIRECRAWL_SEARCH) "Resume search" else "Re-fetch selected source")
+                }
             }
             webSearchState.message?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             webSearchState.hits.forEach { hit ->
@@ -1560,6 +1845,22 @@ private fun BottleDraftCard(
                 Text(page.sourceUrl, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                 Text("Source page text is untrusted and remains attributed. Nothing is copied into your bottle fields automatically.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(page.markdown.take(1_200), style = MaterialTheme.typography.bodySmall)
+                OutlinedButton(
+                    onClick = onExtractDetails,
+                    enabled = ollamaCloudEnabled && !webSearchState.extracting,
+                    modifier = Modifier.testTag("extract-bottle-${draft.id}"),
+                ) { Text(if (webSearchState.extracting) "Extracting…" else "Suggest details with Ollama Cloud") }
+                if (!ollamaCloudEnabled) Text("Enable Ollama Cloud extraction in More to use this option.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (webSearchState.extracting) Text("Sending this selected page text to Ollama Cloud. You can cancel locally; a request already sent may still use plan quota. Bottle fields are unchanged.", style = MaterialTheme.typography.bodySmall)
+                webSearchState.extractedSuggestions?.let { suggestions ->
+                    Text("Suggestions · ${suggestions.provider} · ${suggestions.model}", style = MaterialTheme.typography.titleSmall)
+                    Text("Source: ${suggestions.sourceUrl}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    Text("Check each quoted passage yourself. These suggestions are temporary and have not changed your bottle draft.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    suggestions.facts.forEach { fact ->
+                        Text("${fact.field.label}: ${fact.value}", style = MaterialTheme.typography.bodyMedium)
+                        Text("Evidence: “${fact.quote}”", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             }
         }
     }
@@ -1605,7 +1906,7 @@ private fun MyBarScreen(
             OutlinedButton(onClick = onOpenShop) { Text("At the shop") }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            OutlinedButton(onClick = onAddIngredient, modifier = Modifier.weight(1f)) { Text("＋ Add one") }
+            OutlinedButton(onClick = onAddIngredient, modifier = Modifier.weight(1f).testTag("inventory-add-ingredient")) { Text("＋ Add one") }
             Button(onClick = onAddBottles, modifier = Modifier.weight(1f).testTag("start-bottle-intake")) { Text("＋ Add bottles") }
         }
         if (pantry.isEmpty()) {
@@ -2342,9 +2643,18 @@ private fun HouseholdScreen(
     firecrawlSearchEnabled: Boolean,
     firecrawlKeySaved: Boolean,
     firecrawlKeyNeedsReplacement: Boolean,
+    firecrawlCredentialMessage: String?,
     onConfigureFirecrawl: () -> Unit,
     onRemoveFirecrawlKey: () -> Unit,
     onFirecrawlEnabledChanged: (Boolean) -> Unit,
+    ollamaCloudEnabled: Boolean,
+    ollamaCloudKeySaved: Boolean,
+    ollamaCloudKeyNeedsReplacement: Boolean,
+    ollamaCloudModel: String,
+    ollamaCredentialMessage: String?,
+    onConfigureOllamaCloud: () -> Unit,
+    onRemoveOllamaCloudKey: () -> Unit,
+    onOllamaCloudEnabledChanged: (Boolean) -> Unit,
 ) {
     Column(
         modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).testTag("household-scroll").padding(24.dp),
@@ -2399,6 +2709,36 @@ private fun HouseholdScreen(
             OutlinedButton(onClick = onConfigureFirecrawl, modifier = Modifier.testTag("configure-firecrawl-key")) { Text(if (firecrawlKeySaved) "Replace Firecrawl key" else "Add Firecrawl key") }
             if (firecrawlKeySaved) TextButton(onClick = onRemoveFirecrawlKey, modifier = Modifier.testTag("remove-firecrawl-key")) { Text("Remove key") }
         }
+        firecrawlCredentialMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        Text("Bottle detail suggestions · Ollama Cloud", style = MaterialTheme.typography.titleSmall)
+        Text(
+            when {
+                ollamaCloudKeyNeedsReplacement -> "The saved Ollama Cloud key could not be decrypted. Enter it again; it was not stored in plaintext."
+                ollamaCloudKeySaved -> "Your Ollama Cloud key is encrypted with Android Keystore on this phone. Model: $ollamaCloudModel"
+                else -> "Optionally configure your own Ollama Cloud key and model."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = if (ollamaCloudKeyNeedsReplacement) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text("Allow Ollama Cloud extraction", style = MaterialTheme.typography.titleSmall)
+                Text("Nothing is sent until you choose Extract on a fetched source.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Switch(
+                checked = ollamaCloudEnabled,
+                enabled = ollamaCloudKeySaved && !ollamaCloudKeyNeedsReplacement && isValidOllamaModelIdentifier(ollamaCloudModel),
+                onCheckedChange = onOllamaCloudEnabledChanged,
+                modifier = Modifier.testTag("ollama-cloud-extraction-toggle"),
+            )
+        }
+        Text("When you choose extraction, Ollama Cloud receives the selected source page text (up to 24,000 characters), your chosen model identifier, and normal network metadata. The app does not send barcode, home, pantry, member, photo, or recipe data. Model output is untrusted and must include exact source quotes; suggestions stay on this screen and never change bottle fields automatically.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Ollama Cloud's chat API does not support constrained JSON output. The app asks for JSON, validates it and rejects unsupported claims; this is not a guarantee of complete or correct extraction.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onConfigureOllamaCloud, modifier = Modifier.testTag("configure-ollama-cloud")) { Text(if (ollamaCloudKeySaved) "Replace key / model" else "Add key / model") }
+            if (ollamaCloudKeySaved) TextButton(onClick = onRemoveOllamaCloudKey, modifier = Modifier.testTag("remove-ollama-cloud-key")) { Text("Remove key") }
+        }
+        ollamaCredentialMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         Text("On-device AI: model runtime is not installed yet. Intake and manual review work offline without it.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("Manual sharing", style = MaterialTheme.typography.titleLarge)
         Button(onClick = onExport, modifier = Modifier.fillMaxWidth()) { Text("Export household backup") }
@@ -2442,6 +2782,57 @@ private fun FirecrawlCredentialDialog(
                 if (onSave(apiKey)) onDismiss()
                 else error = "The key could not be stored securely. No plaintext fallback was used. Try again or continue without web search."
             }, enabled = apiKey.isNotBlank(), modifier = Modifier.testTag("save-firecrawl-key")) { Text("Save securely") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun OllamaCloudSettingsDialog(
+    currentModel: String,
+    keyNeedsReplacement: Boolean,
+    onSave: (String, String) -> Boolean,
+    onDismiss: () -> Unit,
+) {
+    var apiKey by remember { mutableStateOf("") }
+    var model by remember { mutableStateOf(currentModel) }
+    var error by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (keyNeedsReplacement) "Replace Ollama Cloud settings" else "Configure Ollama Cloud") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("This phone encrypts your key with Android Keystore. The key goes only to ollama.com. Saving does not enable cloud extraction.")
+                Text("When you explicitly request extraction, up to 24,000 characters of the selected source page and this model name are sent to Ollama Cloud. No barcode, home, pantry, member, photo, or recipe data is sent. This consumes your Ollama Cloud plan usage; the app will not enable paid upgrades or automatic retries.", style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(
+                    value = model,
+                    onValueChange = { model = it.trim(); error = null },
+                    label = { Text("Ollama Cloud model identifier") },
+                    supportingText = { Text("Enter a model name supported by your Ollama Cloud account. The app does not list, pull, or select models for you.") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("ollama-cloud-model"),
+                )
+                OutlinedTextField(
+                    value = apiKey,
+                    onValueChange = { apiKey = it; error = null },
+                    label = { Text("Ollama Cloud API key") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier.fillMaxWidth().testTag("ollama-cloud-api-key"),
+                )
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (onSave(apiKey, model)) onDismiss()
+                    else error = "Enter a supported model identifier and a key. Secure storage must succeed; no plaintext fallback is used."
+                },
+                enabled = apiKey.isNotBlank() && isValidOllamaModelIdentifier(model),
+                modifier = Modifier.testTag("save-ollama-cloud-settings"),
+            ) { Text("Save securely") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )

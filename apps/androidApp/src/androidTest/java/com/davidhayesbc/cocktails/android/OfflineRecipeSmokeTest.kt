@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -65,6 +67,12 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithText("My Bar").performClick()
         composeRule.onNodeWithTag("start-bottle-intake").performClick()
         composeRule.onNodeWithText("2 bottles in this batch").assertIsDisplayed()
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-name-0"))
+        composeRule.onNodeWithTag("bottle-intake-draft-name-0").performTextClearance()
+        composeRule.onNodeWithText("Enter a bottle name before confirming this batch.").assertIsDisplayed()
+        composeRule.onNodeWithTag("batch-confirm").assertIsNotEnabled()
+        composeRule.onNodeWithTag("bottle-intake-draft-name-0").performTextInput(bottleName)
+        composeRule.onNodeWithTag("batch-confirm").assertIsEnabled()
         composeRule.onNodeWithTag("batch-confirm").performClick()
 
         val context = InstrumentationRegistry.getInstrumentation().targetContext

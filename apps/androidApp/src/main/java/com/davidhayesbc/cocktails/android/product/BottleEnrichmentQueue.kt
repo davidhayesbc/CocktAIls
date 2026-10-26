@@ -1,0 +1,187 @@
+package com.davidhayesbc.cocktails.android.product
+
+import android.content.Context
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import java.util.UUID
+
+internal enum class BottleEnrichmentOperation {
+    FIRECRAWL_SEARCH,
+    FIRECRAWL_FETCH,
+    OLLAMA_EXTRACTION,
+}
+
+internal enum class BottleEnrichmentStatus {
+    RUNNING,
+    PAUSED,
+}
+
+/** Metadata only: never stores search queries, page text, model output or credentials. */
+internal data class BottleEnrichmentJob(
+    val id: String,
+    val sessionId: String,
+    val draftId: String,
+    val operation: BottleEnrichmentOperation,
+    val status: BottleEnrichmentStatus,
+    val sourceUrl: String?,
+    val model: String?,
+    val updatedAtMillis: Long,
+)
+
+internal interface BottleEnrichmentQueueStorage {
+    fun read(): String?
+    fun write(value: String): Boolean
+}
+
+internal class SharedPreferencesBottleEnrichmentQueueStorage(context: Context) : BottleEnrichmentQueueStorage {
+    private val preferences = context.getSharedPreferences("cocktails_local_enrichment_queue", Context.MODE_PRIVATE)
+
+    override fun read(): String? = preferences.getString(QUEUE_JSON_KEY, null)
+
+    override fun write(value: String): Boolean = preferences.edit().putString(QUEUE_JSON_KEY, value).commit()
+
+    private companion object {
+        const val QUEUE_JSON_KEY = "jobs_v1"
+    }
+}
+
+/** Durable, device-only restart queue. Network calls are never restarted automatically. */
+internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueStorage) {
+    fun jobs(): List<BottleEnrichmentJob> = decode(storage.read())
+
+    fun begin(
+        sessionId: String,
+        draftId: String,
+        operation: BottleEnrichmentOperation,
+        sourceUrl: String? = null,
+        model: String? = null,
+        nowMillis: Long,
+    ): BottleEnrichmentJob? {
+        if (!isSafeJobMetadata(sessionId, draftId, operation, sourceUrl, model)) return null
+        val current = jobs().filterNot { it.draftId == draftId }
+        if (current.size >= MAX_JOBS) return null
+        val job = BottleEnrichmentJob(
+            id = UUID.randomUUID().toString(),
+            sessionId = sessionId,
+            draftId = draftId,
+            operation = operation,
+            status = BottleEnrichmentStatus.RUNNING,
+            sourceUrl = sourceUrl,
+            model = model,
+            updatedAtMillis = nowMillis,
+        )
+        return job.takeIf { write(current + it) }
+    }
+
+    /** Converts process-death RUNNING rows to PAUSED; caller must ask the user before retrying. */
+    fun recoverInterrupted(): List<BottleEnrichmentJob> {
+        val current = jobs()
+        val recovered = current.map { job ->
+            if (job.status == BottleEnrichmentStatus.RUNNING) job.copy(status = BottleEnrichmentStatus.PAUSED) else job
+        }
+        if (recovered != current) write(recovered)
+        return recovered
+    }
+
+    fun pause(jobId: String, nowMillis: Long): Boolean = update(jobId) { it.copy(status = BottleEnrichmentStatus.PAUSED, updatedAtMillis = nowMillis) }
+
+    fun remove(jobId: String): Boolean {
+        val current = jobs()
+        val next = current.filterNot { it.id == jobId }
+        return next.size == current.size || write(next)
+    }
+
+    fun removeDraft(draftId: String): Boolean = removeWhere { it.draftId == draftId }
+
+    fun removeSession(sessionId: String): Boolean = removeWhere { it.sessionId == sessionId }
+
+    private fun update(jobId: String, transform: (BottleEnrichmentJob) -> BottleEnrichmentJob): Boolean {
+        val current = jobs()
+        val match = current.firstOrNull { it.id == jobId } ?: return false
+        return write(current.map { if (it.id == jobId) transform(match) else it })
+    }
+
+    private fun removeWhere(predicate: (BottleEnrichmentJob) -> Boolean): Boolean {
+        val current = jobs()
+        val next = current.filterNot(predicate)
+        return next.size == current.size || write(next)
+    }
+
+    private fun write(jobs: List<BottleEnrichmentJob>): Boolean {
+        if (jobs.size > MAX_JOBS) return false
+        return storage.write(buildJsonArray {
+            jobs.forEach { job ->
+                add(buildJsonObject {
+                    put("id", job.id)
+                    put("sessionId", job.sessionId)
+                    put("draftId", job.draftId)
+                    put("operation", job.operation.name)
+                    put("status", job.status.name)
+                    job.sourceUrl?.let { put("sourceUrl", it) }
+                    job.model?.let { put("model", it) }
+                    put("updatedAtMillis", job.updatedAtMillis)
+                })
+            }
+        }.toString())
+    }
+
+    private fun decode(raw: String?): List<BottleEnrichmentJob> {
+        if (raw.isNullOrBlank() || raw.length > MAX_QUEUE_JSON_CHARS) return emptyList()
+        return runCatching {
+            (Json.parseToJsonElement(raw) as? JsonArray).orEmpty().mapNotNull { item ->
+                val obj = item as? JsonObject ?: return@mapNotNull null
+                val sessionId = obj.string("sessionId") ?: return@mapNotNull null
+                val draftId = obj.string("draftId") ?: return@mapNotNull null
+                val operation = obj.string("operation")?.let { runCatching { BottleEnrichmentOperation.valueOf(it) }.getOrNull() }
+                    ?: return@mapNotNull null
+                val status = obj.string("status")?.let { runCatching { BottleEnrichmentStatus.valueOf(it) }.getOrNull() }
+                    ?: return@mapNotNull null
+                val url = obj.string("sourceUrl")
+                val model = obj.string("model")
+                if (!isSafeJobMetadata(sessionId, draftId, operation, url, model)) return@mapNotNull null
+                BottleEnrichmentJob(
+                    id = obj.string("id")?.takeIf { it.length <= MAX_ID_CHARS } ?: return@mapNotNull null,
+                    sessionId = sessionId,
+                    draftId = draftId,
+                    operation = operation,
+                    status = status,
+                    sourceUrl = url,
+                    model = model,
+                    updatedAtMillis = obj["updatedAtMillis"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: return@mapNotNull null,
+                )
+            }.take(MAX_JOBS)
+        }.getOrDefault(emptyList())
+    }
+
+    private fun isSafeJobMetadata(
+        sessionId: String,
+        draftId: String,
+        operation: BottleEnrichmentOperation,
+        sourceUrl: String?,
+        model: String?,
+    ): Boolean {
+        if (sessionId.length !in 1..MAX_ID_CHARS || draftId.length !in 1..MAX_ID_CHARS) return false
+        return when (operation) {
+            BottleEnrichmentOperation.FIRECRAWL_SEARCH -> sourceUrl == null && model == null
+            BottleEnrichmentOperation.FIRECRAWL_FETCH -> normalizePublicHttpsUrl(sourceUrl.orEmpty()) == sourceUrl && model == null
+            BottleEnrichmentOperation.OLLAMA_EXTRACTION -> normalizePublicHttpsUrl(sourceUrl.orEmpty()) == sourceUrl && isValidOllamaModelIdentifier(model.orEmpty())
+        }
+    }
+
+    private companion object {
+        const val MAX_JOBS = 500
+        const val MAX_ID_CHARS = 100
+        const val MAX_QUEUE_JSON_CHARS = 512 * 1024
+    }
+}
+
+private fun JsonObject.string(field: String): String? = this[field]?.jsonPrimitive?.contentOrNull
+
+private fun JsonArray?.orEmpty(): List<kotlinx.serialization.json.JsonElement> = this?.toList().orEmpty()
