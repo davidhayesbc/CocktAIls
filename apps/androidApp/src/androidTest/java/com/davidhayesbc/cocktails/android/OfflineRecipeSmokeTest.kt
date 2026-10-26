@@ -157,7 +157,12 @@ class OfflineRecipeSmokeTest {
         assertFalse(copied.contains("/barcode-lookup"))
         assertFalse(copied.contains("Authorization"))
         assertTrue(copied.contains("No keys"))
-        composeRule.onNodeWithText("Lookup report copied. Review it before sharing.").assertIsDisplayed()
+        val copyConfirmation = "Lookup report copied. Review it before sharing."
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            composeRule.onAllNodesWithText(copyConfirmation).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("diagnostics-dialog-scroll").performScrollToNode(hasText(copyConfirmation))
+        composeRule.onNodeWithText(copyConfirmation).assertIsDisplayed()
     }
 
     @Test
