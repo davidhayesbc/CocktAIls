@@ -1974,7 +1974,7 @@ private fun BottleDraftCard(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().testTag("bottle-intake-draft-name-${draft.position}"),
             )
-            nameValidationMessage?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            nameValidationMessage?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("bottle-intake-draft-error-${draft.position}")) }
             draft.barcode?.let { Text("Barcode: $it", style = MaterialTheme.typography.bodySmall) }
             OutlinedTextField(brand, { value ->
                 brand = value
