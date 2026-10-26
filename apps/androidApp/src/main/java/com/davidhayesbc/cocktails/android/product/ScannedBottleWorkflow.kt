@@ -26,27 +26,119 @@ internal fun scannedBarcodePageDecision(barcode: String, sourceText: String): Sc
 internal fun sourceMentionsScannedBarcode(barcode: String, sourceText: String): Boolean =
     scannedBarcodePageDecision(barcode, sourceText) == ScannedBarcodePageDecision.VERIFIED
 
+/** Structured barcode data is accepted only when it uniquely names the product shown in the page title. */
+internal fun structuredBottleIdentityForPage(barcode: String, page: WebPageText): StructuredBottleIdentity? {
+    val expected = normalizeGtinForLookup(barcode) ?: return null
+    val title = page.title?.takeIf(String::isNotBlank) ?: return null
+    val matches = page.structuredBottleIdentities
+        .filter { normalizeGtinForLookup(it.barcode) == expected }
+        .distinctBy { normalizeProductTitle(it.productName) }
+    if (matches.size != 1) return null
+    val identity = matches.single()
+    val identityTokens = productIdentityTokens(identity.productName)
+    val titleTokens = productIdentityTokens(title)
+    if (identityTokens.isEmpty() || titleTokens.isEmpty()) return null
+    val sharedTokens = identityTokens.intersect(titleTokens)
+    val titleMatchesProduct = if (identityTokens.size == 1) {
+        sharedTokens.size == 1
+    } else {
+        sharedTokens.size >= 2 && sharedTokens.size.toDouble() / identityTokens.size >= 0.75
+    }
+    return identity.takeIf { titleMatchesProduct }
+}
+
+/** Produces a bounded source passage tying a product name to one exact barcode for local validation. */
+internal fun scannedProductIdentityEvidence(barcode: String, productName: String, sourceText: String): String? {
+    val expected = normalizeGtinForLookup(barcode) ?: return null
+    val cleanName = productName.trim().takeIf(String::isNotEmpty) ?: return null
+    for (section in splitProductSections(sourceText)) {
+        if (sourceBarcodeCandidates(section).toSet() != setOf(expected)) continue
+        val passage = splitIdentityPassages(section).firstOrNull { candidate ->
+            sourceMentionsScannedBarcode(barcode, candidate) && candidate.contains(cleanName, ignoreCase = true)
+        } ?: continue
+        if (passage.length > 320 || Regex("(?i)\\b(?:related|similar|recommended|recommendation|alternative|other\\s+products?)\\b").containsMatchIn(passage)) continue
+        return passage
+    }
+    return null
+}
+
+/** Binds model-extracted facts to the locally verified page barcode without sending the code to a model. */
+internal fun bindPageBarcodeIdentity(
+    result: BottleDetailExtractionResult,
+    requiredBarcode: String,
+    page: WebPageText,
+): BottleDetailExtractionResult {
+    if (normalizeGtinForLookup(requiredBarcode) == null) return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.INVALID_TARGET_BARCODE)
+    if (result !is BottleDetailExtractionResult.Found) return result
+    val nameFact = result.suggestions.facts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }
+        ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.PRODUCT_NAME_MISSING)
+    val title = page.title
+    if (!title.isNullOrBlank() && !structuredProductNamesAgree(nameFact.value, title)) {
+        return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
+    }
+    val identityEvidence = scannedProductIdentityEvidence(requiredBarcode, nameFact.value, page.markdown)
+        ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
+    return result.copy(suggestions = result.suggestions.copy(
+        targetBarcode = requiredBarcode,
+        identityEvidence = identityEvidence,
+    ))
+}
+
+private fun productIdentityTokens(value: String): Set<String> = normalizeProductTitle(value)
+    .split(' ')
+    .filter { it.length > 1 && it !in GENERIC_PRODUCT_TITLE_WORDS }
+    .toSet()
+
+internal fun structuredProductNamesAgree(candidate: String, expected: String): Boolean {
+    val candidateTokens = productIdentityTokens(candidate)
+    val expectedTokens = productIdentityTokens(expected)
+    if (candidateTokens.isEmpty() || expectedTokens.isEmpty()) return false
+    val shared = candidateTokens.intersect(expectedTokens).size
+    if (candidateTokens.size == 1 || expectedTokens.size == 1) return candidateTokens == expectedTokens
+    return shared >= 2 && shared.toDouble() / expectedTokens.size >= 0.67 && shared.toDouble() / candidateTokens.size >= 0.8
+}
+
+private fun normalizeProductTitle(value: String): String = value.lowercase()
+    .replace(Regex("[^a-z0-9]+"), " ")
+    .trim()
+    .replace(Regex("\\s+"), " ")
+
+private val GENERIC_PRODUCT_TITLE_WORDS = setOf(
+    "single", "malt", "scotch", "whisky", "whiskey", "bourbon", "gin", "vodka", "rum", "tequila",
+    "liqueur", "spirit", "spirits", "product", "bottle", "shop", "store", "liquor", "canada",
+)
+
 internal data class ScannedBottleSearchSelection(
     val selected: WebSearchHit?,
+    /** Candidates are ordered exact-code hit text first, followed by other non-generic hits. */
+    val candidates: List<WebSearchHit>,
     val resultCode: String,
     val rejectionCodes: List<String>,
 )
 
+/** A scan may fetch at most three search results automatically (Firecrawl charges per page). */
+internal const val MAX_AUTOMATIC_SOURCE_FETCHES = 3
+
 /** Avoids spending a page-fetch request on generic barcode lookup tools when a source page is absent. */
 internal fun selectScannedBottleSearchHit(barcode: String, hits: List<WebSearchHit>): ScannedBottleSearchSelection {
-    if (hits.isEmpty()) return ScannedBottleSearchSelection(null, "NO_USABLE_SOURCE", emptyList())
+    if (hits.isEmpty()) return ScannedBottleSearchSelection(null, emptyList(), "NO_USABLE_SOURCE", emptyList())
     val eligible = hits.filterNot { isGenericBarcodeLookupHit(barcode, it) }
     if (eligible.isEmpty()) {
         return ScannedBottleSearchSelection(
             null,
+            emptyList(),
             "NO_USABLE_SOURCE",
             hits.indices.map { "CANDIDATE_${it + 1}_GENERIC_BARCODE_LOOKUP" },
         )
     }
-    val exact = eligible.firstOrNull { hit -> sourceMentionsScannedBarcode(barcode, "${hit.title} ${hit.snippet.orEmpty()}") }
+    val ordered = eligible
+        .sortedByDescending { hit -> sourceMentionsScannedBarcode(barcode, "${hit.title} ${hit.snippet.orEmpty()}") }
+        .distinctBy { hit -> normalizePublicHttpsUrl(hit.url)?.substringBefore('#') ?: hit.url }
+    val exact = ordered.firstOrNull { hit -> sourceMentionsScannedBarcode(barcode, "${hit.title} ${hit.snippet.orEmpty()}") }
     if (exact != null) {
         return ScannedBottleSearchSelection(
             exact,
+            ordered.take(MAX_AUTOMATIC_SOURCE_FETCHES),
             "SELECTED_EXACT_MATCH",
             hits.mapIndexed { index, hit ->
                 val code = when {
@@ -62,6 +154,7 @@ internal fun selectScannedBottleSearchHit(barcode: String, hits: List<WebSearchH
     val fallback = eligible.first()
     return ScannedBottleSearchSelection(
         fallback,
+        ordered.take(MAX_AUTOMATIC_SOURCE_FETCHES),
         "SELECTED_FALLBACK",
         hits.mapIndexed { index, hit ->
             val code = when {
@@ -198,6 +291,7 @@ internal data class ScannedBottleOutcome(
     val selectedHit: WebSearchHit? = null,
     val page: WebPageResult? = null,
     val barcodeVerifiedInPage: Boolean = false,
+    val barcodeVerifiedByStructuredProduct: Boolean = false,
     val extraction: BottleDetailExtractionResult? = null,
 )
 
@@ -218,7 +312,7 @@ internal class ScannedBottleEnrichmentCoordinator(
     suspend fun processScannedBarcode(
         barcode: String,
         plan: ScannedBottlePlan,
-        onStage: (ScannedBottleStage, sourceUrl: String?) -> Unit = { _, _ -> },
+        onStage: (ScannedBottleStage, sourceUrl: String?, progressLabel: String?) -> Unit = { _, _, _ -> },
         onDebugEvent: (BottleLookupDebugEvent) -> Unit = {},
     ): ScannedBottleOutcome {
         val query = scannedBottleSearchQuery(barcode) ?: run {
@@ -227,7 +321,7 @@ internal class ScannedBottleEnrichmentCoordinator(
         }
         var outcome = ScannedBottleOutcome(barcode)
         if (plan.openFoodFactsEnabled) {
-            onStage(ScannedBottleStage.BARCODE_LOOKUP, null)
+            onStage(ScannedBottleStage.BARCODE_LOOKUP, null, null)
             val call = measured(BottleLookupDebugStage.OPEN_FOOD_FACTS, "Open Food Facts", onDebugEvent) { lookup(barcode) }
             val result = call.result
             onDebugEvent(BottleLookupDebugEvent(
@@ -251,7 +345,7 @@ internal class ScannedBottleEnrichmentCoordinator(
             return outcome
         }
 
-        onStage(ScannedBottleStage.WEB_SEARCH, null)
+        onStage(ScannedBottleStage.WEB_SEARCH, null, null)
         val searchCall = measured(BottleLookupDebugStage.FIRECRAWL_SEARCH, "Firecrawl", onDebugEvent) { search(query) }
         val searchResult = searchCall.result
         val hits = (searchResult as? WebSearchResult.Found)?.hits.orEmpty()
@@ -279,50 +373,105 @@ internal class ScannedBottleEnrichmentCoordinator(
             sourceUrls = hits.map(WebSearchHit::url),
             reasonCodes = selection.rejectionCodes,
         ))
+        val candidates = selection.candidates
         val selected = selection.selected ?: run {
             onDebugEvent(BottleLookupDebugEvent(BottleLookupDebugStage.DETAIL_EXTRACTION, "MODEL", "SKIPPED"))
             return outcome
         }
-        outcome = outcome.copy(selectedHit = selected)
-        onStage(ScannedBottleStage.SOURCE_FETCH, selected.url)
-        val fetchCall = measured(BottleLookupDebugStage.FIRECRAWL_FETCH, "Firecrawl", onDebugEvent) { fetch(selected.url) }
-        val pageResult = fetchCall.result
-        onDebugEvent(BottleLookupDebugEvent(
-            stage = BottleLookupDebugStage.FIRECRAWL_FETCH,
-            provider = "Firecrawl",
-            result = pageResult.toDebugCode(fetchCall.httpStatus),
-            durationMillis = fetchCall.durationMillis,
-            httpStatus = fetchCall.httpStatus,
-            sourceUrls = listOf(selected.url),
-        ))
-        outcome = outcome.copy(page = pageResult)
-        val page = (pageResult as? WebPageResult.Found)?.page ?: return outcome
-        val pageDecision = scannedBarcodePageDecision(barcode, page.markdown)
-        val verified = pageDecision == ScannedBarcodePageDecision.VERIFIED
-        onDebugEvent(BottleLookupDebugEvent(
-            stage = BottleLookupDebugStage.BARCODE_MATCH,
-            provider = "APP",
-            result = pageDecision.toDebugCode(),
-            sourceUrls = listOf(page.sourceUrl),
-            reasonCodes = when (pageDecision) {
-                ScannedBarcodePageDecision.VERIFIED -> emptyList()
-                ScannedBarcodePageDecision.INVALID_TARGET -> listOf("INVALID_BARCODE")
-                ScannedBarcodePageDecision.MISSING -> listOf("NO_EXACT_CODE_IN_PAGE")
-                ScannedBarcodePageDecision.MISMATCH -> listOf("TARGET_BARCODE_MISMATCH")
-                ScannedBarcodePageDecision.AMBIGUOUS -> listOf("MULTIPLE_BARCODES_IN_PAGE")
-            },
-        ))
-        outcome = outcome.copy(barcodeVerifiedInPage = verified)
+        var lastPageResult: WebPageResult? = null
+        var lastHit: WebSearchHit = selected
+        var verifiedPage: WebPageText? = null
+        var lastDecision = ScannedBarcodePageDecision.MISSING
+        for ((index, hit) in candidates.withIndex()) {
+            lastHit = hit
+            val hitContainsCode = sourceMentionsScannedBarcode(barcode, "${hit.title} ${hit.snippet.orEmpty()}")
+            onStage(
+                ScannedBottleStage.SOURCE_FETCH,
+                hit.url,
+                "Checking result ${index + 1} of ${candidates.size} for the exact barcode (up to $MAX_AUTOMATIC_SOURCE_FETCHES page fetches)",
+            )
+            onDebugEvent(BottleLookupDebugEvent(
+                stage = BottleLookupDebugStage.SOURCE_SELECTION,
+                provider = "APP",
+                result = "CANDIDATE_SELECTED",
+                sourceUrls = listOf(hit.url),
+                reasonCodes = listOf(when {
+                    hit == selected && selection.resultCode == "SELECTED_EXACT_MATCH" -> "CANDIDATE_${index + 1}_SELECTED_EXACT_MATCH"
+                    hitContainsCode -> "CANDIDATE_${index + 1}_EXACT_MATCH_NOT_SELECTED"
+                    hit == selected -> "CANDIDATE_${index + 1}_SELECTED_FALLBACK"
+                    else -> "CANDIDATE_${index + 1}_HIT_TEXT_MISSING_BARCODE"
+                }),
+            ))
+            val fetchCall = measured(BottleLookupDebugStage.FIRECRAWL_FETCH, "Firecrawl", onDebugEvent) { fetch(hit.url) }
+            lastPageResult = fetchCall.result
+            onDebugEvent(BottleLookupDebugEvent(
+                stage = BottleLookupDebugStage.FIRECRAWL_FETCH,
+                provider = "Firecrawl",
+                result = fetchCall.result.toDebugCode(fetchCall.httpStatus),
+                durationMillis = fetchCall.durationMillis,
+                httpStatus = fetchCall.httpStatus,
+                sourceUrls = listOf(hit.url),
+                reasonCodes = listOf("CANDIDATE_${index + 1}_OF_${candidates.size}"),
+            ))
+            val page = (fetchCall.result as? WebPageResult.Found)?.page
+            if (page == null) {
+                if (fetchCall.result in setOf(WebPageResult.QuotaExceeded, WebPageResult.RateLimited, WebPageResult.AuthenticationRequired, WebPageResult.SetupRequired)) break
+                continue
+            }
+            val markdownDecision = scannedBarcodePageDecision(barcode, page.markdown)
+            val structuredIdentity = if (markdownDecision == ScannedBarcodePageDecision.VERIFIED) null else structuredBottleIdentityForPage(barcode, page)
+            val decision = if (structuredIdentity != null) ScannedBarcodePageDecision.VERIFIED else markdownDecision
+            lastDecision = decision
+            onDebugEvent(BottleLookupDebugEvent(
+                stage = BottleLookupDebugStage.BARCODE_MATCH,
+                provider = "APP",
+                result = if (structuredIdentity != null) "STRUCTURED_PRODUCT_MATCH" else decision.toDebugCode(),
+                sourceUrls = listOf(page.sourceUrl),
+                reasonCodes = if (structuredIdentity != null) {
+                    listOf("BARCODE_IN_STRUCTURED_PRODUCT", "CANDIDATE_${index + 1}_VERIFIED")
+                } else when (decision) {
+                    ScannedBarcodePageDecision.VERIFIED -> listOf("CANDIDATE_${index + 1}_VERIFIED")
+                    ScannedBarcodePageDecision.INVALID_TARGET -> listOf("INVALID_BARCODE", "CANDIDATE_${index + 1}_REJECTED")
+                    ScannedBarcodePageDecision.MISSING -> listOf("NO_EXACT_CODE_IN_PAGE", "CANDIDATE_${index + 1}_REJECTED")
+                    ScannedBarcodePageDecision.MISMATCH -> listOf("TARGET_BARCODE_MISMATCH", "CANDIDATE_${index + 1}_REJECTED")
+                    ScannedBarcodePageDecision.AMBIGUOUS -> listOf("MULTIPLE_BARCODES_IN_PAGE", "CANDIDATE_${index + 1}_REJECTED")
+                },
+            ))
+            if (decision == ScannedBarcodePageDecision.VERIFIED) {
+                verifiedPage = if (structuredIdentity == null) {
+                    page
+                } else {
+                    page.copy(structuredBottleIdentities = listOf(structuredIdentity))
+                }
+                outcome = outcome.copy(barcodeVerifiedByStructuredProduct = structuredIdentity != null)
+                break
+            }
+        }
+        val page = verifiedPage
+        if (page == null) {
+            outcome = outcome.copy(selectedHit = lastHit, page = lastPageResult, barcodeVerifiedInPage = false)
+            onDebugEvent(BottleLookupDebugEvent(
+                stage = BottleLookupDebugStage.DETAIL_EXTRACTION,
+                provider = "MODEL",
+                result = "SKIPPED",
+                reasonCodes = listOf(when (lastDecision) {
+                    ScannedBarcodePageDecision.MISMATCH -> "TARGET_BARCODE_MISMATCH"
+                    ScannedBarcodePageDecision.AMBIGUOUS -> "MULTIPLE_BARCODES_IN_PAGE"
+                    else -> "NO_EXACT_CODE_IN_PAGE"
+                }),
+            ))
+            return outcome
+        }
+        outcome = outcome.copy(selectedHit = lastHit, page = WebPageResult.Found(page), barcodeVerifiedInPage = true)
         val extractor = plan.extractor
-        if (!verified || extractor == null) {
+        if (extractor == null) {
             onDebugEvent(BottleLookupDebugEvent(BottleLookupDebugStage.DETAIL_EXTRACTION, "MODEL", "SKIPPED", reasonCodes = listOfNotNull(
-                if (!verified) "NO_EXACT_CODE_IN_PAGE" else null,
-                if (extractor == null) "MODEL_NOT_CONFIGURED" else null,
+                "MODEL_NOT_CONFIGURED",
             )))
             return outcome
         }
 
-        onStage(ScannedBottleStage.DETAIL_EXTRACTION, page.sourceUrl)
+        onStage(ScannedBottleStage.DETAIL_EXTRACTION, page.sourceUrl, null)
         val extractionCall = measured(BottleLookupDebugStage.DETAIL_EXTRACTION, extractor.name, onDebugEvent) {
             extract(page, extractor, barcode)
         }

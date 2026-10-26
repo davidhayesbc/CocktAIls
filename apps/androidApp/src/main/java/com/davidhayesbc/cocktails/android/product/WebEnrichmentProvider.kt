@@ -14,6 +14,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonObject
@@ -30,6 +31,7 @@ private const val MAX_QUERY_CHARS = 256
 private const val MAX_SEARCH_RESULTS = 5
 private const val MAX_SEARCH_RESPONSE_BYTES = 512 * 1024
 private const val MAX_SCRAPE_RESPONSE_BYTES = 1024 * 1024
+private const val MAX_STRUCTURED_HTML_CHARS = 512 * 1024
 private const val MAX_RESULT_TITLE_CHARS = 240
 private const val MAX_RESULT_SNIPPET_CHARS = 600
 private const val MAX_PAGE_TEXT_CHARS = 24_000
@@ -46,6 +48,15 @@ internal data class WebPageText(
     val sourceUrl: String,
     val markdown: String,
     val provider: String,
+    /** Parsed barcode/name pairs only; raw HTML is never retained beyond the bounded parser. */
+    val structuredBottleIdentities: List<StructuredBottleIdentity> = emptyList(),
+)
+
+internal data class StructuredBottleIdentity(
+    val barcode: String,
+    val productName: String,
+    /** A compact normalized record of the exact structured fields, not a page-text quote. */
+    val evidence: String,
 )
 
 internal sealed interface WebSearchResult {
@@ -113,7 +124,10 @@ internal class FirecrawlSearchProvider(
         val key = keyProvider()?.trim()?.takeIf(String::isNotEmpty) ?: return BottleProviderCall(WebPageResult.SetupRequired)
         val body = buildJsonObject {
             put("url", safeUrl)
-            put("formats", buildJsonArray { add(kotlinx.serialization.json.JsonPrimitive("markdown")) })
+            put("formats", buildJsonArray {
+                add(kotlinx.serialization.json.JsonPrimitive("markdown"))
+                add(kotlinx.serialization.json.JsonPrimitive("html"))
+            })
         }.toString()
         return when (val response = transport.post(FIRECRAWL_SCRAPE_PATH, key, body, MAX_SCRAPE_RESPONSE_BYTES)) {
             is FirecrawlHttpResponse.Failure -> BottleProviderCall(response.status.toWebPageFailure(), response.status.takeIf { it in 100..599 })
@@ -215,6 +229,7 @@ internal fun parseFirecrawlPageResponse(raw: String): WebPageResult = runCatchin
     val markdown = data.string("markdown")?.take(MAX_PAGE_TEXT_CHARS)?.trim()?.takeIf(String::isNotEmpty)
         ?: return WebPageResult.InvalidResponse
     val metadata = data["metadata"] as? JsonObject
+    val html = data.string("html")?.take(MAX_STRUCTURED_HTML_CHARS).orEmpty()
     val source = metadata?.string("sourceURL")?.let(::normalizePublicHttpsUrl)
         ?: metadata?.string("url")?.let(::normalizePublicHttpsUrl)
         ?: return WebPageResult.InvalidResponse
@@ -224,9 +239,65 @@ internal fun parseFirecrawlPageResponse(raw: String): WebPageResult = runCatchin
             sourceUrl = source,
             markdown = markdown,
             provider = "Firecrawl",
+            structuredBottleIdentities = parseStructuredBottleIdentities(html),
         ),
     )
 }.getOrDefault(WebPageResult.InvalidResponse)
+
+/** Reads bounded JSON-LD/application-json scripts and retains only exact barcode/product pairs. */
+internal fun parseStructuredBottleIdentities(html: String): List<StructuredBottleIdentity> {
+    if (html.isBlank()) return emptyList()
+    val scriptRegex = Regex(
+        """(?is)<script\b[^>]*type\s*=\s*["'](?:application/ld\+json|application/json)["'][^>]*>(.*?)</script\s*>""",
+    )
+    val found = linkedSetOf<StructuredBottleIdentity>()
+    var visitedNodes = 0
+
+    fun walk(element: kotlinx.serialization.json.JsonElement, inheritedName: String?, depth: Int) {
+        if (depth > 16 || visitedNodes >= 5_000 || found.size >= 32) return
+        visitedNodes++
+        when (element) {
+            is JsonObject -> {
+                val isProduct = element["@type"]?.let { type ->
+                    when (type) {
+                        is JsonPrimitive -> type.contentOrNull.equals("Product", ignoreCase = true)
+                        is JsonArray -> type.any { (it as? JsonPrimitive)?.contentOrNull.equals("Product", ignoreCase = true) }
+                        else -> false
+                    }
+                } == true || element["variants"] is JsonArray
+                val ownName = element.string("name")?.trim()?.takeIf(String::isNotEmpty)
+                    ?: element.string("productName")?.trim()?.takeIf(String::isNotEmpty)
+                    ?: element.string("title")?.trim()?.takeIf(String::isNotEmpty)?.takeIf { isProduct }
+                val productName = ownName ?: inheritedName
+                val barcode = listOf("gtin8", "gtin12", "gtin13", "gtin14", "gtin", "barcode")
+                    .firstNotNullOfOrNull { key -> element.string(key)?.let(::normalizeStructuredBarcode) }
+                val name = productName?.take(180)?.takeIf(String::isNotBlank)
+                if (barcode != null && name != null) {
+                    found += StructuredBottleIdentity(
+                        barcode = barcode,
+                        productName = name,
+                        evidence = "Structured product fields: barcode $barcode; product $name",
+                    )
+                }
+                element.values.forEach { walk(it, productName, depth + 1) }
+            }
+            is JsonArray -> element.forEach { walk(it, inheritedName, depth + 1) }
+            else -> Unit
+        }
+    }
+
+    scriptRegex.findAll(html).take(32).forEach { match ->
+        val content = match.groupValues.getOrNull(1)?.take(128 * 1024) ?: return@forEach
+        runCatching { Json.parseToJsonElement(content) }.getOrNull()?.let { walk(it, null, 0) }
+    }
+    return found.toList().take(32)
+}
+
+private fun normalizeStructuredBarcode(raw: String): String? {
+    val digits = raw.trim()
+    if (!digits.matches(Regex("\\d{8}|\\d{12}|\\d{13}|\\d{14}"))) return null
+    return com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup(digits)
+}
 
 /** Restricts page retrieval to public HTTPS hostnames; local, literal-IP, credential and odd-port URLs are rejected. */
 internal fun normalizePublicHttpsUrl(raw: String): String? = runCatching {

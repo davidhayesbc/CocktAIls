@@ -49,6 +49,8 @@ class FirecrawlSearchProviderTest {
         assertTrue(provider.fetch("https://example.com/product") is WebPageResult.RateLimited)
         assertEquals(1, transport.calls)
         assertEquals("/v2/scrape", transport.lastPath)
+        assertTrue(transport.lastBody.contains("markdown"))
+        assertTrue(transport.lastBody.contains("html"))
     }
 
     @Test
@@ -80,6 +82,37 @@ class FirecrawlSearchProviderTest {
         assertEquals("https://example.com/item", page.sourceUrl)
         assertEquals("Firecrawl", page.provider)
         assertEquals(24_000, page.markdown.length)
+    }
+
+    @Test
+    fun scrapeParsesExactShopifyVariantBarcodeWithoutRetainingRawHtml() {
+        val html = """
+            <script type="application/json">
+              {"product":{"title":"Auchentoshan Three Wood","variants":[
+                {"title":"750ML","barcode":"5011333150725","sku":"703245"}
+              ]}}
+            </script>
+        """.trimIndent()
+        val response = parseFirecrawlPageResponse(
+            """{"success":true,"data":{"markdown":"Auchentoshan Three Wood\\n750 mL\\n43% ABV","html":${kotlinx.serialization.json.JsonPrimitive(html)},"metadata":{"title":"Auchentoshan Three Wood Single Malt Scotch Whisky | Canadian Liquor Store","sourceURL":"https://shop.example/auchentoshan"}}}""",
+        )
+
+        assertTrue(response is WebPageResult.Found)
+        val page = (response as WebPageResult.Found).page
+        assertEquals(1, page.structuredBottleIdentities.size)
+        assertEquals("5011333150725", page.structuredBottleIdentities.single().barcode)
+        assertEquals("Auchentoshan Three Wood", page.structuredBottleIdentities.single().productName)
+        assertFalse(page.markdown.contains("<script"))
+    }
+
+    @Test
+    fun structuredBarcodeFieldsMustContainOnlyDigits() {
+        val html = """<script type="application/ld+json">{"@type":"Product","name":"Gin","gtin13":"UPC: 5011333150725"}</script>"""
+        val response = parseFirecrawlPageResponse(
+            """{"success":true,"data":{"markdown":"Gin 40% ABV","html":${kotlinx.serialization.json.JsonPrimitive(html)},"metadata":{"title":"Gin","sourceURL":"https://shop.example/gin"}}}""",
+        )
+        assertTrue(response is WebPageResult.Found)
+        assertTrue((response as WebPageResult.Found).page.structuredBottleIdentities.isEmpty())
     }
 
     @Test

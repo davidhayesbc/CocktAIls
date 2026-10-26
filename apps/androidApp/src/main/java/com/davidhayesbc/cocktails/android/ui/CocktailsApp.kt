@@ -227,6 +227,7 @@ internal data class BottleWebSearchState(
     val userEditedFields: Set<BottleDraftField> = emptySet(),
     val automaticStage: String? = null,
     val barcodeVerifiedInPage: Boolean = false,
+    val barcodeVerifiedByStructuredProduct: Boolean = false,
     val message: String? = null,
 )
 
@@ -462,6 +463,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 userEditedFields = editedFields,
                 localMatch = repository.localProductForBarcode(draft.barcode.orEmpty()) != null,
                 barcodeVerifiedInPage = savedSuggestions?.targetBarcode != null,
+                barcodeVerifiedByStructuredProduct = savedSuggestions?.identityEvidence?.startsWith("Structured product fields:") == true,
                 page = savedSuggestions?.let { WebPageText("Verified source", it.sourceUrl, "", it.provider) },
                 extractedSuggestions = savedSuggestions,
                 message = when {
@@ -618,11 +620,13 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 val updated = when (result) {
                     is WebPageResult.Found -> {
                         val verified = draft.barcode?.let { sourceMentionsScannedBarcode(it, result.page.markdown) } == true
+                        val structured = !verified && draft.barcode?.let { structuredBottleIdentityForPage(it, result.page) } != null
                         previous.copy(
                             fetchingUrl = null,
                             page = result.page,
-                            barcodeVerifiedInPage = verified,
-                            message = if (previous.automatedScan && !verified) "This source page does not show the scanned barcode. No model extraction was run; choose another source or enter details manually." else null,
+                            barcodeVerifiedInPage = verified || structured,
+                            barcodeVerifiedByStructuredProduct = structured,
+                            message = if (previous.automatedScan && !verified && !structured) "This source page does not show the barcode in its text or structured product data. No model extraction was run; choose another source or enter details manually." else null,
                         )
                     }
                     WebPageResult.SetupRequired -> previous.copy(fetchingUrl = null, message = "Add a Firecrawl key in More before fetching a selected source.")
@@ -908,11 +912,11 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     barcode = draft.barcode.orEmpty(),
                     plan = scanPlan,
                     onDebugEvent = ::recordDebugEvent,
-                    onStage = { stage, sourceUrl ->
+                    onStage = { stage, sourceUrl, progressLabel ->
                         val stageLabel = when (stage) {
                             ScannedBottleStage.BARCODE_LOOKUP -> "Checking Open Food Facts"
                             ScannedBottleStage.WEB_SEARCH -> "Searching Firecrawl by exact barcode"
-                            ScannedBottleStage.SOURCE_FETCH -> "Checking a source page for the barcode"
+                            ScannedBottleStage.SOURCE_FETCH -> progressLabel ?: "Checking a source page for the barcode"
                             ScannedBottleStage.DETAIL_EXTRACTION -> if (scanExtractor == AutomaticBottleExtractor.ON_DEVICE) "Extracting details on this phone" else "Extracting details with Ollama Cloud"
                         }
                         val queueOperation = when (stage) {
@@ -994,7 +998,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             }
             val message = when {
                 result == null -> "Automatic lookup could not finish. Your bottle draft is still here; continue manually or retry."
-                result.page is WebPageResult.Found && !result.barcodeVerifiedInPage -> "The fetched page did not show this barcode. No model extraction was run; inspect a source or continue manually."
+                result.page is WebPageResult.Found && !result.barcodeVerifiedInPage -> "We checked up to three search results, but none tied a page to this barcode. You can inspect a source or continue manually."
                 candidateExtraction != null && extraction == null -> "Suggestions could not be saved with their source evidence. They were not applied; enter details manually."
                 result.extraction is BottleDetailExtractionResult.Found -> "Suggestions are ready in the review fields. Check the source and each value before accepting."
                 result.extraction != null -> "The enabled model could not produce verified details. Your draft is unchanged; continue manually."
@@ -1024,6 +1028,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 hits = (searchResult as? WebSearchResult.Found)?.hits.orEmpty(),
                 page = page,
                 barcodeVerifiedInPage = result?.barcodeVerifiedInPage == true,
+                barcodeVerifiedByStructuredProduct = result?.barcodeVerifiedByStructuredProduct == true,
                 extractedSuggestions = extraction,
                 message = message,
             ))
@@ -2477,7 +2482,7 @@ private fun BottleDraftCard(
                     }
                 }
             }
-            Text("An enabled Firecrawl search sends this barcode and normal network metadata. A selected source URL is fetched with your plan quota. No home, pantry, member details, label photo, or tasting note is sent.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("An enabled Firecrawl search sends this barcode and normal network metadata. The app checks up to three result pages for a matching barcode; each page fetch uses your plan quota. No home, pantry, member details, label photo, or tasting note is sent.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = onSearch, enabled = webSearchEnabled && !webSearchState.searching && webSearchState.fetchingUrl == null && webSearchState.automaticStage == null, modifier = Modifier.testTag("search-bottle-${draft.id}")) {
                     Text(if (webSearchState.searching) "Searching…" else "Search web")
@@ -2513,13 +2518,17 @@ private fun BottleDraftCard(
                     OutlinedButton(onClick = { onFetchSource(hit) }, enabled = webSearchState.fetchingUrl == null) { Text("Fetch this source text") }
                 }
             }
-            webSearchState.fetchingUrl?.let { Text("Fetching selected source…", style = MaterialTheme.typography.bodySmall) }
+            webSearchState.fetchingUrl?.let {
+                Text(webSearchState.automaticStage ?: "Fetching selected source…", style = MaterialTheme.typography.bodySmall)
+            }
             webSearchState.page?.let { page ->
                 Text(page.title ?: "Selected source", style = MaterialTheme.typography.titleSmall)
                 Text(page.sourceUrl, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                 Text(
-                    if (webSearchState.barcodeVerifiedInPage && webSearchState.automatedScan) "This page contains the scanned barcode. Evidence-backed suggestions are filled into this review only; edit or reject them before accepting."
-                    else if (webSearchState.barcodeVerifiedInPage) "This page contains the scanned barcode. Suggestions remain separate until you choose to apply them."
+                    if (webSearchState.barcodeVerifiedByStructuredProduct && webSearchState.automatedScan) "Structured product data on this page links the scanned barcode to the product title. Check every suggested value before accepting."
+                    else if (webSearchState.barcodeVerifiedByStructuredProduct) "Structured product data on this page links the barcode to the product title. Suggestions remain separate until you choose to apply them."
+                    else if (webSearchState.barcodeVerifiedInPage && webSearchState.automatedScan) "This page text contains the scanned barcode. Evidence-backed suggestions are filled into this review only; edit or reject them before accepting."
+                    else if (webSearchState.barcodeVerifiedInPage) "This page text contains the scanned barcode. Suggestions remain separate until you choose to apply them."
                     else "Source page text is untrusted and does not show the scanned barcode. Do not use it to identify this bottle.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -3438,7 +3447,7 @@ private fun HouseholdScreen(
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Column(Modifier.weight(1f)) {
                 Text("Allow automatic Firecrawl search", style = MaterialTheme.typography.titleSmall)
-                Text("When enabled, a scan starts one search for its exact barcode and fetches one result for review. Requests use your plan quota.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("When enabled, a user-started bottle scan searches its exact barcode and checks up to three result pages. Each page fetch uses your plan quota.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Switch(
                 checked = firecrawlSearchEnabled,
@@ -3447,7 +3456,7 @@ private fun HouseholdScreen(
                 modifier = Modifier.testTag("firecrawl-search-toggle"),
             )
         }
-        Text("A scanned lookup sends the barcode in the search query and the fetched result URL to Firecrawl, along with normal network metadata. Manual searches send the entered bottle name and brand. No home, pantry list, member name, or photo is sent. Search results and page text stay temporary during review and are not added to shared backups.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("A scanned lookup sends the barcode in its search query and may fetch up to three result URLs, along with normal network metadata. Manual searches send the entered bottle name and brand. No home, pantry list, member name, or photo is sent. Search results and page text stay temporary during review and are not added to shared backups.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("Search credentials are sent only to the fixed Firecrawl HTTPS API. The app does not store or use a shared project key.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onConfigureFirecrawl, modifier = Modifier.testTag("configure-firecrawl-key")) { Text(if (firecrawlKeySaved) "Replace Firecrawl key" else "Add Firecrawl key") }
@@ -3540,7 +3549,7 @@ private fun FirecrawlCredentialDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("The key is encrypted with this phone's Android Keystore. It is sent only in the Authorization header to api.firecrawl.dev and is never included in household backups or diagnostics.")
-                Text("Saving the key does not enable searches. Turn on Allow automatic Firecrawl search separately. Scans then search by barcode and fetch one result; requests consume your Firecrawl plan quota. The app will not upgrade your plan or enable paid top-ups.", style = MaterialTheme.typography.bodySmall)
+                Text("Saving the key does not enable searches. Turn on Allow automatic Firecrawl search separately. Scans search by barcode and may fetch up to three result pages to verify a match; each page fetch uses your Firecrawl plan quota. The app will not upgrade your plan or enable paid top-ups.", style = MaterialTheme.typography.bodySmall)
                 OutlinedTextField(
                     value = apiKey,
                     onValueChange = { apiKey = it; error = null },
@@ -3630,23 +3639,25 @@ private fun DiagnosticsDialog(
         title = { Text("Local diagnostics") },
         text = {
             Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()).testTag("diagnostics-dialog-scroll"), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Stored only on this phone. Nothing is uploaded automatically. Export or copy only when you choose to share.")
-                Text("Crash details include app/device version, camera event categories, and stack frames. Lookup reports include scanned barcode digits, provider/model status, safe source URLs, timings, HTTP statuses, and fixed rejection codes.")
-                Text("Reports exclude API keys and headers, raw responses, page text, prompts, bottle names, recipes, household/member data, photos, location, and exception messages.")
-                Text("This captures uncaught Java/Kotlin exceptions. It does not collect logcat and may not capture native crashes or ANRs.", style = MaterialTheme.typography.bodySmall)
                 Text("Latest bottle lookup report", style = MaterialTheme.typography.titleSmall)
                 Text(lookupPreview ?: "No barcode lookup report yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("latest-lookup-report-preview"))
                 if (lookupPreview != null) {
                     OutlinedButton(onClick = onCopyLookup, modifier = Modifier.fillMaxWidth().testTag("copy-bottle-lookup-report")) {
                         Text("Copy lookup debug report")
                     }
+                    lookupCopyMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
                 }
-                lookupCopyMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+                Text("Stored only on this phone. Nothing is uploaded automatically. Export or copy only when you choose to share.")
+                Text("Crash details include app/device version, camera event categories, and stack frames. Lookup reports include scanned barcode digits, provider/model status, safe source URLs, timings, HTTP statuses, and fixed rejection codes.")
+                Text("Reports exclude API keys and headers, raw responses, page text, prompts, bottle names, recipes, household/member data, photos, location, and exception messages.")
+                Text("This captures uncaught Java/Kotlin exceptions. It does not collect logcat and may not capture native crashes or ANRs.", style = MaterialTheme.typography.bodySmall)
                 Text(preview, style = MaterialTheme.typography.bodySmall)
                 clearError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         },
-        confirmButton = { Button(onClick = onExport) { Text("Export diagnostics") } },
+        confirmButton = {
+            Button(onClick = onExport) { Text("Export diagnostics") }
+        },
         dismissButton = {
             Row {
                 TextButton(onClick = { if (onClear()) onDismiss() else clearError = "Could not remove every local diagnostics file." }) { Text("Clear") }

@@ -51,4 +51,62 @@ class LocalBottleDetailExtractorTest {
 
         assertTrue(result is BottleDetailExtractionResult.Rejected)
     }
+
+    @Test
+    fun acceptsExactStructuredVariantIdentityAndRejectsModelNameFromAnotherProduct() = runBlocking {
+        val identity = StructuredBottleIdentity(
+            "5011333150725",
+            "Auchentoshan Three Wood",
+            "Structured product fields: barcode 5011333150725; product Auchentoshan Three Wood",
+        )
+        val page = WebPageText(
+            "Auchentoshan Three Wood Single Malt Scotch Whisky | Canadian Liquor Store",
+            "https://shop.example/auchentoshan-three-wood",
+            "750 mL bottle. 43% ABV. Alternative: Other Reserve 700 mL.",
+            "Firecrawl",
+            listOf(identity),
+        )
+        val output = """{"facts":[{"field":"quantity","value":"750 mL","evidence":"750 mL bottle"},{"field":"abv_percent","value":"43%","evidence":"43% ABV"}]}"""
+        var prompt = ""
+        val extractor = LocalBottleDetailExtractor({ "/model.gguf" }, LocalInferenceRunner { _, _, userPrompt, _ ->
+            prompt = userPrompt
+            output
+        })
+
+        val result = extractor.extract(page, LOCAL_MODEL_LABEL, "5011333150725")
+        assertTrue(result is BottleDetailExtractionResult.Found)
+        val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
+        assertEquals("5011333150725", suggestions.targetBarcode)
+        assertEquals(identity.evidence, suggestions.identityEvidence)
+        assertEquals("Auchentoshan Three Wood", suggestions.facts.first { it.field == BottleFactField.PRODUCT_NAME }.value)
+        assertTrue(prompt.contains(identity.productName))
+        assertFalse(prompt.contains(identity.barcode))
+
+        val wrongNameExtractor = LocalBottleDetailExtractor({ "/model.gguf" }, LocalInferenceRunner { _, _, _, _ ->
+            """{"facts":[{"field":"product_name","value":"Other Reserve","evidence":"Other Reserve 700 mL"}]}"""
+        })
+        assertTrue(wrongNameExtractor.extract(page, LOCAL_MODEL_LABEL, "5011333150725") is BottleDetailExtractionResult.Rejected)
+    }
+
+    @Test
+    fun scannedBarcodeIsBoundLocallyAndRedactedFromInferencePrompt() = runBlocking {
+        val page = WebPageText(
+            "North Star Gin",
+            "https://shop.example/north-star",
+            "UPC 5011333150725 belongs to North Star Gin, 40% ABV.",
+            "Firecrawl",
+        )
+        var prompt = ""
+        val extractor = LocalBottleDetailExtractor({ "/model.gguf" }, LocalInferenceRunner { _, _, userPrompt, _ ->
+            prompt = userPrompt
+            """{"facts":[{"field":"product_name","value":"North Star Gin","evidence":"North Star Gin, 40% ABV"}]}"""
+        })
+
+        val result = extractor.extract(page, LOCAL_MODEL_LABEL, "5011333150725")
+        assertTrue(result is BottleDetailExtractionResult.Found)
+        val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
+        assertEquals("5011333150725", suggestions.targetBarcode)
+        assertTrue(prompt.contains("[barcode omitted]"))
+        assertFalse(prompt.contains("5011333150725"))
+    }
 }

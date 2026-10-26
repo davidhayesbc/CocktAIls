@@ -226,6 +226,123 @@ class ScannedBottleWorkflowTest {
     }
 
     @Test
+    fun automaticScanContinuesAfterFirstPageMismatchAndExtractsOnlyVerifiedCandidate() = runBlocking {
+        val hits = listOf(
+            WebSearchHit("Product 5011333150725", "https://shop.example/first", "UPC 5011333150725"),
+            WebSearchHit("Product 5011333150725", "https://shop.example/second", "UPC 5011333150725"),
+            WebSearchHit("Product 5011333150725", "https://shop.example/third", "UPC 5011333150725"),
+        )
+        val fetched = mutableListOf<String>()
+        val extracted = mutableListOf<String>()
+        val stages = mutableListOf<String>()
+        val events = mutableListOf<BottleLookupDebugEvent>()
+        val coordinator = ScannedBottleEnrichmentCoordinator(
+            lookup = { BottleProviderCall(OpenFoodFactsLookupResult.NotFound) },
+            search = { BottleProviderCall(WebSearchResult.Found(hits)) },
+            fetch = { url ->
+                fetched += url
+                val markdown = if (url == hits.first().url) {
+                    "Auchentoshan Three Wood 750 mL and 43% ABV, but no code was rendered."
+                } else {
+                    "UPC 5011333150725 belongs to Auchentoshan Three Wood. 750 mL and 43% ABV."
+                }
+                BottleProviderCall(WebPageResult.Found(WebPageText("Auchentoshan Three Wood", url, markdown, "Firecrawl")), 200)
+            },
+            extract = { page, provider, requiredBarcode ->
+                extracted += page.sourceUrl
+                assertEquals("5011333150725", requiredBarcode)
+                assertEquals(hits[1].url, page.sourceUrl)
+                BottleProviderCall(BottleDetailExtractionResult.InvalidResponse)
+            },
+        )
+
+        val result = coordinator.processScannedBarcode(
+            "5011333150725",
+            ScannedBottlePlan(false, true, AutomaticBottleExtractor.ON_DEVICE),
+            onStage = { stage, _, progress -> if (stage == ScannedBottleStage.SOURCE_FETCH) stages += progress.orEmpty() },
+            onDebugEvent = events::add,
+        )
+
+        assertEquals(listOf(hits[0].url, hits[1].url), fetched)
+        assertEquals(listOf(hits[1].url), extracted)
+        assertEquals(2, stages.size)
+        assertTrue(stages.first().contains("1 of 3"))
+        assertTrue(stages.last().contains("2 of 3"))
+        assertEquals(hits[1], result.selectedHit)
+        assertTrue(result.barcodeVerifiedInPage)
+        assertEquals("BARCODE_MISSING", events.first { it.stage == BottleLookupDebugStage.BARCODE_MATCH }.result)
+        assertEquals("BARCODE_VERIFIED", events.last { it.stage == BottleLookupDebugStage.BARCODE_MATCH }.result)
+    }
+
+    @Test
+    fun automaticScanStopsAfterThreePageFetchesAndStopsImmediatelyOnQuota() = runBlocking {
+        val hits = (1..5).map { index ->
+            WebSearchHit("Product 5011333150725 result $index", "https://shop.example/$index", "UPC 5011333150725")
+        }
+        var fetchCount = 0
+        var extractCount = 0
+        val allMismatches = ScannedBottleEnrichmentCoordinator(
+            lookup = { BottleProviderCall(OpenFoodFactsLookupResult.NotFound) },
+            search = { BottleProviderCall(WebSearchResult.Found(hits)) },
+            fetch = { url ->
+                fetchCount++
+                BottleProviderCall(WebPageResult.Found(WebPageText("Wrong product", url, "UPC 5011333150733", "Firecrawl")))
+            },
+            extract = { _, _, _ -> extractCount++; BottleProviderCall(BottleDetailExtractionResult.InvalidResponse) },
+        ).processScannedBarcode("5011333150725", ScannedBottlePlan(false, true, AutomaticBottleExtractor.ON_DEVICE))
+        assertEquals(MAX_AUTOMATIC_SOURCE_FETCHES, fetchCount)
+        assertEquals(0, extractCount)
+        assertFalse(allMismatches.barcodeVerifiedInPage)
+
+        fetchCount = 0
+        val quota = ScannedBottleEnrichmentCoordinator(
+            lookup = { BottleProviderCall(OpenFoodFactsLookupResult.NotFound) },
+            search = { BottleProviderCall(WebSearchResult.Found(hits)) },
+            fetch = { fetchCount++; BottleProviderCall(WebPageResult.QuotaExceeded, 402) },
+            extract = { _, _, _ -> extractCount++; BottleProviderCall(BottleDetailExtractionResult.InvalidResponse) },
+        ).processScannedBarcode("5011333150725", ScannedBottlePlan(false, true, AutomaticBottleExtractor.ON_DEVICE))
+        assertEquals(1, fetchCount)
+        assertEquals(WebPageResult.QuotaExceeded, quota.page)
+        assertEquals(0, extractCount)
+    }
+
+    @Test
+    fun exactStructuredVariantBarcodeIsAcceptedOnlyWhenUniqueAndTitleMatches() = runBlocking {
+        val identity = StructuredBottleIdentity(
+            "5011333150725", "Auchentoshan Three Wood",
+            "Structured product fields: barcode 5011333150725; product Auchentoshan Three Wood",
+        )
+        val page = WebPageText(
+            "Auchentoshan Three Wood Single Malt Scotch Whisky | Canadian Liquor Store",
+            "https://shop.example/auchentoshan-three-wood",
+            "750 mL bottle. 43% ABV.",
+            "Firecrawl",
+            listOf(identity),
+        )
+        assertEquals(identity, structuredBottleIdentityForPage("5011333150725", page))
+        assertNull(structuredBottleIdentityForPage("5011333150725", page.copy(title = "Other Reserve")))
+        assertNull(structuredBottleIdentityForPage("5011333150725", page.copy(structuredBottleIdentities = listOf(
+            identity,
+            identity.copy(productName = "Other Reserve", evidence = "Structured product fields: barcode 5011333150725; product Other Reserve"),
+        )))
+
+        var extractorSawProof = false
+        val result = ScannedBottleEnrichmentCoordinator(
+            lookup = { BottleProviderCall(OpenFoodFactsLookupResult.NotFound) },
+            search = { BottleProviderCall(WebSearchResult.Found(listOf(WebSearchHit("Auchentoshan Three Wood 5011333150725", page.sourceUrl, "UPC 5011333150725")))) },
+            fetch = { BottleProviderCall(WebPageResult.Found(page)) },
+            extract = { fetchedPage, _, requiredBarcode ->
+                extractorSawProof = requiredBarcode == "5011333150725" && structuredBottleIdentityForPage(requiredBarcode, fetchedPage) == identity
+                BottleProviderCall(BottleDetailExtractionResult.InvalidResponse)
+            },
+        ).processScannedBarcode("5011333150725", ScannedBottlePlan(false, true, AutomaticBottleExtractor.ON_DEVICE))
+
+        assertTrue(result.barcodeVerifiedInPage)
+        assertTrue(result.barcodeVerifiedByStructuredProduct)
+        assertTrue(extractorSawProof)
+    }
+
+    @Test
     fun debugTraceRecordsProviderStatusTimingsAndBarcodeRejectionWithoutPageText() = runBlocking {
         val events = mutableListOf<BottleLookupDebugEvent>()
         val coordinator = ScannedBottleEnrichmentCoordinator(

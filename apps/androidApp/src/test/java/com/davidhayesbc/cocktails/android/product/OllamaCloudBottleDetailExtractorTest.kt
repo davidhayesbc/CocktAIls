@@ -1,6 +1,9 @@
 package com.davidhayesbc.cocktails.android.product
 
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -34,6 +37,42 @@ class OllamaCloudBottleDetailExtractorTest {
         assertFalse(transport.lastBody.contains("\"format\""))
         assertTrue(transport.lastBody.contains("untrusted data"))
         assertEquals(1, transport.calls)
+    }
+
+    @Test
+    fun structuredBarcodeBindingUsesProductTitleButDoesNotSendBarcodeToCloudModel() = runBlocking {
+        val identity = StructuredBottleIdentity(
+            "5011333150725",
+            "Auchentoshan Three Wood",
+            "Structured product fields: barcode 5011333150725; product Auchentoshan Three Wood",
+        )
+        val page = WebPageText(
+            title = "Auchentoshan Three Wood Single Malt Scotch Whisky | Canadian Liquor Store",
+            sourceUrl = "https://example.org/auchentoshan-three-wood",
+            markdown = "750 mL bottle. 43% ABV.",
+            provider = "Firecrawl",
+            structuredBottleIdentities = listOf(identity),
+        )
+        val transport = FakeTransport(OllamaCloudHttpResponse.Success(response(
+            """{"facts":[{"field":"quantity","value":"750 mL","evidence":"750 mL bottle"},{"field":"abv_percent","value":"43%","evidence":"43% ABV"}]}""",
+        )))
+        val result = OllamaCloudBottleDetailExtractor({ "synthetic-key" }, transport)
+            .extract(page, "qwen3:8b-cloud", "5011333150725")
+
+        assertTrue(result is BottleDetailExtractionResult.Found)
+        val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
+        assertEquals("5011333150725", suggestions.targetBarcode)
+        assertEquals(identity.evidence, suggestions.identityEvidence)
+        assertEquals("Auchentoshan Three Wood", suggestions.facts.first { it.field == BottleFactField.PRODUCT_NAME }.value)
+        assertTrue(transport.lastBody.contains(identity.productName))
+        assertFalse(transport.lastBody.contains(identity.barcode))
+        val request = kotlinx.serialization.json.Json.parseToJsonElement(transport.lastBody).jsonObject
+        val messages = request.getValue("messages").jsonArray
+        val system = messages[0].jsonObject.getValue("content").jsonPrimitive.content
+        val user = messages[1].jsonObject.getValue("content").jsonPrimitive.content
+        assertFalse(system.contains(identity.productName))
+        assertTrue(user.contains("TARGET PRODUCT NAME (untrusted metadata"))
+        assertFalse(user.contains(identity.barcode))
     }
 
     @Test
@@ -138,16 +177,19 @@ class OllamaCloudBottleDetailExtractorTest {
 
     @Test
     fun cloudRequestForScannedBottleRequiresExactCodeAndProductIdentityEvidence() = runBlocking {
-        val page = source.copy(markdown = "UPC 5011333150725 applies to Example Gin 40% ABV.")
-        val content = """{"identity":{"barcode":"5011333150725","evidence":"UPC 5011333150725 applies to Example Gin"},"facts":[{"field":"product_name","value":"Example Gin","evidence":"UPC 5011333150725 applies to Example Gin"},{"field":"abv_percent","value":"40%","evidence":"Example Gin 40% ABV"}]}"""
+        val page = source.copy(markdown = "UPC 5011333150725 applies to Example Gin. Example Gin is 40% ABV.")
+        val content = """{"facts":[{"field":"product_name","value":"Example Gin","evidence":"Example Gin"},{"field":"abv_percent","value":"40%","evidence":"Example Gin is 40% ABV"}]}"""
         val transport = FakeTransport(OllamaCloudHttpResponse.Success(response(content)))
         val provider = OllamaCloudBottleDetailExtractor({ "synthetic-key" }, transport)
 
         val result = provider.extract(page, "qwen3:8b-cloud", "5011333150725")
 
         assertTrue(result is BottleDetailExtractionResult.Found)
-        assertTrue(transport.lastBody.contains("identity"))
-        assertTrue(transport.lastBody.contains("5011333150725"))
+        assertEquals("5011333150725", (result as BottleDetailExtractionResult.Found).suggestions.targetBarcode)
+        assertTrue((result as BottleDetailExtractionResult.Found).suggestions.identityEvidence.orEmpty().contains("UPC 5011333150725"))
+        assertFalse(transport.lastBody.contains("identity"))
+        assertFalse(transport.lastBody.contains("5011333150725"))
+        assertTrue(transport.lastBody.contains("[barcode omitted]"))
     }
 
     @Test
