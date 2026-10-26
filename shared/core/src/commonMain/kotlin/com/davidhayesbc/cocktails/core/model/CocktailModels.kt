@@ -100,6 +100,33 @@ data class BottleIntakeSession(
     val drafts: List<BottleIntakeDraft>,
 )
 
+/** A validated extractor fact awaiting explicit acceptance with its bottle draft. */
+data class ProductFactSourceDraft(
+    val retrievalProvider: String,
+    val extractionProvider: String,
+    val extractionModel: String,
+    val sourceUrl: String,
+    val fieldName: String,
+    val fieldValue: String,
+    val evidenceQuote: String,
+    val licenseName: String? = null,
+)
+
+/** Minimal source trail for an accepted product fact; raw page text and credentials are never stored. */
+data class ProductFactSource(
+    val id: String,
+    val productId: String,
+    val retrievalProvider: String,
+    val extractionProvider: String,
+    val extractionModel: String,
+    val sourceUrl: String,
+    val fieldName: String,
+    val fieldValue: String,
+    val evidenceQuote: String,
+    val licenseName: String? = null,
+    val createdAt: Long,
+)
+
 sealed interface BottleIntakeCommitResult {
     data class Confirmed(val bottleCount: Int) : BottleIntakeCommitResult
     data class AlreadyConfirmed(val bottleCount: Int) : BottleIntakeCommitResult

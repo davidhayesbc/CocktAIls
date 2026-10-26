@@ -12,11 +12,62 @@ internal fun scannedBottleSearchQuery(barcode: String): String? {
 /** The source page must identify the scanned item before its text is sent to an extractor. */
 internal fun sourceMentionsScannedBarcode(barcode: String, sourceText: String): Boolean {
     val expected = normalizeGtinForLookup(barcode) ?: return false
-    val candidates = Regex("(?<!\\d)(?:\\d[\\s-]?){7,17}(?!\\d)")
-        .findAll(sourceText)
-        .map { it.value.filter(Char::isDigit) }
-    return candidates.any { normalizeGtinForLookup(it) == expected }
+    return sourceBarcodeCandidates(sourceText).any { it == expected }
 }
+
+/**
+ * Finds evidence scoped to a single product passage. A page-level barcode match is not enough: nearby
+ * recommendations or another barcode must never lend a different product name to the scanned bottle.
+ */
+internal fun scannedProductIdentityPassage(
+    barcode: String,
+    productName: String,
+    sourceText: String,
+    identityQuote: String,
+): String? {
+    val expected = normalizeGtinForLookup(barcode) ?: return null
+    val cleanName = productName.trim().takeIf(String::isNotEmpty) ?: return null
+    val cleanQuote = identityQuote.trim().takeIf(String::isNotEmpty) ?: return null
+    val quotePassages = splitIdentityPassages(cleanQuote)
+    if (quotePassages.size != 1) return null
+
+    val section = splitProductSections(sourceText).firstOrNull { candidate ->
+        candidate.contains(cleanQuote, ignoreCase = true)
+    } ?: return null
+    val sectionBarcodes = sourceBarcodeCandidates(section).toSet()
+    if (sectionBarcodes != setOf(expected)) return null
+
+    val passage = splitIdentityPassages(section).firstOrNull { candidate ->
+        candidate.contains(cleanQuote, ignoreCase = true) &&
+            candidate.contains(cleanName, ignoreCase = true) &&
+            sourceMentionsScannedBarcode(barcode, candidate)
+    } ?: return null
+    if (Regex("(?i)\\b(?:related|similar|recommended|recommendation|alternative|other\\s+products?)\\b")
+            .containsMatchIn(passage)
+    ) return null
+    return section
+}
+
+private fun sourceBarcodeCandidates(text: String): Sequence<String> =
+    Regex("(?<!\\d)(?:\\d[\\s-]?){7,17}(?!\\d)")
+        .findAll(text)
+        .mapNotNull { normalizeGtinForLookup(it.value.filter(Char::isDigit)) }
+
+/** Markdown headings, blank lines, horizontal rules and list items define conservative product blocks. */
+private fun splitProductSections(text: String): List<String> = text
+    .replace("\r\n", "\n")
+    .replace("\r", "\n")
+    .split(Regex("(?m)(?:^\\s*#{1,6}\\s+|^\\s*(?:[-*_]\\s*){3,}\\s*$|^\\s*[-*+]\\s+|^\\s*\\d+\\.\\s+)|\\n\\s*\\n"))
+    .map(String::trim)
+    .filter(String::isNotEmpty)
+
+/** Keep the barcode/name association inside one sentence or line, never a quote spanning passages. */
+private fun splitIdentityPassages(text: String): List<String> = text
+    .replace("\r\n", "\n")
+    .replace("\r", "\n")
+    .split(Regex("(?<=[.!?;])\\s+|\\n+|\\s+[|•]\\s+"))
+    .map(String::trim)
+    .filter(String::isNotEmpty)
 
 internal enum class AutomaticBottleExtractor { ON_DEVICE, OLLAMA_CLOUD }
 

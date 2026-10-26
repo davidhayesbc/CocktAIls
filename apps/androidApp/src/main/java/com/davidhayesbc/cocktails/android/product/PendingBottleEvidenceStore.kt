@@ -44,6 +44,7 @@ internal class PendingBottleEvidenceStore(private val storage: PendingBottleEvid
             put("version", 1)
             put("provider", suggestions.provider.take(80))
             put("model", suggestions.model.take(128))
+            put("retrieval_provider", suggestions.retrievalProvider.take(120))
             put("source_url", sourceUrl)
             suggestions.targetBarcode?.let { put("target_barcode", it) }
             suggestions.identityEvidence?.let { put("identity_evidence", it.take(MAX_EVIDENCE_QUOTE_CHARS)) }
@@ -107,6 +108,7 @@ internal class PendingBottleEvidenceStore(private val storage: PendingBottleEvid
         BottleDetailSuggestions(
             provider = provider,
             model = model,
+            retrievalProvider = root["retrieval_provider"]?.jsonPrimitive?.contentOrNull?.takeIf { it.length <= 120 } ?: "Unknown",
             sourceUrl = sourceUrl,
             facts = facts,
             unresolvedFields = unresolved,

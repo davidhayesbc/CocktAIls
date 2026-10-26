@@ -110,6 +110,7 @@ import com.davidhayesbc.cocktails.core.model.LocalProductBarcodeMatch
 import com.davidhayesbc.cocktails.core.model.BottleIntakeSession
 import com.davidhayesbc.cocktails.core.model.BottleIntakeDraft
 import com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult
+import com.davidhayesbc.cocktails.core.model.ProductFactSourceDraft
 import com.davidhayesbc.cocktails.core.model.RecipeDetail
 import com.davidhayesbc.cocktails.core.model.RecipeStyle
 import com.davidhayesbc.cocktails.core.model.RecipeIngredientDraft
@@ -1410,7 +1411,35 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 onHomeChanged = { home -> repository.setBottleIntakeHome(bottleIntakeSession!!.id, home, System.currentTimeMillis()); bottleIntakeSession = repository.openBottleIntakeSession() },
                 onLevelChanged = { level -> repository.setBottleIntakeDefaultLevel(bottleIntakeSession!!.id, level, System.currentTimeMillis()); bottleIntakeSession = repository.openBottleIntakeSession() },
                 onConfirm = {
-                    val result = repository.confirmBottleIntakeSession(bottleIntakeSession!!.id, System.currentTimeMillis())
+                    val session = bottleIntakeSession!!
+                    val nowMillis = System.currentTimeMillis()
+                    val sourcesByDraftId = session.drafts.mapNotNull { draft ->
+                        val suggestions = bottleWebSearchStates[draft.id]?.extractedSuggestions
+                            ?: pendingBottleEvidenceStore.read(draft.id)
+                        val scanned = draft.barcode?.let(::normalizeGtinForLookup)
+                        if (suggestions == null || scanned == null ||
+                            suggestions.targetBarcode?.let(::normalizeGtinForLookup) != scanned ||
+                            suggestions.identityEvidence?.let { sourceMentionsScannedBarcode(draft.barcode.orEmpty(), it) } != true
+                        ) return@mapNotNull null
+                        val acceptedFacts = suggestions.facts.mapNotNull { fact ->
+                            val accepted = when (fact.field) {
+                                BottleFactField.PRODUCT_NAME -> fact.value == draft.productName || fact.value == draft.ingredientName
+                                BottleFactField.BRAND -> fact.value == draft.brand
+                                else -> false
+                            }
+                            if (!accepted) null else ProductFactSourceDraft(
+                                retrievalProvider = suggestions.retrievalProvider,
+                                extractionProvider = suggestions.provider,
+                                extractionModel = suggestions.model,
+                                sourceUrl = suggestions.sourceUrl,
+                                fieldName = fact.field.wireValue,
+                                fieldValue = fact.value,
+                                evidenceQuote = fact.quote,
+                            )
+                        }
+                        acceptedFacts.takeIf { it.isNotEmpty() }?.let { draft.id to it }
+                    }.toMap()
+                    val result = repository.confirmBottleIntakeSession(session.id, nowMillis, sourcesByDraftId)
                     when (result) {
                         is BottleIntakeCommitResult.Confirmed, is BottleIntakeCommitResult.AlreadyConfirmed -> {
                             cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = false)

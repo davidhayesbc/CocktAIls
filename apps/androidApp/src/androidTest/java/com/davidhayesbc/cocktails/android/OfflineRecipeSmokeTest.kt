@@ -235,7 +235,10 @@ class OfflineRecipeSmokeTest {
 
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("This page contains the scanned barcode. Evidence-backed suggestions are filled into this review only; edit or reject them before accepting."))
             composeRule.onNodeWithText("This page contains the scanned barcode. Evidence-backed suggestions are filled into this review only; edit or reject them before accepting.").assertIsDisplayed()
-            composeRule.onNodeWithText("Bottle size is unclear in this source. No value was selected; check it manually.").assertIsDisplayed()
+            val bottleSizeWarning = "Bottle size is unclear in this source. No value was selected; check it manually."
+            composeRule.onNodeWithText(bottleSizeWarning).assertExists()
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText(bottleSizeWarning))
+            composeRule.onNodeWithText(bottleSizeWarning).assertIsDisplayed()
             composeRule.onNodeWithTag("bottle-intake-draft-name-0").assert(
                 SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("Auchentoshan Three Wood")),
             )
@@ -441,7 +444,7 @@ class OfflineRecipeSmokeTest {
     }
 
     private fun keepBottleIntakeForLater() {
-        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("Keep for later"))
+        // Keep for later is in the fixed footer, outside the scrollable draft content.
         composeRule.onNodeWithText("Keep for later").performClick()
     }
 

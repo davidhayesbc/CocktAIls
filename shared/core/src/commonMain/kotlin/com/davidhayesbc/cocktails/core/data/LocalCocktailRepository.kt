@@ -12,6 +12,8 @@ import com.davidhayesbc.cocktails.core.model.BottleIntakeDraft
 import com.davidhayesbc.cocktails.core.model.BottleIntakeSession
 import com.davidhayesbc.cocktails.core.model.BottleIntakeSessionStatus
 import com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult
+import com.davidhayesbc.cocktails.core.model.ProductFactSource
+import com.davidhayesbc.cocktails.core.model.ProductFactSourceDraft
 import com.davidhayesbc.cocktails.core.model.CocktailFamilyId
 import com.davidhayesbc.cocktails.core.model.RecipeCard
 import com.davidhayesbc.cocktails.core.model.RecipeDetail
@@ -47,6 +49,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -1036,12 +1039,33 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
     }
 
     /** Promotes all drafts atomically; a confirmed marker makes retries idempotent. */
-    fun confirmBottleIntakeSession(sessionId: String, nowMillis: Long): BottleIntakeCommitResult = database.transactionWithResult {
+    fun confirmBottleIntakeSession(
+        sessionId: String,
+        nowMillis: Long,
+        productSourcesByDraftId: Map<String, List<ProductFactSourceDraft>> = emptyMap(),
+    ): BottleIntakeCommitResult = database.transactionWithResult {
         val session = queries.selectBottleIntakeSession(sessionId).executeAsOneOrNull()
             ?: return@transactionWithResult BottleIntakeCommitResult.Invalid("Intake session no longer exists.")
         if (session.status == "CONFIRMED") return@transactionWithResult BottleIntakeCommitResult.AlreadyConfirmed(session.confirmed_count.toInt())
         val drafts = queries.selectBottleIntakeDrafts(sessionId).executeAsList()
         if (drafts.isEmpty()) return@transactionWithResult BottleIntakeCommitResult.Invalid("Add at least one bottle before confirming.")
+        if (productSourcesByDraftId.keys.any { draftId -> drafts.none { it.id == draftId } } ||
+            productSourcesByDraftId.values.flatten().anyNot(::isValidProductFactSourceDraft)
+        ) return@transactionWithResult BottleIntakeCommitResult.Invalid("A product source note is incomplete or belongs to another bottle.")
+        for (draft in drafts) {
+            val sources = productSourcesByDraftId[draft.id].orEmpty()
+            if (sources.isNotEmpty() && draft.barcode == null) {
+                return@transactionWithResult BottleIntakeCommitResult.Invalid("Product source notes can only be saved with a scanned product barcode.")
+            }
+            if (sources.any { source ->
+                    when (source.fieldName) {
+                        "product_name" -> source.fieldValue != draft.product_name && source.fieldValue != draft.ingredient_name
+                        "brand" -> source.fieldValue != draft.brand
+                        else -> true
+                    }
+                }
+            ) return@transactionWithResult BottleIntakeCommitResult.Invalid("A source suggestion no longer matches the bottle details being saved.")
+        }
         val draftBarcodes = mutableMapOf<String, Pair<String, String>>()
         for (draft in drafts) {
             if (draft.ingredient_name.isBlank()) return@transactionWithResult BottleIntakeCommitResult.Invalid("A bottle needs an ingredient name before confirmation.")
@@ -1074,7 +1098,14 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                 val normalized = normalizeGtinForLookup(barcode) ?: return@transactionWithResult BottleIntakeCommitResult.Invalid("A draft barcode is invalid.")
                 queries.selectProductsForBarcodeDeduplication().executeAsList().firstOrNull { normalizeGtinForLookup(it.barcode.orEmpty()) == normalized }
             }
-            if (writeBottleDraft(draft, product?.id, memberId, nowMillis).not()) {
+            if (writeBottleDraft(
+                    draft,
+                    product?.id,
+                    memberId,
+                    nowMillis,
+                    productSourcesByDraftId[draft.id].orEmpty(),
+                ).not()
+            ) {
                 error("Bottle intake validation failed during atomic commit.")
             }
         }
@@ -1098,7 +1129,13 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         level = InventoryLevel.valueOf(level), createdAt = createdAt,
     )
 
-    private fun writeBottleDraft(draft: Bottle_intake_draft, matchedProductId: String?, memberId: String, nowMillis: Long): Boolean {
+    private fun writeBottleDraft(
+        draft: Bottle_intake_draft,
+        matchedProductId: String?,
+        memberId: String,
+        nowMillis: Long,
+        sourceFacts: List<ProductFactSourceDraft>,
+    ): Boolean {
         val ingredientName = draft.ingredient_name.trim()
         val category = draft.category.trim().ifEmpty { "Other" }
         val exact = queries.selectIngredientByNameAndCategory(ingredientName, category).executeAsOneOrNull()
@@ -1128,9 +1165,76 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             val product = queries.selectProductById(productId).executeAsOne()
             writeRevision(productId, "PRODUCT", memberId, nowMillis, jsonObject("id" to jsonString(productId), "ingredientId" to jsonString(product.ingredient_id), "brand" to nullableJsonString(product.brand), "productName" to jsonString(product.product_name), "barcode" to (product.barcode?.let(::jsonString) ?: "null"), "photoSha256" to (draft.photo_sha256?.let(::jsonString) ?: "null"), "createdAt" to product.created_at.toString()))
         }
+        if (sourceFacts.isNotEmpty()) {
+            if (productId == null) return false
+            sourceFacts.forEachIndexed { index, fact ->
+                val sourceId = newUuidV7(nowMillis + draft.position * 100L + index + 1L)
+                queries.insertProductSourceIgnore(
+                    sourceId, productId, fact.retrievalProvider, fact.extractionProvider, fact.extractionModel,
+                    fact.sourceUrl, fact.fieldName, fact.fieldValue, fact.evidenceQuote, fact.licenseName, nowMillis,
+                )
+            }
+            val product = queries.selectProductById(productId).executeAsOne()
+            val payload = jsonObject(
+                "id" to jsonString(productId),
+                "ingredientId" to jsonString(product.ingredient_id),
+                "brand" to nullableJsonString(product.brand),
+                "productName" to jsonString(product.product_name),
+                "barcode" to (product.barcode?.let(::jsonString) ?: "null"),
+                "photoSha256" to (product.photo_sha256?.let(::jsonString) ?: "null"),
+                "createdAt" to product.created_at.toString(),
+                "sourceEvidence" to productSourceEvidenceJson(productId),
+            )
+            writeRevision(productId, "PRODUCT", memberId, nowMillis, payload)
+        }
         writeInventory(draft.location_id, ingredientId, InventoryLevel.valueOf(draft.level), memberId, nowMillis, productId)
         return true
     }
+
+    fun productFactSources(productId: String): List<ProductFactSource> = queries.selectProductSourcesForProduct(productId).executeAsList().map { row ->
+        ProductFactSource(
+            id = row.id, productId = row.product_id, retrievalProvider = row.retrieval_provider,
+            extractionProvider = row.extraction_provider, extractionModel = row.extraction_model,
+            sourceUrl = row.source_url, fieldName = row.field_name, fieldValue = row.field_value,
+            evidenceQuote = row.evidence_quote, licenseName = row.license_name, createdAt = row.created_at,
+        )
+    }
+
+    private fun productSourceEvidenceJson(productId: String): String = Json.encodeToString(
+        JsonArray.serializer(),
+        buildJsonArray {
+            productFactSources(productId).forEach { source ->
+                add(buildJsonObject {
+                    put("id", JsonPrimitive(source.id))
+                    put("productId", JsonPrimitive(source.productId))
+                    put("retrievalProvider", JsonPrimitive(source.retrievalProvider))
+                    put("extractionProvider", JsonPrimitive(source.extractionProvider))
+                    put("extractionModel", JsonPrimitive(source.extractionModel))
+                    put("sourceUrl", JsonPrimitive(source.sourceUrl))
+                    put("fieldName", JsonPrimitive(source.fieldName))
+                    put("fieldValue", JsonPrimitive(source.fieldValue))
+                    put("evidenceQuote", JsonPrimitive(source.evidenceQuote))
+                    put("licenseName", source.licenseName?.let(::JsonPrimitive) ?: JsonNull)
+                    put("createdAt", JsonPrimitive(source.createdAt))
+                })
+            }
+        },
+    )
+
+    private fun isValidProductFactSourceDraft(source: ProductFactSourceDraft): Boolean =
+        source.retrievalProvider.isNotBlank() && source.retrievalProvider.length <= 120 &&
+            source.extractionProvider.isNotBlank() && source.extractionProvider.length <= 120 &&
+            source.extractionModel.isNotBlank() && source.extractionModel.length <= 128 &&
+            source.sourceUrl.length in 9..2048 && source.sourceUrl.startsWith("https://", ignoreCase = true) &&
+            source.sourceUrl.substringAfter("https://").substringBefore('/').isNotBlank() &&
+            '@' !in source.sourceUrl.substringAfter("https://").substringBefore('/') &&
+            source.fieldName in setOf("product_name", "brand", "quantity", "abv_percent") &&
+            source.fieldValue.isNotBlank() && source.fieldValue.length <= 120 &&
+            source.evidenceQuote.isNotBlank() && source.evidenceQuote.length <= 320 &&
+            source.evidenceQuote.contains(source.fieldValue, ignoreCase = true) &&
+            (source.licenseName == null || source.licenseName.length <= 120)
+
+    private fun List<ProductFactSourceDraft>.anyNot(predicate: (ProductFactSourceDraft) -> Boolean): Boolean = any { !predicate(it) }
 
     fun addIngredient(
         name: String,

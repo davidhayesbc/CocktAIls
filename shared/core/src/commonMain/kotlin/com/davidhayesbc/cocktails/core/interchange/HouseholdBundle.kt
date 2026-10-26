@@ -1,6 +1,7 @@
 package com.davidhayesbc.cocktails.core.interchange
 
 import com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup
+import com.davidhayesbc.cocktails.core.model.ProductFactSource
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -19,7 +20,8 @@ import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 
 const val HOUSEHOLD_BUNDLE_FORMAT = "com.davidhayesbc.cocktails.household"
-const val HOUSEHOLD_BUNDLE_VERSION = 1
+const val HOUSEHOLD_BUNDLE_VERSION = 2
+private const val LEGACY_HOUSEHOLD_BUNDLE_VERSION = 1
 const val MAX_HOUSEHOLD_BUNDLE_BYTES = 10 * 1024 * 1024
 private const val MAX_BUNDLE_RECORDS = 100_000
 
@@ -51,6 +53,7 @@ data class HouseholdBundle(
     val revisions: List<BundleRevision>,
     val tombstones: List<BundleTombstone>,
     val formatVersion: Int = HOUSEHOLD_BUNDLE_VERSION,
+    val productSources: List<ProductFactSource> = emptyList(),
 )
 
 sealed interface BundleDecodeResult {
@@ -101,6 +104,25 @@ object HouseholdBundleCodec {
                     })
                 }
             })
+            if (bundle.formatVersion >= HOUSEHOLD_BUNDLE_VERSION) {
+                put("productSources", buildJsonArray {
+                    bundle.productSources.forEach { source ->
+                        add(buildJsonObject {
+                            put("id", source.id)
+                            put("productId", source.productId)
+                            put("retrievalProvider", source.retrievalProvider)
+                            put("extractionProvider", source.extractionProvider)
+                            put("extractionModel", source.extractionModel)
+                            put("sourceUrl", source.sourceUrl)
+                            put("fieldName", source.fieldName)
+                            put("fieldValue", source.fieldValue)
+                            put("evidenceQuote", source.evidenceQuote)
+                            put("licenseName", source.licenseName?.let(::JsonPrimitive) ?: JsonNull)
+                            put("createdAt", source.createdAt)
+                        })
+                    }
+                })
+            }
         }
         val encoded = json.encodeToString(JsonObject.serializer(), root)
         require(encoded.encodeToByteArray().size <= MAX_HOUSEHOLD_BUNDLE_BYTES) {
@@ -119,7 +141,7 @@ object HouseholdBundleCodec {
                 return BundleDecodeResult.Invalid("This file is not a CocktAIls household bundle.")
             }
             val versionNumber = root.requiredLong("formatVersion")
-            if (versionNumber != HOUSEHOLD_BUNDLE_VERSION.toLong()) {
+            if (versionNumber !in LEGACY_HOUSEHOLD_BUNDLE_VERSION.toLong()..HOUSEHOLD_BUNDLE_VERSION.toLong()) {
                 return BundleDecodeResult.Invalid("Bundle version $versionNumber is not supported.")
             }
             val version = versionNumber.toInt()
@@ -154,6 +176,22 @@ object HouseholdBundleCodec {
                     )
                 },
                 formatVersion = version,
+                productSources = root["productSources"]?.jsonArray?.map { element ->
+                    val source = element.jsonObject
+                    ProductFactSource(
+                        id = source.requiredString("id"),
+                        productId = source.requiredString("productId"),
+                        retrievalProvider = source.requiredString("retrievalProvider"),
+                        extractionProvider = source.requiredString("extractionProvider"),
+                        extractionModel = source.requiredString("extractionModel"),
+                        sourceUrl = source.requiredString("sourceUrl"),
+                        fieldName = source.requiredString("fieldName"),
+                        fieldValue = source.requiredString("fieldValue"),
+                        evidenceQuote = source.requiredString("evidenceQuote"),
+                        licenseName = source.optionalString("licenseName"),
+                        createdAt = source.requiredLong("createdAt"),
+                    )
+                }.orEmpty(),
             )
             BundleValidator.validate(bundle).firstOrNull()?.let(BundleDecodeResult::Invalid)
                 ?: BundleDecodeResult.Valid(bundle)
@@ -173,10 +211,12 @@ object BundleValidator {
 
     fun validate(bundle: HouseholdBundle): List<String> {
         val errors = mutableListOf<String>()
-        if (bundle.formatVersion != HOUSEHOLD_BUNDLE_VERSION) errors += "Bundle version is unsupported."
+        if (bundle.formatVersion !in LEGACY_HOUSEHOLD_BUNDLE_VERSION..HOUSEHOLD_BUNDLE_VERSION) errors += "Bundle version is unsupported."
+        if (bundle.formatVersion == LEGACY_HOUSEHOLD_BUNDLE_VERSION && bundle.productSources.isNotEmpty()) errors += "Version 1 household bundles cannot contain product source evidence."
         if (bundle.householdId.isBlank()) errors += "Household ID is required."
         if (bundle.records.size > MAX_BUNDLE_RECORDS) errors += "Bundle has too many records."
         if (bundle.revisions.size > MAX_BUNDLE_RECORDS * 4) errors += "Bundle has too many revisions."
+        if (bundle.productSources.size > MAX_BUNDLE_RECORDS) errors += "Bundle has too many product source records."
 
         val recordsByKey = bundle.records.associateBy { it.type to it.id }
         if (recordsByKey.size != bundle.records.size) errors += "Bundle contains duplicate record IDs."
@@ -311,6 +351,28 @@ object BundleValidator {
             record.data.optionalString("id")?.let { if (it != record.id) errors += "${record.type} ${record.id} has a mismatched internal ID." }
         }
 
+        val productSourceIds = mutableSetOf<String>()
+        val productSourceKeys = mutableSetOf<String>()
+        bundle.productSources.forEach { source ->
+            if (source.id.isBlank() || !productSourceIds.add(source.id)) errors += "Bundle contains duplicate or empty product source IDs."
+            if (source.productId !in productIds) errors += "Product source ${source.id} has an invalid product reference."
+            if (source.retrievalProvider.isBlank() || source.retrievalProvider.length > 120 ||
+                source.extractionProvider.isBlank() || source.extractionProvider.length > 120 ||
+                source.extractionModel.isBlank() || source.extractionModel.length > 128
+            ) errors += "Product source ${source.id} has invalid provider metadata."
+            if (!isSafeProductSourceUrl(source.sourceUrl)) errors += "Product source ${source.id} must use a public HTTPS source URL."
+            if (source.fieldName !in setOf("product_name", "brand", "quantity", "abv_percent") ||
+                source.fieldValue.isBlank() || source.fieldValue.length > 120 ||
+                source.evidenceQuote.isBlank() || source.evidenceQuote.length > 320 ||
+                !source.evidenceQuote.contains(source.fieldValue, ignoreCase = true)
+            ) errors += "Product source ${source.id} has invalid field evidence."
+            if (source.licenseName != null && source.licenseName.length > 120) errors += "Product source ${source.id} has invalid license metadata."
+            if (source.createdAt < 0) errors += "Product source ${source.id} has an invalid timestamp."
+            val naturalKey = listOf(source.productId, source.retrievalProvider, source.extractionProvider, source.extractionModel, source.sourceUrl, source.fieldName, source.fieldValue)
+                .joinToString("\u0000")
+            if (!productSourceKeys.add(naturalKey)) errors += "Bundle contains duplicate product source evidence."
+        }
+
         val revisionsById = bundle.revisions.associateBy { it.id }
         if (revisionsById.size != bundle.revisions.size) errors += "Bundle contains duplicate revision IDs."
         bundle.revisions.forEach { revision ->
@@ -352,6 +414,15 @@ object BundleValidator {
         }
         return parents.keys.all(::visit)
     }
+}
+
+private fun isSafeProductSourceUrl(value: String): Boolean {
+    if (value.length !in 9..2048 || value.any(Char::isWhitespace) || '@' in value) return false
+    val match = Regex("(?i)^https://([a-z0-9.-]+)(?::[0-9]{1,5})?(?:/|$)").find(value) ?: return false
+    val host = match.groupValues[1].trimEnd('.').lowercase()
+    if (host.isBlank() || host == "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return false
+    if (host.startsWith("127.") || host == "0.0.0.0" || host == "::1" || host.startsWith("10.") || host.startsWith("192.168.")) return false
+    return true
 }
 
 private fun JsonObject.requiredString(field: String): String = this[field]?.jsonPrimitive?.content

@@ -113,6 +113,30 @@ class OllamaCloudBottleDetailExtractorTest {
     }
 
     @Test
+    fun identityEvidenceCannotJoinScannedBottleAndNearbyRelatedProduct() {
+        val barcode = "5011333150725"
+        val mixedPassage = "UPC 5011333150725 applies to Auchentoshan Three Wood. Related whisky: Other Reserve."
+        val mixedCandidate = """{"identity":{"barcode":"$barcode","evidence":"$mixedPassage"},"facts":[{"field":"product_name","value":"Other Reserve","evidence":"Related whisky: Other Reserve"}]}"""
+        assertTrue(
+            parseBottleFactCandidate(mixedCandidate, "Ollama Cloud", "model", "https://shop.example/item", mixedPassage, barcode) is
+                BottleDetailExtractionResult.InvalidResponse,
+        )
+
+        val scopedText = "UPC 5011333150725 applies to Auchentoshan Three Wood.\n\nRelated whisky: Other Reserve."
+        val scopedQuote = "UPC 5011333150725 applies to Auchentoshan Three Wood"
+        val scopedCandidate = """{"identity":{"barcode":"$barcode","evidence":"$scopedQuote"},"facts":[{"field":"product_name","value":"Auchentoshan Three Wood","evidence":"$scopedQuote"}]}"""
+        val scopedResult = parseBottleFactCandidate(scopedCandidate, "Ollama Cloud", "model", "https://shop.example/item", scopedText, barcode)
+        assertTrue(scopedResult is BottleDetailExtractionResult.Found)
+
+        val competingBarcodeText = "UPC 5011333150725 applies to Auchentoshan Three Wood. UPC 088352109084 applies to St Remy VSOP."
+        val competingCandidate = """{"identity":{"barcode":"$barcode","evidence":"UPC 5011333150725 applies to Auchentoshan Three Wood"},"facts":[{"field":"product_name","value":"Auchentoshan Three Wood","evidence":"UPC 5011333150725 applies to Auchentoshan Three Wood"}]}"""
+        assertTrue(
+            parseBottleFactCandidate(competingCandidate, "Ollama Cloud", "model", "https://shop.example/item", competingBarcodeText, barcode) is
+                BottleDetailExtractionResult.InvalidResponse,
+        )
+    }
+
+    @Test
     fun cloudRequestForScannedBottleRequiresExactCodeAndProductIdentityEvidence() = runBlocking {
         val page = source.copy(markdown = "UPC 5011333150725 applies to Example Gin 40% ABV.")
         val content = """{"identity":{"barcode":"5011333150725","evidence":"UPC 5011333150725 applies to Example Gin"},"facts":[{"field":"product_name","value":"Example Gin","evidence":"UPC 5011333150725 applies to Example Gin"},{"field":"abv_percent","value":"40%","evidence":"Example Gin 40% ABV"}]}"""

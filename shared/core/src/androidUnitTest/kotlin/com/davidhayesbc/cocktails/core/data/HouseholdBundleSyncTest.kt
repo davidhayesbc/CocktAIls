@@ -18,6 +18,7 @@ import com.davidhayesbc.cocktails.core.model.RecipeIngredientDraft
 import com.davidhayesbc.cocktails.core.model.RecipeLine
 import com.davidhayesbc.cocktails.core.model.RecipeStyle
 import com.davidhayesbc.cocktails.core.model.RecipeVariantId
+import com.davidhayesbc.cocktails.core.model.ProductFactSourceDraft
 import com.davidhayesbc.cocktails.core.matching.countMissingRequiredIngredients
 import com.davidhayesbc.cocktails.shared.db.CocktailsDatabase
 import kotlinx.serialization.json.buildJsonObject
@@ -33,6 +34,65 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class HouseholdBundleSyncTest {
+    @Test
+    fun acceptedBottleFactsKeepAttributionAcrossExportImportAndRepeatedRestore() {
+        val sourceDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        CocktailsDatabase.Schema.create(sourceDriver)
+        val sourceDatabase = CocktailsDatabase(sourceDriver)
+        val source = LocalCocktailRepository(sourceDatabase)
+        source.initialize(10)
+        val home = source.locations().single().id
+        val session = source.startBottleIntakeSession(home, InventoryLevel.FULL, 20)
+        val draft = source.addBottleIntakeDraft(
+            session.id, "Auchentoshan Three Wood", "Whisky", home, InventoryLevel.FULL, 30,
+            barcode = "5011333150725", brand = "Auchentoshan", productName = "Auchentoshan Three Wood",
+        )!!
+        val fact = ProductFactSourceDraft(
+            retrievalProvider = "Firecrawl",
+            extractionProvider = "Ollama Cloud",
+            extractionModel = "qwen3:0.6b",
+            sourceUrl = "https://products.example/auchentoshan-three-wood",
+            fieldName = "product_name",
+            fieldValue = "Auchentoshan Three Wood",
+            evidenceQuote = "UPC 5011333150725 applies to Auchentoshan Three Wood.",
+        )
+        assertIs<com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult.Confirmed>(
+            source.confirmBottleIntakeSession(session.id, 40, mapOf(draft.id to listOf(fact))),
+        )
+        val productId = source.pantry(home).single().productId!!
+        val acceptedSource = source.productFactSources(productId).single()
+        assertEquals("Firecrawl", acceptedSource.retrievalProvider)
+        assertEquals("Ollama Cloud", acceptedSource.extractionProvider)
+        assertEquals("Auchentoshan Three Wood", acceptedSource.fieldValue)
+        assertFalse(source.exportHouseholdBundle(50).contains("apiKey"))
+
+        val exported = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(source.exportHouseholdBundle(50))).bundle
+        assertEquals(1, exported.productSources.size)
+        assertEquals(acceptedSource.id, exported.productSources.single().id)
+        val legacyV1 = exported.copy(formatVersion = 1, productSources = emptyList())
+        assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(HouseholdBundleCodec.encode(legacyV1)))
+
+        val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        CocktailsDatabase.Schema.create(targetDriver)
+        val targetDatabase = CocktailsDatabase(targetDriver)
+        val target = LocalCocktailRepository(targetDatabase)
+        target.initialize(60)
+        val preview = assertIs<ImportPreviewResult.Valid>(target.previewHouseholdBundle(exported)).preview
+        assertIs<ImportApplyResult.Applied>(target.applyHouseholdBundle(exported, preview, emptyMap(), 70))
+        val transferredProductId = target.pantry(home).single().productId!!
+        assertEquals(acceptedSource, target.productFactSources(transferredProductId).single())
+
+        val repeatedPreview = assertIs<ImportPreviewResult.Valid>(target.previewHouseholdBundle(exported)).preview
+        assertIs<ImportApplyResult.Applied>(target.applyHouseholdBundle(exported, repeatedPreview, emptyMap(), 80))
+        assertEquals(1, target.productFactSources(transferredProductId).size)
+
+        val invalid = exported.copy(productSources = exported.productSources.map { it.copy(sourceUrl = "http://not-secure.example/item") })
+        assertIs<ImportPreviewResult.Invalid>(target.previewHouseholdBundle(invalid))
+        assertEquals(1, target.productFactSources(transferredProductId).size)
+        sourceDriver.close()
+        targetDriver.close()
+    }
+
     @Test
     fun physicalBottleIntakeKeepsDuplicateBottlesIndependentAndTransfersThemAtomically() {
         val leftDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)

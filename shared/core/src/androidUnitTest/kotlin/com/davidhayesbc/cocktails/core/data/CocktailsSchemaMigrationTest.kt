@@ -20,6 +20,57 @@ class CocktailsSchemaMigrationTest {
     )
 
     @Test
+    fun migratesPopulatedVersionFiveDatabaseToCurrentSchemaWithoutLosingPantry() {
+        var directory: File? = File(System.getProperty("user.dir")!!)
+        var versionFive: File? = null
+        while (directory != null && versionFive == null) {
+            versionFive = sequenceOf(
+                File(directory, "shared/core/src/commonMain/sqldelight/databases/5.db"),
+                File(directory, "src/commonMain/sqldelight/databases/5.db"),
+            ).firstOrNull(File::isFile)
+            directory = directory.parentFile
+        }
+        val sourceSnapshot = versionFive ?: error("Could not find the checked-in v5 schema snapshot")
+        val migratedFile = File.createTempFile("cocktails-v5-to-v6", ".db")
+        sourceSnapshot.copyTo(migratedFile, overwrite = true)
+        val driver = JdbcSqliteDriver("jdbc:sqlite:${migratedFile.absolutePath}")
+        try {
+            driver.execute(null, "INSERT INTO household VALUES (?, ?, ?)", 3) {
+                bindString(0, "household-v5"); bindString(1, "Our Bar"); bindLong(2, 1L)
+            }
+            driver.execute(null, "INSERT INTO household_member VALUES (?, ?, ?, ?)", 4) {
+                bindString(0, "member-v5"); bindString(1, "household-v5"); bindString(2, "You"); bindLong(3, 1L)
+            }
+            driver.execute(null, "INSERT INTO household_location VALUES (?, ?, ?, ?)", 4) {
+                bindString(0, "home-v5"); bindString(1, "household-v5"); bindString(2, "Home"); bindLong(3, 1L)
+            }
+            driver.execute(null, "INSERT INTO ingredient VALUES (?, ?, ?, ?)", 4) {
+                bindString(0, "gin-v5"); bindString(1, "Gin"); bindString(2, "Spirit"); bindLong(3, 1L)
+            }
+            driver.execute(null, "INSERT INTO ingredient_product VALUES ('bottle-v5', 'gin-v5', NULL, 'Gin', NULL, NULL, NULL, NULL, 1)", 0) {}
+            driver.execute(null, "INSERT INTO inventory_item VALUES (?, ?, ?, ?, ?, ?)", 6) {
+                bindString(0, "stock-v5"); bindString(1, "home-v5"); bindString(2, "gin-v5")
+                bindString(3, "FULL"); bindLong(4, 2L); bindString(5, "member-v5")
+            }
+
+            CocktailsDatabase.Schema.migrate(driver, 5, 7)
+            val database = CocktailsDatabase(driver)
+            val repository = LocalCocktailRepository(database)
+            val pantry = repository.pantry("home-v5")
+            assertEquals(1, pantry.size)
+            assertEquals("stock-v5", pantry.single().inventoryId)
+            assertEquals("Gin", pantry.single().name)
+            assertEquals(InventoryLevel.FULL, pantry.single().level)
+            assertEquals("bottle-v5", pantry.single().productId)
+            assertTrue(database.householdQueries.selectAllProductSourcesForBundle().executeAsList().isEmpty())
+            assertTrue(repository.exportHouseholdBundle(3).isNotEmpty())
+        } finally {
+            driver.close()
+            migratedFile.delete()
+        }
+    }
+
+    @Test
     fun migratesVersionFourProductAndAddsOptionalPhotoStorage() {
         var directory: File? = File(System.getProperty("user.dir")!!)
         var versionFour: File? = null
@@ -56,7 +107,7 @@ class CocktailsSchemaMigrationTest {
                 bindString(3, "HALF"); bindLong(4, 3L); bindString(5, "member-v4")
             }
 
-            CocktailsDatabase.Schema.migrate(driver, 4, 6)
+            CocktailsDatabase.Schema.migrate(driver, 4, 7)
             val database = CocktailsDatabase(driver)
             assertEquals("0012345678905", database.householdQueries.selectProductById("bottle-v4").executeAsOne().barcode)
             val migratedBottle = database.householdQueries.selectInventoryById("stock-v4").executeAsOne()
@@ -109,7 +160,7 @@ class CocktailsSchemaMigrationTest {
                 bindString(3, "HALF"); bindLong(4, 12L); bindString(5, "member-v3")
             }
 
-            CocktailsDatabase.Schema.migrate(driver, 3, 6)
+            CocktailsDatabase.Schema.migrate(driver, 3, 7)
             val database = CocktailsDatabase(driver)
             assertEquals("stock-v3", database.householdQueries.selectInventoryId("home-v3", "gin-v3").executeAsOne())
             assertEquals("HALF", database.householdQueries.selectPantryForLocation("home-v3").executeAsOne().level)
@@ -158,7 +209,7 @@ class CocktailsSchemaMigrationTest {
                 bindString(3, "LOW"); bindLong(4, 2L); bindString(5, "member-v2")
             }
 
-            CocktailsDatabase.Schema.migrate(driver, 2, 6)
+            CocktailsDatabase.Schema.migrate(driver, 2, 7)
             val database = CocktailsDatabase(driver)
             val repository = LocalCocktailRepository(database)
             assertEquals("stock-v2", database.householdQueries.selectInventoryId("home-v2", "gin-v2").executeAsOne())
@@ -201,7 +252,7 @@ class CocktailsSchemaMigrationTest {
         }
         driver.execute(null, "PRAGMA user_version = 1", 0)
 
-        CocktailsDatabase.Schema.migrate(driver, 1, 6)
+        CocktailsDatabase.Schema.migrate(driver, 1, 7)
         val database = CocktailsDatabase(driver)
         val migratedPantry = database.householdQueries.selectPantryForLocation(legacyLocationId).executeAsOne()
 

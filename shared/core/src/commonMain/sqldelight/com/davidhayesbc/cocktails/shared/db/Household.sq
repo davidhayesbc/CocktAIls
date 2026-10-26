@@ -68,6 +68,25 @@ CREATE TABLE ingredient_product (
 
 CREATE UNIQUE INDEX ingredient_product_barcode ON ingredient_product(barcode) WHERE barcode IS NOT NULL;
 
+CREATE TABLE ingredient_product_source (
+    id TEXT NOT NULL PRIMARY KEY,
+    product_id TEXT NOT NULL REFERENCES ingredient_product(id) ON DELETE CASCADE,
+    retrieval_provider TEXT NOT NULL,
+    extraction_provider TEXT NOT NULL,
+    extraction_model TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    field_name TEXT NOT NULL CHECK (field_name IN ('product_name', 'brand', 'quantity', 'abv_percent')),
+    field_value TEXT NOT NULL,
+    evidence_quote TEXT NOT NULL,
+    license_name TEXT,
+    created_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX product_source_identity ON ingredient_product_source(
+    product_id, retrieval_provider, extraction_provider, extraction_model, source_url, field_name, field_value
+);
+CREATE INDEX product_source_product ON ingredient_product_source(product_id, created_at, id);
+
 CREATE TABLE inventory_item (
     id TEXT NOT NULL PRIMARY KEY,
     location_id TEXT NOT NULL REFERENCES household_location(id),
@@ -511,6 +530,16 @@ SELECT id, canonical_name, category, created_at FROM ingredient;
 selectAllProductsForBundle:
 SELECT id, ingredient_id, brand, product_name, barcode, photo_mime_type, photo_data, photo_sha256, created_at FROM ingredient_product;
 
+selectAllProductSourcesForBundle:
+SELECT id, product_id, retrieval_provider, extraction_provider, extraction_model, source_url,
+       field_name, field_value, evidence_quote, license_name, created_at
+FROM ingredient_product_source ORDER BY product_id, created_at, id;
+
+selectProductSourcesForProduct:
+SELECT id, product_id, retrieval_provider, extraction_provider, extraction_model, source_url,
+       field_name, field_value, evidence_quote, license_name, created_at
+FROM ingredient_product_source WHERE product_id = ? ORDER BY created_at, id;
+
 selectProductForIngredient:
 SELECT id, ingredient_id, brand, product_name, barcode, photo_mime_type, photo_data, photo_sha256, created_at
 FROM ingredient_product WHERE ingredient_id = ? ORDER BY created_at LIMIT 1;
@@ -585,6 +614,12 @@ UPDATE ingredient SET canonical_name = ?, category = ? WHERE id = ?;
 
 insertProductIgnore:
 INSERT OR IGNORE INTO ingredient_product(id, ingredient_id, brand, product_name, barcode, created_at) VALUES (?, ?, ?, ?, ?, ?);
+
+insertProductSourceIgnore:
+INSERT OR IGNORE INTO ingredient_product_source(
+    id, product_id, retrieval_provider, extraction_provider, extraction_model, source_url,
+    field_name, field_value, evidence_quote, license_name, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 selectProductsForBarcodeDeduplication:
 SELECT id, ingredient_id, brand, product_name, barcode, created_at

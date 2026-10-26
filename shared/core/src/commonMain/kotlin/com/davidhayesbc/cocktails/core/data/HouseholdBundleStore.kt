@@ -12,6 +12,7 @@ import com.davidhayesbc.cocktails.core.interchange.MAX_HOUSEHOLD_BUNDLE_BYTES
 import com.davidhayesbc.cocktails.core.interchange.decodePhotoBase64
 import com.davidhayesbc.cocktails.core.interchange.encodePhotoBase64
 import com.davidhayesbc.cocktails.core.model.newUuidV7
+import com.davidhayesbc.cocktails.core.model.ProductFactSource
 import com.davidhayesbc.cocktails.shared.db.CocktailsDatabase
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -91,6 +92,11 @@ class HouseholdBundleStore internal constructor(
             return ImportPreviewResult.Invalid("This file belongs to a different household. Export a backup before switching households.")
         }
         val localRecords = local?.records.orEmpty().associateBy { it.type to it.id }
+        val localSources = local?.productSources.orEmpty().associateBy(ProductFactSource::id)
+        val incomingSources = bundle.productSources.associateBy(ProductFactSource::id)
+        if (localSources.keys.intersect(incomingSources.keys).any { id -> localSources[id] != incomingSources[id] }) {
+            return ImportPreviewResult.Invalid("The bundle reuses a product source ID with different content.")
+        }
         val localRevisions = local?.revisions.orEmpty().associateBy { it.id }
         val incomingRevisions = bundle.revisions.associateBy { it.id }
         val duplicateRevisionIds = localRevisions.keys.intersect(incomingRevisions.keys)
@@ -191,7 +197,7 @@ class HouseholdBundleStore internal constructor(
                 authorMemberId = authorMemberId,
                 deviceId = deviceId,
                 createdAt = nowMillis,
-                schemaVersion = HOUSEHOLD_BUNDLE_VERSION.toLong(),
+                schemaVersion = RECORD_REVISION_SCHEMA_VERSION,
                 payload = record.data,
                 parentIds = parents,
             )
@@ -222,6 +228,8 @@ class HouseholdBundleStore internal constructor(
             records = candidateRecords.values.toList(),
             revisions = candidateRevisions,
             tombstones = candidateTombstones.values.toList(),
+            formatVersion = HOUSEHOLD_BUNDLE_VERSION,
+            productSources = mergeProductSources(localForValidation?.productSources.orEmpty() + bundle.productSources),
         )
         BundleValidator.validate(selectedBundle).firstOrNull()?.let { return ImportApplyResult.Invalid("The selected merge is invalid: $it") }
         try {
@@ -255,6 +263,7 @@ class HouseholdBundleStore internal constructor(
                     revision.parentIds.forEach { parent -> queries.updateRecordRevisionParentIgnore(revision.id, parent) }
                 }
                 chosen.filter { it.type == "PRODUCT" }.forEach(::writeProduct)
+                selectedBundle.productSources.forEach(::writeProductSource)
                 chosen.filter { it.type == "INVENTORY_ITEM" }.forEach(::writeInventory)
                 chosen.filter { it.type == "COCKTAIL_FAMILY" }.forEach(::writeFamily)
                 chosen.filter { it.type == "RECIPE_VARIANT" }.forEach { record ->
@@ -325,6 +334,14 @@ class HouseholdBundleStore internal constructor(
                 "photoSha256" to nullableString(it.photo_sha256), "createdAt" to num(it.created_at),
             ))
         }
+        val productSources = queries.selectAllProductSourcesForBundle().executeAsList().map { row ->
+            ProductFactSource(
+                id = row.id, productId = row.product_id, retrievalProvider = row.retrieval_provider,
+                extractionProvider = row.extraction_provider, extractionModel = row.extraction_model,
+                sourceUrl = row.source_url, fieldName = row.field_name, fieldValue = row.field_value,
+                evidenceQuote = row.evidence_quote, licenseName = row.license_name, createdAt = row.created_at,
+            )
+        }
         queries.selectAllInventoryForBundle().executeAsList().forEach {
             records += BundleRecord("INVENTORY_ITEM", it.id, obj("id" to str(it.id), "locationId" to str(it.location_id), "ingredientId" to str(it.ingredient_id), "productId" to nullableString(it.product_id), "level" to str(it.level), "updatedAt" to num(it.updated_at), "updatedByMemberId" to str(it.updated_by_member_id)))
         }
@@ -387,7 +404,14 @@ class HouseholdBundleStore internal constructor(
         val tombstones = queries.selectAllTombstonesForBundle().executeAsList().map {
             BundleTombstone(it.record_id, it.record_type, it.revision_id, it.deleted_at)
         }
-        val bundle = HouseholdBundle(householdId, exportedAt, records.sortedWith(compareBy(BundleRecord::type, BundleRecord::id)), revisions, tombstones)
+        val bundle = HouseholdBundle(
+            householdId,
+            exportedAt,
+            records.sortedWith(compareBy(BundleRecord::type, BundleRecord::id)),
+            revisions,
+            tombstones,
+            productSources = productSources,
+        )
         BundleValidator.validate(bundle).firstOrNull()?.let { error("Local household data cannot be exported: $it") }
         val encoded = HouseholdBundleCodec.encode(bundle)
         require(encoded.encodeToByteArray().size <= MAX_HOUSEHOLD_BUNDLE_BYTES)
@@ -538,6 +562,14 @@ class HouseholdBundleStore internal constructor(
         if (hasPhotoFields) queries.updateProductPhoto(photoMimeType, photoBytes, photoSha, record.id)
     }
 
+    private fun writeProductSource(source: ProductFactSource) {
+        queries.insertProductSourceIgnore(
+            source.id, source.productId, source.retrievalProvider, source.extractionProvider,
+            source.extractionModel, source.sourceUrl, source.fieldName, source.fieldValue,
+            source.evidenceQuote, source.licenseName, source.createdAt,
+        )
+    }
+
     private fun writeInventory(record: BundleRecord) {
         val data = record.data
         val locationId = data.string("locationId")
@@ -638,6 +670,15 @@ class HouseholdBundleStore internal constructor(
 
     private fun fingerprint(bundle: HouseholdBundle): String = fnv1a(HouseholdBundleCodec.encode(bundle.copy(exportedAt = 0)))
 
+    /** Keep both devices' evidence while making repeated imports idempotent by fact identity. */
+    private fun mergeProductSources(sources: List<ProductFactSource>): List<ProductFactSource> =
+        sources.distinctBy { source ->
+            listOf(
+                source.productId, source.retrievalProvider, source.extractionProvider,
+                source.extractionModel, source.sourceUrl, source.fieldName, source.fieldValue,
+            ).joinToString("\u0000")
+        }.sortedWith(compareBy(ProductFactSource::productId, ProductFactSource::createdAt, ProductFactSource::id))
+
     private fun fnv1a(value: String): String {
         var hash = 0xcbf29ce484222325UL
         value.encodeToByteArray().forEach { byte -> hash = (hash xor byte.toUByte().toULong()) * 0x100000001b3UL }
@@ -670,5 +711,6 @@ class HouseholdBundleStore internal constructor(
 
     companion object {
         private const val EMPTY_FINGERPRINT = "empty"
+        private const val RECORD_REVISION_SCHEMA_VERSION = 1L
     }
 }

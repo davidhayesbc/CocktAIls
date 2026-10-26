@@ -1,6 +1,6 @@
 # ADR-0004: Versioned household bundles for sharing
 
-- **Status:** Accepted baseline
+- **Status:** Accepted; format v2 adds accepted product-fact provenance
 - **Date:** 2026-10-25
 
 ## Context
@@ -11,6 +11,7 @@ Manual transfer is acceptable for the first release, but records need a path to 
 
 - Define a versioned, documented household bundle independent of the SQLDelight/SQLite schema. Include bundle format version, export timestamp for display, household ID, records, revisions, and explicit tombstones.
 - Keep source provenance and license/attribution metadata with imported catalog records.
+- Household bundle format v2 adds append-only product-fact source records for user-accepted web-derived product fields. Each record carries provider/model, public source URL, field/value, a bounded evidence quote, optional license label, and timestamp. Pending suggestions, raw page text, model output, keys, and provider settings remain excluded. Format v1 imports remain supported.
 - Import by stable record/revision IDs. Identical repeats are no-ops; new revisions extend known ancestry; divergent revisions remain as conflicts.
 - Preview counts and conflicts before applying. Validate IDs, relationships, size limits, supported versions, and checksums before committing the import transaction.
 - Treat unknown newer schema versions as unsupported and leave the local database unchanged.
@@ -24,3 +25,4 @@ Manual transfer is acceptable for the first release, but records need a path to 
 - Import requires validation and a preview/commit boundary, which is more work than replacing a database file but safer.
 - Inline base64 assets make household JSON larger; the current bundle and photo size limits bound memory and storage use.
 - Format compatibility and deterministic merge behavior need automated tests before release.
+- Product-source records merge additively by natural fact identity, preserve distinct source evidence, and remain attached to the shared product across repeat imports.
