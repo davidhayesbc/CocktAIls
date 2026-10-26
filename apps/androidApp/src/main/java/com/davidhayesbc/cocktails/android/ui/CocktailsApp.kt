@@ -363,7 +363,6 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     val bottleExtractionJobs = remember { mutableMapOf<String, Job>() }
     val bottleExtractionRequestTokens = remember { mutableMapOf<String, Int>() }
     var showDiagnostics by remember { mutableStateOf(false) }
-    var latestLookupReportPreview by remember { mutableStateOf(LocalDiagnostics.latestBottleLookupPreview()) }
     var lookupReportCopyMessage by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(localModelImporting) {
@@ -379,7 +378,6 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
 
     fun persistBottleLookupDebug(report: BottleLookupDebugReport) {
         LocalDiagnostics.recordBottleLookup(report)
-        latestLookupReportPreview = LocalDiagnostics.latestBottleLookupPreview()
     }
 
     fun cancelAllBottleEnrichmentRequests(sessionId: String?, keepPaused: Boolean) {
@@ -1424,7 +1422,6 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 webSearchEnabled = firecrawlSearchEnabled && firecrawlKeySaved && !firecrawlKeyNeedsReplacement,
                 webSearchStates = bottleWebSearchStates,
                 onOpenLookupReport = {
-                    latestLookupReportPreview = LocalDiagnostics.latestBottleLookupPreview()
                     lookupReportCopyMessage = null
                     showDiagnostics = true
                 },
@@ -1724,7 +1721,6 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 shareMessage = shareMessage,
                 onOpenLocationSettings = { showLocationSettings = true },
                 onOpenDiagnostics = {
-                    latestLookupReportPreview = LocalDiagnostics.latestBottleLookupPreview()
                     lookupReportCopyMessage = null
                     showDiagnostics = true
                 },
@@ -1827,7 +1823,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     if (showDiagnostics) {
         DiagnosticsDialog(
             preview = LocalDiagnostics.preview(),
-            lookupPreview = latestLookupReportPreview,
+            lookupPreview = LocalDiagnostics.latestBottleLookupPreview(),
             lookupCopyMessage = lookupReportCopyMessage,
             onCopyLookup = {
                 val report = LocalDiagnostics.latestBottleLookupPreview()
@@ -1836,7 +1832,6 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 } else {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     clipboard.setPrimaryClip(ClipData.newPlainText("CocktAIls bottle lookup report", report))
-                    latestLookupReportPreview = report
                     lookupReportCopyMessage = "Lookup report copied. Review it before sharing."
                 }
             },
@@ -1844,7 +1839,6 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             onClear = {
                 LocalDiagnostics.clear().also { cleared ->
                     if (cleared) {
-                        latestLookupReportPreview = null
                         lookupReportCopyMessage = null
                     }
                 }
@@ -3641,12 +3635,11 @@ private fun DiagnosticsDialog(
         text = {
             Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()).testTag("diagnostics-dialog-scroll"), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("Latest bottle lookup report", style = MaterialTheme.typography.titleSmall)
-                if (lookupPreview != null) {
-                    OutlinedButton(onClick = onCopyLookup, modifier = Modifier.fillMaxWidth().testTag("copy-bottle-lookup-report")) {
-                        Text("Copy lookup debug report")
-                    }
-                    lookupCopyMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+                OutlinedButton(onClick = onCopyLookup, enabled = lookupPreview != null, modifier = Modifier.fillMaxWidth().testTag("copy-bottle-lookup-report")) {
+                    Text("Copy lookup debug report")
                 }
+                lookupCopyMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+                if (lookupPreview == null) Text("Run a barcode lookup to create a report.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(lookupPreview ?: "No barcode lookup report yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("latest-lookup-report-preview"))
                 Text("Stored only on this phone. Nothing is uploaded automatically. Export or copy only when you choose to share.")
                 Text("Crash details include app/device version, camera event categories, and stack frames. Lookup reports include scanned barcode digits, provider/model status, safe source URLs, timings, HTTP statuses, and fixed rejection codes.")

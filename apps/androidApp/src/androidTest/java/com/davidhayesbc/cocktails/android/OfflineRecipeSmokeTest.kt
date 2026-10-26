@@ -135,6 +135,7 @@ class OfflineRecipeSmokeTest {
         events.forEach(report::record)
         report.finish("NOT_FOUND")
         LocalDiagnostics.recordBottleLookup(report)
+        assertTrue(LocalDiagnostics.latestBottleLookupPreview()?.contains("5011333150725") == true)
 
         composeRule.onNodeWithText("More").performClick()
         composeRule.onNodeWithTag("household-scroll").performScrollToNode(hasText("View or export diagnostics"))
@@ -333,8 +334,8 @@ class OfflineRecipeSmokeTest {
                 }
             }
 
-            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("This page contains the scanned barcode. Evidence-backed suggestions are filled into this review only; edit or reject them before accepting."))
-            composeRule.onNodeWithText("This page contains the scanned barcode. Evidence-backed suggestions are filled into this review only; edit or reject them before accepting.").assertIsDisplayed()
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("This page text contains the scanned barcode. Evidence-backed suggestions are filled into this review only; edit or reject them before accepting."))
+            composeRule.onNodeWithText("This page text contains the scanned barcode. Evidence-backed suggestions are filled into this review only; edit or reject them before accepting.").assertIsDisplayed()
             val bottleSizeWarning = "Bottle size is unclear in this source. No value was selected; check it manually."
             composeRule.onNodeWithText(bottleSizeWarning).assertExists()
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText(bottleSizeWarning))
