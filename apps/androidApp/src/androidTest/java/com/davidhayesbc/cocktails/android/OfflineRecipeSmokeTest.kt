@@ -140,7 +140,11 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("household-scroll").performScrollToNode(hasText("View or export diagnostics"))
         composeRule.onNodeWithText("View or export diagnostics").performClick()
         composeRule.onNodeWithTag("diagnostics-dialog-scroll").performScrollToNode(hasTestTag("latest-lookup-report-preview"))
-        composeRule.onNodeWithTag("latest-lookup-report-preview").assertIsDisplayed().assert(hasText("5011333150725"))
+        val lookupPreviewNode = composeRule.onNodeWithTag("latest-lookup-report-preview")
+        lookupPreviewNode.assertIsDisplayed()
+        val previewText = lookupPreviewNode.fetchSemanticsNode().config[SemanticsProperties.Text]
+            .joinToString(separator = "") { it.text }
+        assertTrue("Lookup preview did not show the scanned barcode", previewText.contains("5011333150725"))
         composeRule.onNodeWithTag("diagnostics-dialog-scroll").performScrollToNode(hasTestTag("copy-bottle-lookup-report"))
         composeRule.onNodeWithTag("copy-bottle-lookup-report").assertIsDisplayed()
         composeRule.onNodeWithTag("copy-bottle-lookup-report").performClick()
