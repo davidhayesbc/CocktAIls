@@ -1304,6 +1304,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                             },
                             icon = { Text(page.label.take(1)) },
                             label = { Text(page.label) },
+                            modifier = Modifier.testTag("navigation-${page.name.lowercase()}"),
                         )
                     }
                 }

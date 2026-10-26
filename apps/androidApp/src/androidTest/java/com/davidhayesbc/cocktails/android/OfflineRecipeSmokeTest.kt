@@ -262,15 +262,17 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText(bottleSizeWarning))
             composeRule.onNodeWithText(bottleSizeWarning).assertIsDisplayed()
             composeRule.onNodeWithTag("bottle-intake-draft-name-0").assert(
-                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("Auchentoshan Three Wood")),
+                editableTextIs("Auchentoshan Three Wood"),
             )
             composeRule.onNodeWithTag("bottle-intake-draft-brand-0").assert(
-                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("Auchentoshan")),
+                editableTextIs("Auchentoshan"),
             )
             assertEquals("Auchentoshan Three Wood", repository.openBottleIntakeSession()!!.drafts.first().ingredientName)
             assertEquals("Auchentoshan Three Wood", repository.openBottleIntakeSession()!!.drafts.first().productName)
-            composeRule.onNodeWithTag("accept-scanned-bottle-${first.id}").assertIsEnabled().performClick()
-            assertTrue(nextScanRequested)
+            val acceptScannedBottle = "accept-scanned-bottle-${first.id}"
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag(acceptScannedBottle))
+            composeRule.onNodeWithTag(acceptScannedBottle).assertIsDisplayed().assertIsEnabled().performClick()
+            composeRule.waitUntil(timeoutMillis = 5_000) { nextScanRequested }
             assertTrue(secondDraftId != null)
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-name-1"))
             composeRule.onNodeWithTag("bottle-intake-draft-name-1").assertIsDisplayed()
@@ -357,13 +359,13 @@ class OfflineRecipeSmokeTest {
             webState = webState.copy(extractedSuggestions = delayedSuggestions)
             composeRule.waitForIdle()
             composeRule.onNodeWithTag("bottle-intake-draft-name-0").assert(
-                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("My chosen whisky")),
+                editableTextIs("My chosen whisky"),
             )
             composeRule.onNodeWithTag("bottle-intake-draft-brand-0").assert(
-                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("Example Brand")),
+                editableTextIs("Example Brand"),
             )
             composeRule.onNodeWithTag("bottle-intake-draft-product-0").assert(
-                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("Three Wood")),
+                editableTextIs("Three Wood"),
             )
 
             composeRule.onNodeWithTag("bottle-intake-draft-name-0").performTextClearance()
@@ -374,7 +376,7 @@ class OfflineRecipeSmokeTest {
             ))
             composeRule.waitForIdle()
             composeRule.onNodeWithTag("bottle-intake-draft-name-0").assert(
-                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")),
+                editableTextIs(""),
             )
             composeRule.onNodeWithTag("batch-confirm").assertIsNotEnabled()
         } finally {
@@ -434,8 +436,15 @@ class OfflineRecipeSmokeTest {
     }
 
     private fun openBottleIntake() {
-        composeRule.onNodeWithText("My Bar").performClick()
+        composeRule.onNodeWithTag("navigation-my_bar").performClick()
         composeRule.onNodeWithTag("start-bottle-intake").performClick()
+    }
+
+    private fun editableTextIs(expected: String): SemanticsMatcher = SemanticsMatcher(
+        "editable and input text equal '$expected'",
+    ) { node ->
+        node.config[SemanticsProperties.EditableText].text == expected &&
+            node.config[SemanticsProperties.InputText].text == expected
     }
 
     private fun setTestContent(content: @Composable () -> Unit) {
