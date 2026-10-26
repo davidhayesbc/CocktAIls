@@ -13,6 +13,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.compose.foundation.text.KeyboardOptions
@@ -26,6 +27,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -45,7 +47,6 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Switch
@@ -70,8 +71,6 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -1049,23 +1048,142 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
 
     Scaffold(
         bottomBar = {
-            NavigationBar {
-                Page.entries.forEach { page ->
-                    NavigationBarItem(
-                        selected = selectedPage == page && !showShop,
-                        onClick = {
-                            showShop = false
-                            shopDestinationId = null
-                            selectedPage = page
-                        },
-                        icon = { Text(page.label.take(1)) },
-                        label = { Text(page.label) },
-                    )
+            if (!showBottleIntake) {
+                NavigationBar {
+                    Page.entries.forEach { page ->
+                        NavigationBarItem(
+                            selected = selectedPage == page && !showShop,
+                            onClick = {
+                                showShop = false
+                                shopDestinationId = null
+                                selectedPage = page
+                            },
+                            icon = { Text(page.label.take(1)) },
+                            label = { Text(page.label) },
+                        )
+                    }
                 }
             }
         },
     ) { contentPadding ->
-        when {
+        if (showBottleIntake && bottleIntakeSession != null) {
+            BottleIntakeScreen(
+                modifier = Modifier.fillMaxSize().padding(contentPadding),
+                session = bottleIntakeSession!!,
+                homes = locations,
+                capturePhoto = pendingBottleLabelPhoto,
+                captureMessage = bottleLabelCaptureMessage,
+                permissionMessage = bottleIntakeCameraMessage,
+                webSearchEnabled = firecrawlSearchEnabled && firecrawlKeySaved && !firecrawlKeyNeedsReplacement,
+                webSearchStates = bottleWebSearchStates,
+                pendingEnrichmentJobs = pendingBottleEnrichmentJobs,
+                ollamaCloudEnabled = ollamaCloudEnabled && ollamaCloudKeySaved && !ollamaCloudKeyNeedsReplacement && isValidOllamaModelIdentifier(ollamaCloudModel),
+                localAiEnabled = localAiEnabled && localModelFile != null,
+                onSearchDraft = ::searchBottleSources,
+                onFetchDraftSource = ::fetchBottleSource,
+                onExtractDraftDetails = ::extractBottleDetails,
+                onExtractDraftDetailsOnDevice = ::extractBottleDetailsOnDevice,
+                onResumeEnrichment = ::resumeBottleEnrichment,
+                onCancelDraftSearch = ::cancelBottleSourceSearch,
+                onCaptureLabel = {
+                    bottleLabelCaptureMessage = null
+                    val directory = File(context.cacheDir, "intake-labels")
+                    directory.mkdirs()
+                    val file = File(directory, "intake-label-capture.jpg")
+                    file.delete()
+                    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                    bottleLabelCaptureLauncher.launch(uri)
+                },
+                onDiscardCapturedLabel = { pendingBottleLabelPhoto = null; bottleLabelCaptureMessage = null },
+                onAttachCapturedLabel = { draft ->
+                    val photo = pendingBottleLabelPhoto
+                    if (photo != null) {
+                        if (repository.updateBottleIntakeDraft(draft.copy(photoData = photo, photoSha256 = photoSha256(photo)))) {
+                            pendingBottleLabelPhoto = null
+                            bottleLabelCaptureMessage = null
+                            bottleIntakeSession = repository.openBottleIntakeSession()
+                        } else {
+                            bottleLabelCaptureMessage = "The label photo could not be attached. It is still available here; try again or discard it."
+                        }
+                    }
+                },
+                onScan = {
+                    bottleIntakeCameraMessage = null
+                    if (context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) showBottleScanner = true
+                    else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                },
+                onAddManual = { name, category, barcode, brand, productName, level, photo ->
+                    val created = repository.addBottleIntakeDraft(
+                        sessionId = bottleIntakeSession!!.id,
+                        ingredientName = name,
+                        category = category,
+                        locationId = bottleIntakeSession!!.locationId,
+                        level = level,
+                        nowMillis = System.currentTimeMillis(),
+                        barcode = barcode,
+                        brand = brand,
+                        productName = productName,
+                        photoJpeg = photo,
+                    )
+                    if (created != null) bottleIntakeSession = repository.openBottleIntakeSession()
+                    created != null
+                },
+                onRemove = { draft ->
+                    cancelBottleSourceSearch(draft.id)
+                    bottleWebSearchStates = bottleWebSearchStates - draft.id
+                    repository.removeBottleIntakeDraft(draft.sessionId, draft.id)
+                    bottleIntakeSession = repository.openBottleIntakeSession()
+                },
+                onUpdate = { draft ->
+                    val prior = bottleIntakeSession?.drafts?.firstOrNull { it.id == draft.id }
+                    if (prior != null && (prior.ingredientName != draft.ingredientName || prior.brand != draft.brand || prior.productName != draft.productName)) {
+                        cancelBottleSourceSearch(draft.id)
+                        bottleWebSearchStates = bottleWebSearchStates - draft.id
+                    }
+                    val saved = repository.updateBottleIntakeDraft(draft)
+                    if (saved) bottleIntakeSession = repository.openBottleIntakeSession()
+                    saved
+                },
+                onHomeChanged = { home -> repository.setBottleIntakeHome(bottleIntakeSession!!.id, home, System.currentTimeMillis()); bottleIntakeSession = repository.openBottleIntakeSession() },
+                onLevelChanged = { level -> repository.setBottleIntakeDefaultLevel(bottleIntakeSession!!.id, level, System.currentTimeMillis()); bottleIntakeSession = repository.openBottleIntakeSession() },
+                onConfirm = {
+                    val result = repository.confirmBottleIntakeSession(bottleIntakeSession!!.id, System.currentTimeMillis())
+                    when (result) {
+                        is BottleIntakeCommitResult.Confirmed, is BottleIntakeCommitResult.AlreadyConfirmed -> {
+                            cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = false)
+                            bottleWebSearchStates = emptyMap()
+                            refreshPantry()
+                            bottleIntakeSession = null
+                            showBottleIntake = false
+                            pendingBottleLabelPhoto = null
+                            bottleLabelCaptureMessage = null
+                        }
+                        is BottleIntakeCommitResult.Invalid -> Unit
+                    }
+                    result
+                },
+                onCancel = {
+                    cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = false)
+                    bottleWebSearchStates = emptyMap()
+                    repository.cancelBottleIntakeSession(bottleIntakeSession!!.id)
+                    clearPendingBottleCapture()
+                    bottleIntakeSession = null
+                    pendingBottleLabelPhoto = null
+                    bottleLabelCaptureMessage = null
+                    showBottleIntake = false
+                },
+                onDismiss = {
+                    cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = true)
+                    bottleWebSearchStates = emptyMap()
+                    showBottleIntake = false
+                    bottleIntakeSession = repository.openBottleIntakeSession()
+                    pendingBottleLabelPhoto = null
+                    bottleLabelCaptureMessage = null
+                    clearPendingBottleCapture()
+                },
+            )
+        } else {
+            when {
             showShop -> ShopScreen(
                 modifier = Modifier.padding(contentPadding),
                 location = locations.firstOrNull { it.id == shopDestinationId },
@@ -1293,6 +1411,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     localAiEnabled = allowed
                 },
             )
+            }
         }
     }
 
@@ -1399,122 +1518,6 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         )
     }
 
-    if (showBottleIntake && bottleIntakeSession != null) {
-        BottleIntakeDialog(
-            session = bottleIntakeSession!!,
-            homes = locations,
-            capturePhoto = pendingBottleLabelPhoto,
-            captureMessage = bottleLabelCaptureMessage,
-            permissionMessage = bottleIntakeCameraMessage,
-            webSearchEnabled = firecrawlSearchEnabled && firecrawlKeySaved && !firecrawlKeyNeedsReplacement,
-            webSearchStates = bottleWebSearchStates,
-            pendingEnrichmentJobs = pendingBottleEnrichmentJobs,
-            ollamaCloudEnabled = ollamaCloudEnabled && ollamaCloudKeySaved && !ollamaCloudKeyNeedsReplacement && isValidOllamaModelIdentifier(ollamaCloudModel),
-            localAiEnabled = localAiEnabled && localModelFile != null,
-            onSearchDraft = ::searchBottleSources,
-            onFetchDraftSource = ::fetchBottleSource,
-            onExtractDraftDetails = ::extractBottleDetails,
-            onExtractDraftDetailsOnDevice = ::extractBottleDetailsOnDevice,
-            onResumeEnrichment = ::resumeBottleEnrichment,
-            onCancelDraftSearch = ::cancelBottleSourceSearch,
-            onCaptureLabel = {
-                bottleLabelCaptureMessage = null
-                val directory = File(context.cacheDir, "intake-labels")
-                directory.mkdirs()
-                val file = File(directory, "intake-label-capture.jpg")
-                file.delete()
-                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                bottleLabelCaptureLauncher.launch(uri)
-            },
-            onDiscardCapturedLabel = { pendingBottleLabelPhoto = null; bottleLabelCaptureMessage = null },
-            onAttachCapturedLabel = { draft ->
-                val photo = pendingBottleLabelPhoto
-                if (photo != null) {
-                    if (repository.updateBottleIntakeDraft(draft.copy(photoData = photo, photoSha256 = photoSha256(photo)))) {
-                        pendingBottleLabelPhoto = null
-                        bottleLabelCaptureMessage = null
-                        bottleIntakeSession = repository.openBottleIntakeSession()
-                    } else {
-                        bottleLabelCaptureMessage = "The label photo could not be attached. It is still available here; try again or discard it."
-                    }
-                }
-            },
-            onScan = {
-                bottleIntakeCameraMessage = null
-                if (context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) showBottleScanner = true
-                else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-            },
-            onAddManual = { name, category, barcode, brand, productName, level, photo ->
-                val created = repository.addBottleIntakeDraft(
-                    sessionId = bottleIntakeSession!!.id,
-                    ingredientName = name,
-                    category = category,
-                    locationId = bottleIntakeSession!!.locationId,
-                    level = level,
-                    nowMillis = System.currentTimeMillis(),
-                    barcode = barcode,
-                    brand = brand,
-                    productName = productName,
-                    photoJpeg = photo,
-                )
-                if (created != null) bottleIntakeSession = repository.openBottleIntakeSession()
-                created != null
-            },
-            onRemove = { draft ->
-                cancelBottleSourceSearch(draft.id)
-                bottleWebSearchStates = bottleWebSearchStates - draft.id
-                repository.removeBottleIntakeDraft(draft.sessionId, draft.id)
-                bottleIntakeSession = repository.openBottleIntakeSession()
-            },
-            onUpdate = { draft ->
-                val prior = bottleIntakeSession?.drafts?.firstOrNull { it.id == draft.id }
-                if (prior != null && (prior.ingredientName != draft.ingredientName || prior.brand != draft.brand || prior.productName != draft.productName)) {
-                    cancelBottleSourceSearch(draft.id)
-                    bottleWebSearchStates = bottleWebSearchStates - draft.id
-                }
-                val saved = repository.updateBottleIntakeDraft(draft)
-                if (saved) bottleIntakeSession = repository.openBottleIntakeSession()
-                saved
-            },
-            onHomeChanged = { home -> repository.setBottleIntakeHome(bottleIntakeSession!!.id, home, System.currentTimeMillis()); bottleIntakeSession = repository.openBottleIntakeSession() },
-            onLevelChanged = { level -> repository.setBottleIntakeDefaultLevel(bottleIntakeSession!!.id, level, System.currentTimeMillis()); bottleIntakeSession = repository.openBottleIntakeSession() },
-            onConfirm = {
-                val result = repository.confirmBottleIntakeSession(bottleIntakeSession!!.id, System.currentTimeMillis())
-                when (result) {
-                    is BottleIntakeCommitResult.Confirmed, is BottleIntakeCommitResult.AlreadyConfirmed -> {
-                        cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = false)
-                        bottleWebSearchStates = emptyMap()
-                        refreshPantry()
-                        bottleIntakeSession = null
-                        showBottleIntake = false
-                        pendingBottleLabelPhoto = null
-                        bottleLabelCaptureMessage = null
-                    }
-                    is BottleIntakeCommitResult.Invalid -> Unit
-                }
-                result
-            },
-            onCancel = {
-                cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = false)
-                bottleWebSearchStates = emptyMap()
-                repository.cancelBottleIntakeSession(bottleIntakeSession!!.id)
-                clearPendingBottleCapture()
-                bottleIntakeSession = null
-                pendingBottleLabelPhoto = null
-                bottleLabelCaptureMessage = null
-                showBottleIntake = false
-            },
-            onDismiss = {
-                cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = true)
-                bottleWebSearchStates = emptyMap()
-                showBottleIntake = false
-                bottleIntakeSession = repository.openBottleIntakeSession()
-                pendingBottleLabelPhoto = null
-                bottleLabelCaptureMessage = null
-                clearPendingBottleCapture()
-            },
-        )
-    }
 
     if (showBottleScanner && bottleIntakeSession != null) {
         BarcodeScannerDialog(
@@ -1777,7 +1780,8 @@ private fun MakeScreen(
 }
 
 @Composable
-private fun BottleIntakeDialog(
+private fun BottleIntakeScreen(
+    modifier: Modifier,
     session: BottleIntakeSession,
     homes: List<HomeLocation>,
     capturePhoto: ByteArray?,
@@ -1807,6 +1811,7 @@ private fun BottleIntakeDialog(
     onCancel: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    BackHandler(onBack = onDismiss)
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     var name by remember { mutableStateOf("") }
@@ -1821,20 +1826,12 @@ private fun BottleIntakeDialog(
         mutableStateOf(session.drafts.filter { it.ingredientName.isBlank() }.mapTo(mutableSetOf()) { it.id })
     }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-    ) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.surface,
+    Column(modifier.fillMaxSize().imePadding()) {
+        Text("Add bottles", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp))
+        Column(
+            Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).testTag("bottle-intake-scroll").padding(horizontal = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Column(Modifier.fillMaxSize()) {
-                Text("Add bottles", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp))
-                Column(
-                    Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).testTag("bottle-intake-scroll").padding(horizontal = 20.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
                 Text("${session.drafts.size} bottle${if (session.drafts.size == 1) "" else "s"} in this batch", style = MaterialTheme.typography.titleMedium)
                 Text("Drafts stay on this phone until you confirm. Repeated bottles are kept separately.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1902,8 +1899,8 @@ private fun BottleIntakeDialog(
                 }, modifier = Modifier.fillMaxWidth().testTag("batch-add-manual-bottle")) { Text("Add bottle to draft") }
                 if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
                 Text("Online lookup and model suggestions never block scanning. Lookup starts only when you choose it.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        }
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Button(
                         onClick = {
                             when (val result = onConfirm()) {
@@ -1918,8 +1915,6 @@ private fun BottleIntakeDialog(
                         TextButton(onClick = onCancel, modifier = Modifier.weight(1f)) { Text("Discard batch") }
                         TextButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("Keep for later") }
                     }
-                }
-            }
         }
     }
 }
