@@ -78,10 +78,24 @@ internal fun bindPageBarcodeIdentity(
     }
     val identityEvidence = scannedProductIdentityEvidence(requiredBarcode, nameFact.value, page.markdown)
         ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
-    return result.copy(suggestions = result.suggestions.copy(
-        targetBarcode = requiredBarcode,
-        identityEvidence = identityEvidence,
-    ))
+    val unboundFacts = result.suggestions.facts.filter { fact ->
+        fact.field != BottleFactField.PRODUCT_NAME && !factQuoteIsBoundToProductIdentity(fact, nameFact.value)
+    }
+    val unresolvedFields = result.suggestions.unresolvedFields + unboundFacts.map(BottleFactEvidence::field)
+    val acceptedFacts = result.suggestions.facts.filter { fact ->
+        fact.field == BottleFactField.PRODUCT_NAME || fact !in unboundFacts
+    }.filterNot { it.field in unresolvedFields }
+    return result.copy(
+        suggestions = result.suggestions.copy(
+            facts = acceptedFacts,
+            unresolvedFields = unresolvedFields,
+            targetBarcode = requiredBarcode,
+            identityEvidence = identityEvidence,
+        ),
+        rejectedCandidates = result.rejectedCandidates + if (unboundFacts.isNotEmpty()) {
+            setOf(BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE)
+        } else emptySet(),
+    )
 }
 
 private fun productIdentityTokens(value: String): Set<String> = normalizeProductTitle(value)

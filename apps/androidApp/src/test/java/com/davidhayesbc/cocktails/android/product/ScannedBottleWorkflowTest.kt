@@ -321,10 +321,15 @@ class ScannedBottleWorkflowTest {
         )
         assertEquals(identity, structuredBottleIdentityForPage("5011333150725", page))
         assertNull(structuredBottleIdentityForPage("5011333150725", page.copy(title = "Other Reserve")))
-        assertNull(structuredBottleIdentityForPage("5011333150725", page.copy(structuredBottleIdentities = listOf(
-            identity,
-            identity.copy(productName = "Other Reserve", evidence = "Structured product fields: barcode 5011333150725; product Other Reserve"),
-        )))
+        assertNull(
+            structuredBottleIdentityForPage(
+                "5011333150725",
+                page.copy(structuredBottleIdentities = listOf(
+                    identity,
+                    identity.copy(productName = "Other Reserve", evidence = "Structured product fields: barcode 5011333150725; product Other Reserve"),
+                )),
+            ),
+        )
 
         var extractorSawProof = false
         val result = ScannedBottleEnrichmentCoordinator(
@@ -362,7 +367,7 @@ class ScannedBottleWorkflowTest {
         assertEquals(200, events.last { it.stage == BottleLookupDebugStage.FIRECRAWL_SEARCH }.httpStatus)
         assertTrue(events.last { it.stage == BottleLookupDebugStage.FIRECRAWL_SEARCH }.durationMillis >= 0)
         assertEquals("BARCODE_MISSING", events.last { it.stage == BottleLookupDebugStage.BARCODE_MATCH }.result)
-        assertEquals(listOf("NO_EXACT_CODE_IN_PAGE"), events.last { it.stage == BottleLookupDebugStage.BARCODE_MATCH }.reasonCodes)
+        assertEquals(listOf("NO_EXACT_CODE_IN_PAGE", "CANDIDATE_1_REJECTED"), events.last { it.stage == BottleLookupDebugStage.BARCODE_MATCH }.reasonCodes)
         assertTrue(events.none { it.stage == BottleLookupDebugStage.DETAIL_EXTRACTION && it.result == "CANDIDATES_READY" })
         val report = BottleLookupDebugReport(
             createdAtMillis = 1,

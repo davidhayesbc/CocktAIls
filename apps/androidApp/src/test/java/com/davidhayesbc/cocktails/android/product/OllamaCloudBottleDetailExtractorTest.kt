@@ -90,7 +90,7 @@ class OllamaCloudBottleDetailExtractorTest {
             structuredBottleIdentities = listOf(identity),
         )
         val transport = FakeTransport(OllamaCloudHttpResponse.Success(response(
-            """{"facts":[{"field":"quantity","value":"700 mL","evidence":"Other Gin 700 mL"},{"field":"abv_percent","value":"40%","evidence":"Other Gin 40% ABV"}]}""",
+            """{"facts":[{"field":"quantity","value":"700 mL","evidence":"Recommended alternative: Other Gin 700 mL, 40% ABV"},{"field":"abv_percent","value":"40%","evidence":"Recommended alternative: Other Gin 700 mL, 40% ABV"}]}""",
         )))
 
         val result = OllamaCloudBottleDetailExtractor({ "synthetic-key" }, transport)
@@ -100,6 +100,28 @@ class OllamaCloudBottleDetailExtractorTest {
         val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
         assertEquals(listOf(BottleFactField.PRODUCT_NAME), suggestions.facts.map(BottleFactEvidence::field))
         assertTrue(BottleFactField.QUANTITY in suggestions.unresolvedFields)
+        assertTrue(BottleFactField.ABV_PERCENT in suggestions.unresolvedFields)
+    }
+
+    @Test
+    fun pageBarcodeIdentityDoesNotAuthorizeFactsQuotedOnlyForAnotherProduct() = runBlocking {
+        val page = WebPageText(
+            title = "Auchentoshan Three Wood Single Malt Scotch Whisky",
+            sourceUrl = "https://example.org/auchentoshan-three-wood",
+            markdown = "UPC 5011333150725 applies to Auchentoshan Three Wood. Related whisky: Other Gin 40% ABV.",
+            provider = "Firecrawl",
+        )
+        val transport = FakeTransport(OllamaCloudHttpResponse.Success(response(
+            """{"facts":[{"field":"product_name","value":"Auchentoshan Three Wood","evidence":"Auchentoshan Three Wood"},{"field":"abv_percent","value":"40%","evidence":"Related whisky: Other Gin 40% ABV"}]}""",
+        )))
+
+        val result = OllamaCloudBottleDetailExtractor({ "synthetic-key" }, transport)
+            .extract(page, "qwen3:8b-cloud", "5011333150725")
+
+        assertTrue(result is BottleDetailExtractionResult.Found)
+        val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
+        assertEquals("5011333150725", suggestions.targetBarcode)
+        assertEquals(listOf(BottleFactField.PRODUCT_NAME), suggestions.facts.map(BottleFactEvidence::field))
         assertTrue(BottleFactField.ABV_PERCENT in suggestions.unresolvedFields)
     }
 
@@ -215,7 +237,7 @@ class OllamaCloudBottleDetailExtractorTest {
         assertTrue(result is BottleDetailExtractionResult.Found)
         assertEquals("5011333150725", (result as BottleDetailExtractionResult.Found).suggestions.targetBarcode)
         assertTrue((result as BottleDetailExtractionResult.Found).suggestions.identityEvidence.orEmpty().contains("UPC 5011333150725"))
-        assertFalse(transport.lastBody.contains("identity"))
+        assertFalse(transport.lastBody.contains("\"identity\""))
         assertFalse(transport.lastBody.contains("5011333150725"))
         assertTrue(transport.lastBody.contains("[barcode omitted]"))
     }

@@ -157,6 +157,7 @@ import com.davidhayesbc.cocktails.android.product.AutomaticBottleExtractor
 import com.davidhayesbc.cocktails.android.product.automaticBottleExtractor
 import com.davidhayesbc.cocktails.android.product.scannedBottleSearchQuery
 import com.davidhayesbc.cocktails.android.product.sourceMentionsScannedBarcode
+import com.davidhayesbc.cocktails.android.product.structuredBottleIdentityForPage
 import com.davidhayesbc.cocktails.android.product.FirecrawlCredentialStore
 import com.davidhayesbc.cocktails.android.product.OllamaCloudCredentialStore
 import com.davidhayesbc.cocktails.android.product.BottleEnrichmentJob

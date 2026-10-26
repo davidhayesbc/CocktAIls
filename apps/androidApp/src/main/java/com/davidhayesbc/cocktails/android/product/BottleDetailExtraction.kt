@@ -314,7 +314,7 @@ internal fun bindStructuredProductIdentity(
     }
     val structuredNameFact = BottleFactEvidence(BottleFactField.PRODUCT_NAME, identity.productName, identity.evidence)
     val unboundFacts = result.suggestions.facts.filter { fact ->
-        fact.field != BottleFactField.PRODUCT_NAME && !factQuoteIsBoundToStructuredProduct(fact, identity.productName)
+        fact.field != BottleFactField.PRODUCT_NAME && !factQuoteIsBoundToProductIdentity(fact, identity.productName)
     }
     val unresolvedFields = result.suggestions.unresolvedFields + unboundFacts.map(BottleFactEvidence::field)
     val acceptedFacts = (listOf(structuredNameFact) + result.suggestions.facts.filter { fact ->
@@ -334,7 +334,7 @@ internal fun bindStructuredProductIdentity(
 }
 
 /** In a structured-identity flow, each extracted fact must name the verified product in the same quote passage. */
-private fun factQuoteIsBoundToStructuredProduct(fact: BottleFactEvidence, productName: String): Boolean =
+internal fun factQuoteIsBoundToProductIdentity(fact: BottleFactEvidence, productName: String): Boolean =
     fact.quote.split(Regex("(?<=[.!?;])\\s+|\\n+|\\s+[|•]\\s+"))
         .any { passage ->
             passage.contains(productName, ignoreCase = true) &&
