@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.graphics.Rect
 import android.os.Build
 import android.util.Log
+import android.view.View
+import android.view.ViewGroup
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
@@ -399,17 +401,43 @@ class OfflineRecipeSmokeTest {
 
     private fun setTestContent(content: @Composable () -> Unit) {
         composeRule.runOnUiThread {
-            composeRule.activity.findViewById<ComposeView>(android.R.id.content).setContent(content)
+            val contentRoot = composeRule.activity.findViewById<ViewGroup>(android.R.id.content)
+            val composeView = contentRoot.findComposeView()
+                ?: error("MainActivity content has no ComposeView: ${contentRoot.describeChildren()}")
+            composeView.setContent(content)
         }
     }
 
     private fun assertRestoredBottleEvidenceVisible() {
+        val suggestions = "Suggestions · On-device Qwen3 · Qwen3-0.6B-Q8_0"
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(
             hasText("Restored the verified source and suggestions for this unaccepted bottle. Review them; no provider request restarted."),
         )
         composeRule.onNodeWithText("Restored the verified source and suggestions for this unaccepted bottle. Review them; no provider request restarted.").assertIsDisplayed()
-        composeRule.onNodeWithText("Suggestions · On-device Qwen3 · Qwen3-0.6B-Q8_0").assertIsDisplayed()
+        // The suggestion card follows the restoration message and can be below the viewport.
+        // Assert it exists in the source UI, then scroll it into view before checking visibility.
+        composeRule.onNodeWithText(suggestions).assertExists()
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText(suggestions))
+        composeRule.onNodeWithText(suggestions).assertIsDisplayed()
         composeRule.onNodeWithTag("batch-scan-bottles").assertIsNotEnabled()
+    }
+
+    private fun View.findComposeView(): ComposeView? {
+        if (this is ComposeView) return this
+        if (this !is ViewGroup) return null
+        for (index in 0 until childCount) {
+            getChildAt(index).findComposeView()?.let { return it }
+        }
+        return null
+    }
+
+    private fun View.describeChildren(): String = buildString {
+        append(javaClass.name)
+        if (this@describeChildren is ViewGroup) {
+            append("[")
+            append((0 until childCount).joinToString { index -> getChildAt(index).describeChildren() })
+            append("]")
+        }
     }
 
     private fun keepBottleIntakeForLater() {
