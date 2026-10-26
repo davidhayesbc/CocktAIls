@@ -61,6 +61,7 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("household-scroll").performScrollToNode(hasText("On-device model · Qwen3 0.6B Q8"))
         composeRule.onNodeWithText("On-device model · Qwen3 0.6B Q8").assertIsDisplayed()
         composeRule.onNodeWithTag("local-ai-toggle").assertIsNotEnabled()
+        composeRule.onNodeWithTag("household-scroll").performScrollToNode(hasTestTag("choose-local-model"))
         composeRule.onNodeWithTag("choose-local-model").assertIsDisplayed()
     }
 
@@ -82,6 +83,7 @@ class OfflineRecipeSmokeTest {
         composeRule.activityRule.scenario.recreate()
         composeRule.onNodeWithText("My Bar").performClick()
         composeRule.onNodeWithTag("start-bottle-intake").performClick()
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("2 bottles in this batch"))
         composeRule.onNodeWithText("2 bottles in this batch").assertIsDisplayed()
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-name-0"))
         composeRule.onNodeWithTag("bottle-intake-draft-name-0").performTextClearance()
@@ -126,8 +128,11 @@ class OfflineRecipeSmokeTest {
                 }
                 file.absolutePath
             }.getOrElse { "screenshot unavailable: ${it.message}" }
-            val hierarchy = dumpAccessibilityNode(automation.rootInActiveWindow, 0)
-            composeRule.onRoot(useUnmergedTree = true).printToLog("CocktAIlsBatchFailure")
+            val hierarchy = runCatching { dumpAccessibilityNode(automation.rootInActiveWindow, 0) }
+                .getOrElse { "accessibility hierarchy unavailable: ${it.message}" }
+            runCatching {
+                composeRule.onAllNodes(hasTestTag("bottle-intake-scroll"), useUnmergedTree = true).printToLog("CocktAIlsBatchFailure")
+            }.onFailure { Log.e("CocktAIlsBatchFailure", "Compose dialog semantics unavailable: ${it.message}") }
             Log.e("CocktAIlsBatchFailure", "Batch count not displayed: ${failure.message}\n$semantics\nScreenshot: $screenshot\nAccessibility hierarchy:\n$hierarchy")
             throw AssertionError("Batch count not displayed after scrolling. $semantics; screenshot=$screenshot", failure)
         }

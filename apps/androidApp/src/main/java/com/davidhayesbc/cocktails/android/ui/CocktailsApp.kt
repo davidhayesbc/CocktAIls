@@ -1806,6 +1806,7 @@ private fun BottleIntakeDialog(
 ) {
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val dialogContentMaxHeight = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp * 0.55f
     var name by remember { mutableStateOf("") }
     var category by remember { mutableStateOf("Spirit") }
     var barcode by remember { mutableStateOf("") }
@@ -1822,15 +1823,15 @@ private fun BottleIntakeDialog(
         onDismissRequest = onDismiss,
         title = { Text("Add bottles") },
         text = {
-            Column(Modifier.fillMaxWidth().heightIn(max = 620.dp).verticalScroll(rememberScrollState()).testTag("bottle-intake-scroll"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.fillMaxWidth().heightIn(max = dialogContentMaxHeight).verticalScroll(rememberScrollState()).testTag("bottle-intake-scroll"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("${session.drafts.size} bottle${if (session.drafts.size == 1) "" else "s"} in this batch", style = MaterialTheme.typography.titleMedium)
                 Text("Drafts stay on this phone until you confirm. Repeated bottles are kept separately.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { showHomeMenu = true }) { Text("Home: ${homes.firstOrNull { it.id == session.locationId }?.name ?: "Choose"}") }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { showHomeMenu = true }, modifier = Modifier.fillMaxWidth()) { Text("Home: ${homes.firstOrNull { it.id == session.locationId }?.name ?: "Choose"}") }
                     DropdownMenu(expanded = showHomeMenu, onDismissRequest = { showHomeMenu = false }) {
                         homes.forEach { home -> DropdownMenuItem(text = { Text(home.name) }, onClick = { onHomeChanged(home.id); showHomeMenu = false }) }
                     }
-                    OutlinedButton(onClick = { showLevelMenu = true }) { Text("Stock: ${session.defaultLevel.label}") }
+                    OutlinedButton(onClick = { showLevelMenu = true }, modifier = Modifier.fillMaxWidth()) { Text("Stock: ${session.defaultLevel.label}") }
                     DropdownMenu(expanded = showLevelMenu, onDismissRequest = { showLevelMenu = false }) {
                         InventoryLevel.entries.forEach { level -> DropdownMenuItem(text = { Text(level.label) }, onClick = { onLevelChanged(level); showLevelMenu = false }) }
                     }
@@ -2969,10 +2970,10 @@ private fun HouseholdScreen(
             Text("${localModelImportProgressBytes / (1024 * 1024)} MiB read · checking the pinned SHA-256 · 900 MiB maximum", style = MaterialTheme.typography.bodySmall)
             OutlinedButton(onClick = onCancelLocalModelImport, modifier = Modifier.testTag("cancel-local-model-import")) { Text("Cancel model import") }
         } else {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onOpenLocalModelSource, modifier = Modifier.testTag("local-model-source")) { Text("Open model source") }
-                OutlinedButton(onClick = onChooseLocalModel, modifier = Modifier.testTag("choose-local-model")) { Text(if (localModelInstalled) "Replace model file" else "Choose GGUF file") }
-                if (localModelInstalled) TextButton(onClick = onDeleteLocalModel, modifier = Modifier.testTag("delete-local-model")) { Text("Delete") }
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onOpenLocalModelSource, modifier = Modifier.fillMaxWidth().testTag("local-model-source")) { Text("Open model source") }
+                OutlinedButton(onClick = onChooseLocalModel, modifier = Modifier.fillMaxWidth().testTag("choose-local-model")) { Text(if (localModelInstalled) "Replace model file" else "Choose GGUF file") }
+                if (localModelInstalled) TextButton(onClick = onDeleteLocalModel, modifier = Modifier.fillMaxWidth().testTag("delete-local-model")) { Text("Delete") }
             }
         }
         localModelMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
