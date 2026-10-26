@@ -70,7 +70,7 @@ jobs:
           name: CocktAIls-debug-v0.1.0-ci-${{ github.run_number }}-${{ github.sha }}
           path: apps/androidApp/build/outputs/apk/debug/androidApp-debug.apk
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 1
           compression-level: 0
 
   emulator-smoke:
