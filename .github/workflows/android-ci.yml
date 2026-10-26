@@ -260,15 +260,15 @@ jobs:
           echo '--- KVM acceleration check ---'
           cat "$RUNNER_TEMP/cocktails-kvm-check.log"
           echo '--- permission prompt screenshots ---'
-          app_cache=/sdcard/Android/data/com.davidhayesbc.cocktails/cache
+          screenshot_dir=/sdcard/Download/CocktAIlsDiagnostics
           for test_name in deniedCameraPermissionKeepsManualBarcodeEntryAvailable scannerCanBeOpenedClosedReopenedAndActivityRecreated; do
-            screenshot="$app_cache/camera-permission-$test_name.png"
+            screenshot="$screenshot_dir/camera-permission-$test_name.png"
             if timeout 10 "$adb" -s emulator-5554 shell test -f "$screenshot"; then
               timeout 15 "$adb" -s emulator-5554 pull "$screenshot" "$RUNNER_TEMP/$(basename "$screenshot")"
             fi
           done
           echo '--- batch intake failure screenshot ---'
-          batch_screenshot="$app_cache/batch-intake-count-failure.png"
+          batch_screenshot="$screenshot_dir/batch-intake-count-failure.png"
           if timeout 10 "$adb" -s emulator-5554 shell test -f "$batch_screenshot"; then
             timeout 15 "$adb" -s emulator-5554 pull "$batch_screenshot" "$RUNNER_TEMP/$(basename "$batch_screenshot")"
           fi

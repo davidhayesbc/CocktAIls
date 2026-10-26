@@ -3,7 +3,6 @@ package com.davidhayesbc.cocktails.android
 import android.Manifest
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.Build
 import android.util.Log
@@ -48,7 +47,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.io.File
 
 @RunWith(AndroidJUnit4::class)
 class OfflineRecipeSmokeTest {
@@ -118,15 +116,7 @@ class OfflineRecipeSmokeTest {
                 "boundsInRoot=${node.boundsInRoot}; boundsInWindow=${node.boundsInWindow}; config=${node.config}"
             }.getOrElse { "semantics unavailable: ${it.message}" }
             val screenshot = runCatching {
-                val file = File(requireNotNull(composeRule.activity.externalCacheDir), "batch-intake-count-failure.png")
-                file.parentFile?.mkdirs()
-                val bitmap = automation.takeScreenshot()
-                try {
-                    file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                } finally {
-                    bitmap.recycle()
-                }
-                file.absolutePath
+                saveTestScreenshot(instrumentation, "batch-intake-count-failure.png")
             }.getOrElse { "screenshot unavailable: ${it.message}" }
             val hierarchy = runCatching { dumpAccessibilityNode(automation.rootInActiveWindow, 0) }
                 .getOrElse { "accessibility hierarchy unavailable: ${it.message}" }

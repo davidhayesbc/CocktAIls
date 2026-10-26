@@ -45,6 +45,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Switch
@@ -69,6 +70,8 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -1806,7 +1809,6 @@ private fun BottleIntakeDialog(
 ) {
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
-    val dialogContentMaxHeight = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp * 0.55f
     var name by remember { mutableStateOf("") }
     var category by remember { mutableStateOf("Spirit") }
     var barcode by remember { mutableStateOf("") }
@@ -1819,11 +1821,20 @@ private fun BottleIntakeDialog(
         mutableStateOf(session.drafts.filter { it.ingredientName.isBlank() }.mapTo(mutableSetOf()) { it.id })
     }
 
-    AlertDialog(
+    Dialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add bottles") },
-        text = {
-            Column(Modifier.fillMaxWidth().heightIn(max = dialogContentMaxHeight).verticalScroll(rememberScrollState()).testTag("bottle-intake-scroll"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                Text("Add bottles", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp))
+                Column(
+                    Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).testTag("bottle-intake-scroll").padding(horizontal = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
                 Text("${session.drafts.size} bottle${if (session.drafts.size == 1) "" else "s"} in this batch", style = MaterialTheme.typography.titleMedium)
                 Text("Drafts stay on this phone until you confirm. Repeated bottles are kept separately.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1891,20 +1902,26 @@ private fun BottleIntakeDialog(
                 }, modifier = Modifier.fillMaxWidth().testTag("batch-add-manual-bottle")) { Text("Add bottle to draft") }
                 if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
                 Text("Online lookup and model suggestions never block scanning. Lookup starts only when you choose it.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        },
-        confirmButton = {
-            Button(onClick = {
-                when (val result = onConfirm()) {
-                    is BottleIntakeCommitResult.Invalid -> error = result.reason
-                    else -> Unit
                 }
-            }, enabled = session.drafts.isNotEmpty() && invalidDraftIds.isEmpty(), modifier = Modifier.testTag("batch-confirm")) { Text("Confirm ${session.drafts.size} bottles") }
-        },
-        dismissButton = {
-            Row { TextButton(onClick = onCancel) { Text("Discard batch") }; TextButton(onClick = onDismiss) { Text("Keep for later") } }
-        },
-    )
+                Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Button(
+                        onClick = {
+                            when (val result = onConfirm()) {
+                                is BottleIntakeCommitResult.Invalid -> error = result.reason
+                                else -> Unit
+                            }
+                        },
+                        enabled = session.drafts.isNotEmpty() && invalidDraftIds.isEmpty(),
+                        modifier = Modifier.fillMaxWidth().testTag("batch-confirm"),
+                    ) { Text("Confirm ${session.drafts.size} bottles") }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = onCancel, modifier = Modifier.weight(1f)) { Text("Discard batch") }
+                        TextButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("Keep for later") }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable

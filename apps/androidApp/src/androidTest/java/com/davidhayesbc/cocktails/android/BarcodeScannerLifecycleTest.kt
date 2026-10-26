@@ -2,7 +2,6 @@ package com.davidhayesbc.cocktails.android
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.SystemClock
 import android.util.Log
@@ -27,7 +26,6 @@ import org.junit.runner.RunWith
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
 import org.junit.rules.TestName
-import java.io.File
 
 @RunWith(AndroidJUnit4::class)
 class BarcodeScannerLifecycleTest {
@@ -192,12 +190,8 @@ class BarcodeScannerLifecycleTest {
             dumpNode(runCatching { window.root }.getOrNull(), 0)
         }.ifBlank { dumpNode(automation.rootInActiveWindow, 0) }
         val screenshot = runCatching {
-            val bitmap = automation.takeScreenshot()
             val safeTestName = testName.methodName.replace(Regex("[^A-Za-z0-9_-]"), "_")
-            val target = File(requireNotNull(composeRule.activity.externalCacheDir), "camera-permission-$safeTestName.png")
-            target.parentFile?.mkdirs()
-            target.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-            target.absolutePath
+            saveTestScreenshot(instrumentation, "camera-permission-$safeTestName.png")
         }.getOrDefault("unavailable")
         Log.e("CocktAIlsPermissionTest", "$message\nScreenshot: $screenshot\nHierarchy:\n$hierarchy")
         throw AssertionError("$message. Accessibility hierarchy was logged; screenshot: $screenshot")
