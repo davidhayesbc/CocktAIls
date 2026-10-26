@@ -3640,13 +3640,13 @@ private fun DiagnosticsDialog(
         text = {
             Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()).testTag("diagnostics-dialog-scroll"), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("Latest bottle lookup report", style = MaterialTheme.typography.titleSmall)
-                Text(lookupPreview ?: "No barcode lookup report yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("latest-lookup-report-preview"))
                 if (lookupPreview != null) {
                     OutlinedButton(onClick = onCopyLookup, modifier = Modifier.fillMaxWidth().testTag("copy-bottle-lookup-report")) {
                         Text("Copy lookup debug report")
                     }
                     lookupCopyMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
                 }
+                Text(lookupPreview ?: "No barcode lookup report yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("latest-lookup-report-preview"))
                 Text("Stored only on this phone. Nothing is uploaded automatically. Export or copy only when you choose to share.")
                 Text("Crash details include app/device version, camera event categories, and stack frames. Lookup reports include scanned barcode digits, provider/model status, safe source URLs, timings, HTTP statuses, and fixed rejection codes.")
                 Text("Reports exclude API keys and headers, raw responses, page text, prompts, bottle names, recipes, household/member data, photos, location, and exception messages.")
