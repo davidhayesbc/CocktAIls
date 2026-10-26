@@ -194,6 +194,10 @@ jobs:
             fi
             sleep 5
           done
+          batch_screenshot="$app_cache/batch-intake-count-failure.png"
+          if timeout 10 "$adb" -s emulator-5554 shell test -f "$batch_screenshot"; then
+            timeout 15 "$adb" -s emulator-5554 pull "$batch_screenshot" "$RUNNER_TEMP/$(basename "$batch_screenshot")"
+          fi
 
           # Keep cold boot bounded while allowing Android system services to start.
           boot_deadline=$((SECONDS + 600))
@@ -267,6 +271,7 @@ jobs:
             ${{ runner.temp }}/cocktails-adb-bootstrap.log
             ${{ runner.temp }}/cocktails-kvm-check.log
             ${{ runner.temp }}/camera-permission-*.png
+            ${{ runner.temp }}/batch-intake-*.png
             apps/androidApp/build/outputs/androidTest-results/connected/**/*.xml
             apps/androidApp/build/reports/androidTests/connected/**
           if-no-files-found: ignore

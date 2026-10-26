@@ -3,7 +3,11 @@ package com.davidhayesbc.cocktails.android
 import android.Manifest
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Rect
 import android.os.Build
+import android.util.Log
+import android.view.accessibility.AccessibilityNodeInfo
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -14,6 +18,8 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.printToLog
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.performClick
@@ -42,6 +48,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.File
 
 @RunWith(AndroidJUnit4::class)
 class OfflineRecipeSmokeTest {
@@ -61,7 +68,7 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-add-manual-bottle"))
         composeRule.onNodeWithTag("batch-add-manual-bottle").performClick()
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("2 bottles in this batch"))
-        composeRule.onNodeWithText("2 bottles in this batch").assertIsDisplayed()
+        assertBatchCountVisibleWithDiagnostics()
 
         composeRule.activityRule.scenario.recreate()
         composeRule.onNodeWithText("My Bar").performClick()
@@ -86,6 +93,47 @@ class OfflineRecipeSmokeTest {
             assertEquals(2, bottles.map { it.inventoryId }.toSet().size)
         } finally {
             driver.close()
+        }
+    }
+
+    private fun assertBatchCountVisibleWithDiagnostics() {
+        try {
+            composeRule.onNodeWithText("2 bottles in this batch").assertIsDisplayed()
+        } catch (failure: AssertionError) {
+            val instrumentation = InstrumentationRegistry.getInstrumentation()
+            val automation = instrumentation.uiAutomation
+            val semantics = runCatching {
+                val node = composeRule.onNodeWithText("2 bottles in this batch").fetchSemanticsNode()
+                "boundsInRoot=${node.boundsInRoot}; boundsInWindow=${node.boundsInWindow}; config=${node.config}"
+            }.getOrElse { "semantics unavailable: ${it.message}" }
+            val screenshot = runCatching {
+                val file = File(requireNotNull(composeRule.activity.externalCacheDir), "batch-intake-count-failure.png")
+                file.parentFile?.mkdirs()
+                val bitmap = automation.takeScreenshot()
+                try {
+                    file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                } finally {
+                    bitmap.recycle()
+                }
+                file.absolutePath
+            }.getOrElse { "screenshot unavailable: ${it.message}" }
+            val hierarchy = dumpAccessibilityNode(automation.rootInActiveWindow, 0)
+            composeRule.onRoot(useUnmergedTree = true).printToLog("CocktAIlsBatchFailure")
+            Log.e("CocktAIlsBatchFailure", "Batch count not displayed: ${failure.message}\n$semantics\nScreenshot: $screenshot\nAccessibility hierarchy:\n$hierarchy")
+            throw AssertionError("Batch count not displayed after scrolling. $semantics; screenshot=$screenshot", failure)
+        }
+    }
+
+    private fun dumpAccessibilityNode(node: AccessibilityNodeInfo?, depth: Int): String {
+        if (node == null || depth > 12) return ""
+        val bounds = Rect().also(node::getBoundsInScreen)
+        return buildString {
+            append("  ".repeat(depth))
+            append("class=").append(node.className)
+            append(" text=").append(node.text)
+            append(" bounds=").append(bounds)
+            append("\n")
+            for (index in 0 until node.childCount) append(dumpAccessibilityNode(node.getChild(index), depth + 1))
         }
     }
 
