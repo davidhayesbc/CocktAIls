@@ -87,39 +87,43 @@ internal class FirecrawlSearchProvider(
     private val keyProvider: () -> String?,
     private val transport: FirecrawlTransport = UrlConnectionFirecrawlTransport(),
 ) : WebSearchProvider, WebPageContentProvider {
-    override suspend fun search(query: String, limit: Int): WebSearchResult {
+    override suspend fun search(query: String, limit: Int): WebSearchResult = searchDetailed(query, limit).result
+
+    suspend fun searchDetailed(query: String, limit: Int = 5): BottleProviderCall<WebSearchResult> {
         val cleanedQuery = query.trim()
         if (cleanedQuery.isEmpty() || cleanedQuery.length > MAX_QUERY_CHARS || limit !in 1..MAX_SEARCH_RESULTS) {
-            return WebSearchResult.InvalidQuery
+            return BottleProviderCall(WebSearchResult.InvalidQuery)
         }
-        val key = keyProvider()?.trim()?.takeIf(String::isNotEmpty) ?: return WebSearchResult.SetupRequired
+        val key = keyProvider()?.trim()?.takeIf(String::isNotEmpty) ?: return BottleProviderCall(WebSearchResult.SetupRequired)
         val body = buildJsonObject {
             put("query", cleanedQuery)
             put("limit", limit)
             put("sources", buildJsonArray { add(kotlinx.serialization.json.JsonPrimitive("web")) })
         }.toString()
         return when (val response = transport.post(FIRECRAWL_SEARCH_PATH, key, body, MAX_SEARCH_RESPONSE_BYTES)) {
-            is FirecrawlHttpResponse.Failure -> response.status.toWebSearchFailure()
-            is FirecrawlHttpResponse.Success -> parseFirecrawlSearchResponse(response.body, limit)
+            is FirecrawlHttpResponse.Failure -> BottleProviderCall(response.status.toWebSearchFailure(), response.status.takeIf { it in 100..599 })
+            is FirecrawlHttpResponse.Success -> BottleProviderCall(parseFirecrawlSearchResponse(response.body, limit), response.status.takeIf { it in 100..599 })
         }
     }
 
-    override suspend fun fetch(url: String): WebPageResult {
-        val safeUrl = normalizePublicHttpsUrl(url) ?: return WebPageResult.InvalidUrl
-        val key = keyProvider()?.trim()?.takeIf(String::isNotEmpty) ?: return WebPageResult.SetupRequired
+    override suspend fun fetch(url: String): WebPageResult = fetchDetailed(url).result
+
+    suspend fun fetchDetailed(url: String): BottleProviderCall<WebPageResult> {
+        val safeUrl = normalizePublicHttpsUrl(url) ?: return BottleProviderCall(WebPageResult.InvalidUrl)
+        val key = keyProvider()?.trim()?.takeIf(String::isNotEmpty) ?: return BottleProviderCall(WebPageResult.SetupRequired)
         val body = buildJsonObject {
             put("url", safeUrl)
             put("formats", buildJsonArray { add(kotlinx.serialization.json.JsonPrimitive("markdown")) })
         }.toString()
         return when (val response = transport.post(FIRECRAWL_SCRAPE_PATH, key, body, MAX_SCRAPE_RESPONSE_BYTES)) {
-            is FirecrawlHttpResponse.Failure -> response.status.toWebPageFailure()
-            is FirecrawlHttpResponse.Success -> parseFirecrawlPageResponse(response.body)
+            is FirecrawlHttpResponse.Failure -> BottleProviderCall(response.status.toWebPageFailure(), response.status.takeIf { it in 100..599 })
+            is FirecrawlHttpResponse.Success -> BottleProviderCall(parseFirecrawlPageResponse(response.body), response.status.takeIf { it in 100..599 })
         }
     }
 }
 
 internal sealed interface FirecrawlHttpResponse {
-    data class Success(val body: String) : FirecrawlHttpResponse
+    data class Success(val body: String, val status: Int = 200) : FirecrawlHttpResponse
     data class Failure(val status: Int) : FirecrawlHttpResponse
 }
 
@@ -171,7 +175,7 @@ internal class UrlConnectionFirecrawlTransport : FirecrawlTransport {
                             if (total > maxResponseBytes) return@use FirecrawlHttpResponse.Failure(413)
                             buffer.write(chunk, 0, count)
                         }
-                        FirecrawlHttpResponse.Success(buffer.toString(Charsets.UTF_8.name()))
+                    FirecrawlHttpResponse.Success(buffer.toString(Charsets.UTF_8.name()), status)
                     }
                 }
             } catch (_: Exception) {

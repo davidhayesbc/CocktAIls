@@ -4,6 +4,7 @@ import android.os.Process
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -11,6 +12,7 @@ import java.io.File
 import java.lang.Thread.UncaughtExceptionHandler
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.system.exitProcess
+import com.davidhayesbc.cocktails.android.product.BottleLookupDebugReport
 
 /** Local, allowlisted diagnostics. No free-form user or exception text is persisted. */
 internal class DiagnosticStore(
@@ -69,6 +71,15 @@ internal class DiagnosticStore(
             })
         }
         write(root.with("crashes", JsonArray(crashes.takeLast(MAX_CRASHES))))
+    }
+
+    fun recordBottleLookup(report: BottleLookupDebugReport) = synchronized(lock) {
+        val safeReport = runCatching { Json.parseToJsonElement(report.toJson()) }.getOrNull() ?: return@synchronized
+        write(JsonObject(read().toMutableMap().apply { put("latestBottleLookup", safeReport) }))
+    }
+
+    fun latestBottleLookupPreview(): String? = synchronized(lock) {
+        read()["latestBottleLookup"]?.let { Json { prettyPrint = true }.encodeToString(JsonElement.serializer(), it) }
     }
 
     fun preview(): String = export()
@@ -192,6 +203,8 @@ internal object LocalDiagnostics {
 
     fun recordEvent(category: String) { runCatching { store?.recordEvent(category) } }
     fun recordScannerFailure(category: String, error: Throwable? = null) { runCatching { store?.recordScannerFailure(category, error) } }
+    fun recordBottleLookup(report: BottleLookupDebugReport) { runCatching { store?.recordBottleLookup(report) } }
+    fun latestBottleLookupPreview(): String? = runCatching { store?.latestBottleLookupPreview() }.getOrNull()
     fun preview(): String = runCatching { store?.preview().orEmpty() }.getOrDefault("Diagnostics are unavailable.")
     fun export(): String = runCatching { store?.export().orEmpty() }.getOrDefault("{}")
     fun clear(): Boolean = runCatching { store?.clear() == true }.getOrDefault(false)

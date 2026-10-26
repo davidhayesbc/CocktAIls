@@ -43,7 +43,7 @@ class OllamaCloudBottleDetailExtractorTest {
         )
         assertTrue(
             parseOllamaExtractionResponse(raw, "qwen3:8b-cloud", source.sourceUrl, source.markdown) is
-                BottleDetailExtractionResult.InvalidResponse,
+                BottleDetailExtractionResult.Rejected,
         )
     }
 
@@ -57,7 +57,7 @@ class OllamaCloudBottleDetailExtractorTest {
         invalidCandidates.forEach { content ->
             assertTrue(
                 parseOllamaExtractionResponse(response(content), "model", source.sourceUrl, source.markdown) is
-                    BottleDetailExtractionResult.InvalidResponse,
+                    BottleDetailExtractionResult.Rejected,
             )
         }
 
@@ -65,7 +65,7 @@ class OllamaCloudBottleDetailExtractorTest {
         val conflictingContent = """{"facts":[{"field":"abv_percent","value":"40%","evidence":"40% ABV"},{"field":"abv_percent","value":"50%","evidence":"50% ABV"}]}"""
         assertTrue(
             parseOllamaExtractionResponse(response(conflictingContent), "model", source.sourceUrl, conflictingSource) is
-                BottleDetailExtractionResult.InvalidResponse,
+                BottleDetailExtractionResult.Rejected,
         )
     }
 
@@ -101,8 +101,8 @@ class OllamaCloudBottleDetailExtractorTest {
         val wrongProduct = """{"identity":{"barcode":"5011333150725","evidence":"UPC 5011333150725 applies to Auchentoshan Three Wood"},"facts":[{"field":"product_name","value":"Other Reserve","evidence":"Related whisky: Other Reserve"},{"field":"brand","value":"WrongBrand","evidence":"Brand: WrongBrand"}]}"""
 
         assertTrue(
-            parseBottleFactCandidate(wrongProduct, "Ollama Cloud", "model", "https://shop.example/item", sourceText, "5011333150725") is
-                BottleDetailExtractionResult.InvalidResponse,
+            (parseBottleFactCandidate(wrongProduct, "Ollama Cloud", "model", "https://shop.example/item", sourceText, "5011333150725") as? BottleDetailExtractionResult.Rejected)?.reason ==
+                BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE,
         )
 
         val linkedProduct = """{"identity":{"barcode":"5011333150725","evidence":"UPC 5011333150725 applies to Auchentoshan Three Wood"},"facts":[{"field":"product_name","value":"Auchentoshan Three Wood","evidence":"UPC 5011333150725 applies to Auchentoshan Three Wood"}]}"""
@@ -118,8 +118,8 @@ class OllamaCloudBottleDetailExtractorTest {
         val mixedPassage = "UPC 5011333150725 applies to Auchentoshan Three Wood. Related whisky: Other Reserve."
         val mixedCandidate = """{"identity":{"barcode":"$barcode","evidence":"$mixedPassage"},"facts":[{"field":"product_name","value":"Other Reserve","evidence":"Related whisky: Other Reserve"}]}"""
         assertTrue(
-            parseBottleFactCandidate(mixedCandidate, "Ollama Cloud", "model", "https://shop.example/item", mixedPassage, barcode) is
-                BottleDetailExtractionResult.InvalidResponse,
+            (parseBottleFactCandidate(mixedCandidate, "Ollama Cloud", "model", "https://shop.example/item", mixedPassage, barcode) as? BottleDetailExtractionResult.Rejected)?.reason ==
+                BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE,
         )
 
         val scopedText = "UPC 5011333150725 applies to Auchentoshan Three Wood.\n\nRelated whisky: Other Reserve."
@@ -131,8 +131,8 @@ class OllamaCloudBottleDetailExtractorTest {
         val competingBarcodeText = "UPC 5011333150725 applies to Auchentoshan Three Wood. UPC 088352109084 applies to St Remy VSOP."
         val competingCandidate = """{"identity":{"barcode":"$barcode","evidence":"UPC 5011333150725 applies to Auchentoshan Three Wood"},"facts":[{"field":"product_name","value":"Auchentoshan Three Wood","evidence":"UPC 5011333150725 applies to Auchentoshan Three Wood"}]}"""
         assertTrue(
-            parseBottleFactCandidate(competingCandidate, "Ollama Cloud", "model", "https://shop.example/item", competingBarcodeText, barcode) is
-                BottleDetailExtractionResult.InvalidResponse,
+            (parseBottleFactCandidate(competingCandidate, "Ollama Cloud", "model", "https://shop.example/item", competingBarcodeText, barcode) as? BottleDetailExtractionResult.Rejected)?.reason ==
+                BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE,
         )
     }
 
@@ -198,11 +198,11 @@ class OllamaCloudBottleDetailExtractorTest {
     fun parserRejectsMalformedAndMarkdownWrappedModelOutput() {
         assertTrue(
             parseOllamaExtractionResponse(response("not-json"), "model", source.sourceUrl, source.markdown) is
-                BottleDetailExtractionResult.InvalidResponse,
+                BottleDetailExtractionResult.Rejected,
         )
         assertTrue(
             parseOllamaExtractionResponse("malformed", "model", source.sourceUrl, source.markdown) is
-                BottleDetailExtractionResult.InvalidResponse,
+                BottleDetailExtractionResult.Rejected,
         )
     }
 

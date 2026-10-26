@@ -182,11 +182,19 @@ internal class OpenFoodFactsLookupClient(
     private val nowMillis: () -> Long = System::currentTimeMillis,
     private val openConnection: (String) -> HttpURLConnection = { URL(it).openConnection() as HttpURLConnection },
 ) {
-    suspend fun lookup(barcode: String, versionName: String): OpenFoodFactsLookupResult = withContext(Dispatchers.IO) {
-        lookupBlocking(barcode, versionName)
+    suspend fun lookup(
+        barcode: String,
+        versionName: String,
+        onHttpStatus: (Int?) -> Unit = {},
+    ): OpenFoodFactsLookupResult = withContext(Dispatchers.IO) {
+        lookupBlocking(barcode, versionName, onHttpStatus)
     }
 
-    internal fun lookupBlocking(barcode: String, versionName: String): OpenFoodFactsLookupResult {
+    internal fun lookupBlocking(
+        barcode: String,
+        versionName: String,
+        onHttpStatus: (Int?) -> Unit = {},
+    ): OpenFoodFactsLookupResult {
         val originalCode = barcode.trim()
         if (normalizeGtinForLookup(originalCode) == null) return OpenFoodFactsLookupResult.InvalidBarcode
         val requestCode = originalCode.filter { it in '0'..'9' }
@@ -211,6 +219,7 @@ internal class OpenFoodFactsLookupClient(
 
         return try {
             val status = connection.responseCode
+            runCatching { onHttpStatus(status.takeIf { it in 100..599 }) }
             if (status == 429) return OpenFoodFactsLookupResult.ProviderRateLimited
             if (status !in 200..299 && status != 404) return OpenFoodFactsLookupResult.Unavailable
             val body = (if (status in 200..299) connection.inputStream else connection.errorStream)

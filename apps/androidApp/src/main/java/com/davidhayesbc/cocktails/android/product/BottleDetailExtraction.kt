@@ -47,8 +47,29 @@ internal data class BottleDetailSuggestions(
     val retrievalProvider: String = "Unknown",
 )
 
+internal enum class BottleExtractionRejectionReason(val debugCode: String) {
+    MALFORMED_MODEL_RESPONSE("MALFORMED_MODEL_RESPONSE"),
+    NO_FACTS("NO_SUPPORTED_FIELDS"),
+    INVALID_FACT_SHAPE("INVALID_FACT_SHAPE"),
+    EVIDENCE_NOT_IN_SOURCE("EVIDENCE_NOT_IN_SOURCE"),
+    VALUE_NOT_IN_EVIDENCE("VALUE_NOT_IN_EVIDENCE"),
+    INVALID_ABV_EVIDENCE("INVALID_ABV_EVIDENCE"),
+    INVALID_QUANTITY_EVIDENCE("INVALID_QUANTITY_EVIDENCE"),
+    CONFLICTING_FIELD_VALUES("CONFLICTING_FIELD_VALUES"),
+    INVALID_TARGET_BARCODE("INVALID_TARGET_BARCODE"),
+    BARCODE_EVIDENCE_MISSING("BARCODE_EVIDENCE_MISSING"),
+    TARGET_BARCODE_MISMATCH("TARGET_BARCODE_MISMATCH"),
+    PRODUCT_NAME_MISSING("PRODUCT_NAME_MISSING"),
+    PRODUCT_NAME_NOT_TIED_TO_BARCODE("PRODUCT_NAME_NOT_TIED_TO_BARCODE"),
+    NO_SUPPORTED_FIELDS("NO_SUPPORTED_FIELDS"),
+}
+
 internal sealed interface BottleDetailExtractionResult {
-    data class Found(val suggestions: BottleDetailSuggestions) : BottleDetailExtractionResult
+    data class Found(
+        val suggestions: BottleDetailSuggestions,
+        val rejectedCandidates: Set<BottleExtractionRejectionReason> = emptySet(),
+    ) : BottleDetailExtractionResult
+    data class Rejected(val reason: BottleExtractionRejectionReason) : BottleDetailExtractionResult
     data object SetupRequired : BottleDetailExtractionResult
     data object InvalidModel : BottleDetailExtractionResult
     data object AuthenticationRequired : BottleDetailExtractionResult
@@ -73,25 +94,35 @@ internal class OllamaCloudBottleDetailExtractor(
 ) : BottleDetailExtractor {
     override val providerLabel: String = "Ollama Cloud"
 
-    override suspend fun extract(page: WebPageText, model: String, requiredBarcode: String?): BottleDetailExtractionResult {
-        if (requiredBarcode != null && normalizeGtinForLookup(requiredBarcode) == null) return BottleDetailExtractionResult.InvalidResponse
+    override suspend fun extract(page: WebPageText, model: String, requiredBarcode: String?): BottleDetailExtractionResult =
+        extractDetailed(page, model, requiredBarcode).result
+
+    suspend fun extractDetailed(
+        page: WebPageText,
+        model: String,
+        requiredBarcode: String?,
+    ): BottleProviderCall<BottleDetailExtractionResult> {
+        if (requiredBarcode != null && normalizeGtinForLookup(requiredBarcode) == null) return BottleProviderCall(BottleDetailExtractionResult.InvalidResponse)
         val safeSourceUrl = normalizePublicHttpsUrl(page.sourceUrl)
-            ?: return BottleDetailExtractionResult.InvalidResponse
+            ?: return BottleProviderCall(BottleDetailExtractionResult.InvalidResponse)
         val safeModel = model.trim()
-        if (!isValidOllamaModelIdentifier(safeModel)) return BottleDetailExtractionResult.InvalidModel
+        if (!isValidOllamaModelIdentifier(safeModel)) return BottleProviderCall(BottleDetailExtractionResult.InvalidModel)
         val sourceText = sanitizeSourceTextForCloud(page.markdown).take(MAX_SOURCE_TEXT_CHARS)
-        if (sourceText.isBlank()) return BottleDetailExtractionResult.InvalidResponse
+        if (sourceText.isBlank()) return BottleProviderCall(BottleDetailExtractionResult.InvalidResponse)
         val key = keyProvider()?.trim()?.takeIf(String::isNotEmpty)
-            ?: return BottleDetailExtractionResult.SetupRequired
+            ?: return BottleProviderCall(BottleDetailExtractionResult.SetupRequired)
         return when (val response = transport.chat(safeModel, key, buildOllamaRequest(safeModel, sourceText, requiredBarcode))) {
-            is OllamaCloudHttpResponse.Failure -> response.status.toExtractionFailure()
-            is OllamaCloudHttpResponse.Success -> parseOllamaExtractionResponse(
-                response.body,
-                safeModel,
-                safeSourceUrl,
-                sourceText,
-                requiredBarcode,
-                page.provider,
+            is OllamaCloudHttpResponse.Failure -> BottleProviderCall(response.status.toExtractionFailure(), response.status.takeIf { it in 100..599 })
+            is OllamaCloudHttpResponse.Success -> BottleProviderCall(
+                parseOllamaExtractionResponse(
+                    response.body,
+                    safeModel,
+                    safeSourceUrl,
+                    sourceText,
+                    requiredBarcode,
+                    page.provider,
+                ),
+                response.status.takeIf { it in 100..599 },
             )
         }
     }
@@ -157,7 +188,7 @@ internal fun buildOllamaRequest(model: String, sourceText: String, requiredBarco
 }.toString()
 
 internal sealed interface OllamaCloudHttpResponse {
-    data class Success(val body: String) : OllamaCloudHttpResponse
+    data class Success(val body: String, val status: Int = 200) : OllamaCloudHttpResponse
     data class Failure(val status: Int) : OllamaCloudHttpResponse
 }
 
@@ -209,7 +240,7 @@ internal class UrlConnectionOllamaCloudTransport : OllamaCloudTransport {
                             if (total > MAX_OLLAMA_RESPONSE_BYTES) return@use OllamaCloudHttpResponse.Failure(413)
                             buffer.write(chunk, 0, count)
                         }
-                        OllamaCloudHttpResponse.Success(buffer.toString(Charsets.UTF_8.name()))
+                        OllamaCloudHttpResponse.Success(buffer.toString(Charsets.UTF_8.name()), status)
                     }
                 }
             } catch (_: Exception) {
@@ -234,13 +265,16 @@ internal fun parseOllamaExtractionResponse(
     sourceText: String,
     requiredBarcode: String? = null,
     retrievalProvider: String = "Unknown",
-): BottleDetailExtractionResult = runCatching {
-    val root = Json.parseToJsonElement(raw).jsonObject
-    if (root["done"]?.jsonPrimitive?.booleanOrNull != true) return BottleDetailExtractionResult.InvalidResponse
+): BottleDetailExtractionResult {
+    val root = runCatching { Json.parseToJsonElement(raw).jsonObject }.getOrNull()
+        ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.MALFORMED_MODEL_RESPONSE)
+    if (root["done"]?.jsonPrimitive?.booleanOrNull != true) {
+        return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.MALFORMED_MODEL_RESPONSE)
+    }
     val content = root["message"]?.jsonObject?.string("content")
-        ?: return BottleDetailExtractionResult.InvalidResponse
-    parseBottleFactCandidate(content, "Ollama Cloud", model, sourceUrl, sourceText, requiredBarcode, retrievalProvider)
-}.getOrDefault(BottleDetailExtractionResult.InvalidResponse)
+        ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.MALFORMED_MODEL_RESPONSE)
+    return parseBottleFactCandidate(content, "Ollama Cloud", model, sourceUrl, sourceText, requiredBarcode, retrievalProvider)
+}
 
 internal fun parseBottleFactCandidate(
     rawCandidate: String,
@@ -250,45 +284,75 @@ internal fun parseBottleFactCandidate(
     sourceText: String,
     requiredBarcode: String? = null,
     retrievalProvider: String = "Unknown",
-): BottleDetailExtractionResult = runCatching {
-    val contentObject = Json.parseToJsonElement(rawCandidate).jsonObject
-    val facts = (contentObject["facts"] as? JsonArray)?.mapNotNull { value ->
-        val fact = value as? JsonObject ?: return@mapNotNull null
+): BottleDetailExtractionResult {
+    val contentObject = runCatching { Json.parseToJsonElement(rawCandidate).jsonObject }.getOrNull()
+        ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.MALFORMED_MODEL_RESPONSE)
+    val rawFacts = contentObject["facts"] as? JsonArray
+        ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.NO_FACTS)
+    val rejected = linkedSetOf<BottleExtractionRejectionReason>()
+    val facts = rawFacts.mapNotNull { value ->
+        val fact = value as? JsonObject ?: run {
+            rejected += BottleExtractionRejectionReason.INVALID_FACT_SHAPE
+            return@mapNotNull null
+        }
         val field = fact.string("field")?.let { name -> BottleFactField.entries.firstOrNull { it.wireValue == name } }
-            ?: return@mapNotNull null
+            ?: run { rejected += BottleExtractionRejectionReason.INVALID_FACT_SHAPE; return@mapNotNull null }
         val text = fact.string("value")?.trim()?.takeIf { it.isNotEmpty() && it.length <= MAX_FACT_VALUE_CHARS }
-            ?: return@mapNotNull null
+            ?: run { rejected += BottleExtractionRejectionReason.INVALID_FACT_SHAPE; return@mapNotNull null }
         val quote = fact.string("evidence")?.trim()?.takeIf { it.isNotEmpty() && it.length <= MAX_EVIDENCE_QUOTE_CHARS }
-            ?: return@mapNotNull null
-        if (!sourceText.contains(quote, ignoreCase = true)) return@mapNotNull null
-        if (!quote.contains(text, ignoreCase = true)) return@mapNotNull null
-        if (field == BottleFactField.ABV_PERCENT && !isSupportedAbvCandidate(text, quote)) return@mapNotNull null
-        if (field == BottleFactField.QUANTITY && Regex("""(?i)\b(?:ABV|alc(?:ohol)?|vol(?:ume)?)\b|%""").containsMatchIn(text)) return@mapNotNull null
+            ?: run { rejected += BottleExtractionRejectionReason.INVALID_FACT_SHAPE; return@mapNotNull null }
+        if (!sourceText.contains(quote, ignoreCase = true)) {
+            rejected += BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE
+            return@mapNotNull null
+        }
+        if (!quote.contains(text, ignoreCase = true)) {
+            rejected += BottleExtractionRejectionReason.VALUE_NOT_IN_EVIDENCE
+            return@mapNotNull null
+        }
+        if (field == BottleFactField.ABV_PERCENT && !isSupportedAbvCandidate(text, quote)) {
+            rejected += BottleExtractionRejectionReason.INVALID_ABV_EVIDENCE
+            return@mapNotNull null
+        }
+        if (field == BottleFactField.QUANTITY && Regex("""(?i)\b(?:ABV|alc(?:ohol)?|vol(?:ume)?)\b|%""").containsMatchIn(text)) {
+            rejected += BottleExtractionRejectionReason.INVALID_QUANTITY_EVIDENCE
+            return@mapNotNull null
+        }
         BottleFactEvidence(field, text, quote)
-    } ?: return BottleDetailExtractionResult.InvalidResponse
+    }
+    if (facts.isEmpty()) {
+        return BottleDetailExtractionResult.Rejected(rejected.firstOrNull() ?: BottleExtractionRejectionReason.NO_SUPPORTED_FIELDS)
+    }
     val conflictingFields = facts.groupBy(BottleFactEvidence::field).values.any { fieldFacts ->
         fieldFacts.map { it.value.trim().lowercase(Locale.ROOT) }.distinct().size > 1
     }
-    if (conflictingFields) return BottleDetailExtractionResult.InvalidResponse
+    if (conflictingFields) return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES)
     val unresolvedFields = unresolvedBottleSourceFields(sourceText).toMutableSet()
     var candidateFacts = facts
     var identityEvidence: String? = null
     if (requiredBarcode != null) {
-        val expectedCode = normalizeGtinForLookup(requiredBarcode) ?: return BottleDetailExtractionResult.InvalidResponse
-        val identity = contentObject["identity"] as? JsonObject ?: return BottleDetailExtractionResult.InvalidResponse
-        val statedCode = identity.string("barcode")?.let(::normalizeGtinForLookup) ?: return BottleDetailExtractionResult.InvalidResponse
+        val expectedCode = normalizeGtinForLookup(requiredBarcode)
+            ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.INVALID_TARGET_BARCODE)
+        val identity = contentObject["identity"] as? JsonObject
+            ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.BARCODE_EVIDENCE_MISSING)
+        val statedCode = identity.string("barcode")?.let(::normalizeGtinForLookup)
+            ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.BARCODE_EVIDENCE_MISSING)
+        if (statedCode != expectedCode) {
+            return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.TARGET_BARCODE_MISMATCH)
+        }
         val identityQuote = identity.string("evidence")?.trim()?.takeIf { it.isNotEmpty() && it.length <= MAX_EVIDENCE_QUOTE_CHARS }
-            ?: return BottleDetailExtractionResult.InvalidResponse
-        val nameFact = facts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME } ?: return BottleDetailExtractionResult.InvalidResponse
-        if (statedCode != expectedCode ||
-            scannedProductIdentityPassage(requiredBarcode, nameFact.value, sourceText, identityQuote) == null
-        ) return BottleDetailExtractionResult.InvalidResponse
+            ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.BARCODE_EVIDENCE_MISSING)
+        val nameFact = facts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }
+            ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.PRODUCT_NAME_MISSING)
+        if (scannedProductIdentityPassage(requiredBarcode, nameFact.value, sourceText, identityQuote) == null) {
+            return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
+        }
         identityEvidence = identityQuote
         val unrelatedFields = facts.filter { fact ->
             fact.field != BottleFactField.PRODUCT_NAME &&
                 !fact.quote.contains(nameFact.value, ignoreCase = true) &&
                 !sourceMentionsScannedBarcode(requiredBarcode, fact.quote)
         }.map(BottleFactEvidence::field).toSet()
+        if (unrelatedFields.isNotEmpty()) rejected += BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE
         unresolvedFields += unrelatedFields
         candidateFacts = facts.filterNot { it.field in unrelatedFields }
     }
@@ -296,11 +360,14 @@ internal fun parseBottleFactCandidate(
         .filterNot { it.field in unresolvedFields }
         .distinctBy(BottleFactEvidence::field)
         .take(MAX_FACTS)
-    if (acceptedFacts.isEmpty() && unresolvedFields.isEmpty()) return BottleDetailExtractionResult.InvalidResponse
-    BottleDetailExtractionResult.Found(
+    if (acceptedFacts.isEmpty() && unresolvedFields.isEmpty()) {
+        return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.NO_SUPPORTED_FIELDS)
+    }
+    return BottleDetailExtractionResult.Found(
         BottleDetailSuggestions(provider, model, sourceUrl, acceptedFacts, unresolvedFields, requiredBarcode, identityEvidence, retrievalProvider),
+        rejected,
     )
-}.getOrDefault(BottleDetailExtractionResult.InvalidResponse)
+}
 
 /** Keep source-level bottle-size disagreements visible and unresolved instead of selecting one. */
 internal fun unresolvedBottleSourceFields(sourceText: String): Set<BottleFactField> {

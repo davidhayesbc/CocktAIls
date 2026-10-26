@@ -12,6 +12,9 @@ import kotlinx.serialization.json.jsonObject
 import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicBoolean
+import com.davidhayesbc.cocktails.android.product.BottleLookupDebugEvent
+import com.davidhayesbc.cocktails.android.product.BottleLookupDebugReport
+import com.davidhayesbc.cocktails.android.product.BottleLookupDebugStage
 
 class LocalDiagnosticsTest {
     private fun tempStore(): Pair<File, DiagnosticStore> {
@@ -114,6 +117,75 @@ class LocalDiagnosticsTest {
         store.recordEvent("APP_STARTED")
         assertFalse(store.clear())
         assertTrue(file.exists())
+        dir.deleteRecursively()
+    }
+
+    @Test fun latestLookupReportPersistsWithBarcodeAndSanitizedStagesOnly() {
+        val (dir, store) = tempStore()
+        val report = BottleLookupDebugReport(
+            createdAtMillis = 77,
+            versionName = "preview.5",
+            versionCode = 5,
+            originalBarcode = "5011333150725",
+            normalizedBarcode = "5011333150725",
+            openFoodFactsEnabled = true,
+            openFoodFactsConfigured = true,
+            firecrawlEnabled = true,
+            firecrawlConfigured = true,
+            extractorProvider = "Ollama Cloud",
+            modelIdentifier = "qwen-fixture",
+            query = "\"5011333150725\"",
+            onDeviceAiEnabled = false,
+            onDeviceModelInstalled = false,
+            ollamaCloudEnabled = true,
+            ollamaCloudConfigured = true,
+            ollamaCloudModelIdentifier = "qwen-fixture",
+        )
+        report.record(BottleLookupDebugEvent(
+            stage = BottleLookupDebugStage.FIRECRAWL_SEARCH,
+            provider = "Firecrawl Authorization: HEADER_CANARY",
+            result = "FOUND",
+            durationMillis = 34,
+            httpStatus = 200,
+            resultCount = 1,
+            sourceUrls = listOf(
+                "https://shop.example/item?api_key=URL_CANARY&token=URL_TOKEN#fragment",
+                "https://shop.example/item/token/PATH_TOKEN_12345",
+                "https://192.168.1.10/private",
+            ),
+            reasonCodes = listOf("HIT_TEXT_MISSING_BARCODE", "Authorization: HEADER_CANARY"),
+        ))
+        report.finish("PARTIAL")
+        store.recordBottleLookup(report)
+
+        val reopened = DiagnosticStore(File(dir, "diagnostics.json"), mapOf("versionName" to "updated"))
+        val exported = reopened.export()
+        assertTrue(exported.contains("latestBottleLookup"))
+        assertTrue(exported.contains("5011333150725"))
+        assertTrue(exported.contains("shop.example/item"))
+        assertTrue(exported.contains("httpStatus"))
+        assertTrue(exported.contains("\"ollamaCloud\""))
+        assertTrue(exported.contains("\"configured\": true"))
+        assertFalse(exported.contains("URL_CANARY"))
+        assertFalse(exported.contains("URL_TOKEN"))
+        assertFalse(exported.contains("HEADER_CANARY"))
+        assertFalse(exported.contains("api_key="))
+        assertFalse(exported.contains("fragment"))
+        assertFalse(exported.contains("PATH_TOKEN_12345"))
+        assertFalse(exported.contains("192.168.1.10"))
+        assertFalse(exported.contains("raw response"))
+        assertTrue(reopened.latestBottleLookupPreview()!!.contains("BARCODE"))
+        assertTrue(File(dir, "diagnostics.json").length() <= DiagnosticStore.MAX_BYTES)
+        dir.deleteRecursively()
+    }
+
+    @Test fun clearingDiagnosticsAlsoClearsLatestLookupReport() {
+        val (dir, store) = tempStore()
+        val report = BottleLookupDebugReport(1, "1.0", 1, "5011333150725", "5011333150725", true, true, false, false, null, null, null)
+        store.recordBottleLookup(report)
+        assertTrue(store.latestBottleLookupPreview()!!.contains("5011333150725"))
+        assertTrue(store.clear())
+        assertFalse(File(dir, "diagnostics.json").exists())
         dir.deleteRecursively()
     }
 

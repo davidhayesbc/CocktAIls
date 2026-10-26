@@ -54,6 +54,9 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.davidhayesbc.cocktails.android.product.OpenFoodFactsLocalCache
 import com.davidhayesbc.cocktails.android.product.OpenFoodFactsSuggestion
 import com.davidhayesbc.cocktails.android.product.SharedPreferencesLookupStorage
+import com.davidhayesbc.cocktails.android.product.BottleLookupDebugEvent
+import com.davidhayesbc.cocktails.android.product.BottleLookupDebugReport
+import com.davidhayesbc.cocktails.android.product.BottleLookupDebugStage
 import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import com.davidhayesbc.cocktails.core.data.CatalogInstallResult
 import com.davidhayesbc.cocktails.core.data.LocalCocktailRepository
@@ -84,6 +87,54 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("local-ai-toggle").assertIsNotEnabled()
         composeRule.onNodeWithTag("household-scroll").performScrollToNode(hasTestTag("choose-local-model"))
         composeRule.onNodeWithTag("choose-local-model").assertIsDisplayed()
+    }
+
+    @Test
+    fun lookupDebugReportIsPreviewedAndCopiedOnlyAfterUserAction() {
+        LocalDiagnostics.clear()
+        val report = BottleLookupDebugReport(
+            createdAtMillis = 1,
+            versionName = "preview-test",
+            versionCode = 99,
+            originalBarcode = "5011333150725",
+            normalizedBarcode = "5011333150725",
+            openFoodFactsEnabled = false,
+            openFoodFactsConfigured = true,
+            firecrawlEnabled = true,
+            firecrawlConfigured = true,
+            extractorProvider = null,
+            modelIdentifier = null,
+            query = "\"5011333150725\"",
+        )
+        report.record(BottleLookupDebugEvent(
+            stage = BottleLookupDebugStage.SOURCE_SELECTION,
+            provider = "APP",
+            result = "NO_USABLE_SOURCE",
+            resultCount = 2,
+            sourceUrls = listOf("https://barcodelookup.example/search?token=NEVER_COPY"),
+            reasonCodes = listOf("GENERIC_BARCODE_LOOKUP"),
+        ))
+        report.finish("NOT_FOUND")
+        LocalDiagnostics.recordBottleLookup(report)
+
+        composeRule.onNodeWithText("More").performClick()
+        composeRule.onNodeWithTag("household-scroll").performScrollToNode(hasText("View or export diagnostics"))
+        composeRule.onNodeWithText("View or export diagnostics").performClick()
+        composeRule.onNodeWithTag("diagnostics-dialog-scroll").performScrollToNode(hasTestTag("latest-lookup-report-preview"))
+        composeRule.onNodeWithTag("latest-lookup-report-preview").assertIsDisplayed().assert(hasText("5011333150725"))
+        composeRule.onNodeWithTag("diagnostics-dialog-scroll").performScrollToNode(hasTestTag("copy-bottle-lookup-report"))
+        composeRule.onNodeWithTag("copy-bottle-lookup-report").assertIsDisplayed()
+        composeRule.onNodeWithTag("copy-bottle-lookup-report").performClick()
+
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        val copied = clipboard.primaryClip!!.getItemAt(0).coerceToText(context).toString()
+        assertTrue(copied.contains("5011333150725"))
+        assertTrue(copied.contains("GENERIC_BARCODE_LOOKUP"))
+        assertFalse(copied.contains("NEVER_COPY"))
+        assertFalse(copied.contains("Authorization"))
+        assertTrue(copied.contains("No keys"))
+        composeRule.onNodeWithText("Lookup report copied. Review it before sharing.").assertIsDisplayed()
     }
 
     @Test

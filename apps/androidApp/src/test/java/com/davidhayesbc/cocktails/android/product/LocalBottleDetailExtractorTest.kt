@@ -49,6 +49,6 @@ class LocalBottleDetailExtractorTest {
             sourceText = "North Star Gin 40% ABV",
         )
 
-        assertEquals(BottleDetailExtractionResult.InvalidResponse, result)
+        assertTrue(result is BottleDetailExtractionResult.Rejected)
     }
 }

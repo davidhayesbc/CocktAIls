@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.content.pm.ApplicationInfo
 import android.content.Context
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -147,6 +149,10 @@ import com.davidhayesbc.cocktails.android.product.DBCL_LICENSE_URL
 import com.davidhayesbc.cocktails.android.product.ScannedBottleEnrichmentCoordinator
 import com.davidhayesbc.cocktails.android.product.ScannedBottlePlan
 import com.davidhayesbc.cocktails.android.product.ScannedBottleStage
+import com.davidhayesbc.cocktails.android.product.BottleLookupDebugReport
+import com.davidhayesbc.cocktails.android.product.BottleLookupDebugEvent
+import com.davidhayesbc.cocktails.android.product.BottleLookupDebugStage
+import com.davidhayesbc.cocktails.android.product.BottleProviderCall
 import com.davidhayesbc.cocktails.android.product.AutomaticBottleExtractor
 import com.davidhayesbc.cocktails.android.product.automaticBottleExtractor
 import com.davidhayesbc.cocktails.android.product.scannedBottleSearchQuery
@@ -354,6 +360,9 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     val bottleWebSearchRequestTokens = remember { mutableMapOf<String, Int>() }
     val bottleExtractionJobs = remember { mutableMapOf<String, Job>() }
     val bottleExtractionRequestTokens = remember { mutableMapOf<String, Int>() }
+    var showDiagnostics by remember { mutableStateOf(false) }
+    var latestLookupReportPreview by remember { mutableStateOf(LocalDiagnostics.latestBottleLookupPreview()) }
+    var lookupReportCopyMessage by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(localModelImporting) {
         while (localModelImporting) {
@@ -364,6 +373,11 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
 
     fun refreshPendingBottleEnrichmentJobs() {
         pendingBottleEnrichmentJobs = bottleEnrichmentQueue.jobs().associateBy { it.draftId }
+    }
+
+    fun persistBottleLookupDebug(report: BottleLookupDebugReport) {
+        LocalDiagnostics.recordBottleLookup(report)
+        latestLookupReportPreview = LocalDiagnostics.latestBottleLookupPreview()
     }
 
     fun cancelAllBottleEnrichmentRequests(sessionId: String?, keepPaused: Boolean) {
@@ -414,7 +428,6 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var homeLocationAreas by remember(repository) { mutableStateOf(repository.homeLocationAreas()) }
     var locationMessage by remember { mutableStateOf<String?>(null) }
     var showLocationSettings by remember { mutableStateOf(false) }
-    var showDiagnostics by remember { mutableStateOf(false) }
     var pendingLocationAction by remember { mutableStateOf<LocationAction?>(null) }
     var shopDestinationId by remember { mutableStateOf<String?>(null) }
     var shopPantry by remember { mutableStateOf(emptyList<PantryEntry>()) }
@@ -725,6 +738,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     BottleDetailExtractionResult.AuthenticationRequired -> previous.copy(extracting = false, message = "Ollama Cloud did not accept this key. Replace it in More.")
                     BottleDetailExtractionResult.QuotaOrRateLimited -> previous.copy(extracting = false, message = "Ollama Cloud reported a quota or rate limit. No retry was made.")
                     BottleDetailExtractionResult.Unavailable -> previous.copy(extracting = false, message = "Ollama Cloud could not be reached. Your draft is unchanged.")
+                    is BottleDetailExtractionResult.Rejected -> previous.copy(extracting = false, message = "The source did not support usable suggestions. Check it manually or continue without them.")
                     BottleDetailExtractionResult.InvalidResponse -> previous.copy(extracting = false, message = "Ollama Cloud returned suggestions without usable source evidence.")
                 })
             }
@@ -791,6 +805,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     BottleDetailExtractionResult.AuthenticationRequired -> previous.copy(extracting = false, message = "Unexpected authentication response from the on-device model.")
                     BottleDetailExtractionResult.QuotaOrRateLimited -> previous.copy(extracting = false, message = "The on-device model is busy. Try again later.")
                     BottleDetailExtractionResult.Unavailable -> previous.copy(extracting = false, message = "On-device extraction did not finish. Your draft is unchanged; check free memory and try again.")
+                    is BottleDetailExtractionResult.Rejected -> previous.copy(extracting = false, message = "The source did not support usable suggestions. Check it manually or continue without them.")
                     BottleDetailExtractionResult.InvalidResponse -> previous.copy(extracting = false, message = "The model returned no suggestions with usable source evidence.")
                 })
             }
@@ -818,28 +833,72 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             message = "Review the match before adding this bottle to your bar.",
         ))
         bottleWebSearchJobs[draft.id] = coroutineScope.launch {
+            val scanExtractor = automaticBottleExtractor(
+                onDeviceEnabled = localAiEnabled && localModelFile != null,
+                ollamaCloudEnabled = ollamaCloudEnabled && ollamaCloudKeySaved && !ollamaCloudKeyNeedsReplacement && isValidOllamaModelIdentifier(ollamaCloudModel),
+            )
+            val scanPlan = ScannedBottlePlan(
+                openFoodFactsEnabled = openFoodFactsEnabled,
+                firecrawlEnabled = firecrawlSearchEnabled && firecrawlKeySaved && !firecrawlKeyNeedsReplacement,
+                extractor = scanExtractor,
+            )
+            val scanQuery = draft.barcode?.let(::scannedBottleSearchQuery)
+            val debugReport = BottleLookupDebugReport(
+                createdAtMillis = System.currentTimeMillis(),
+                versionName = installedAppVersion.name,
+                versionCode = installedAppVersion.code,
+                originalBarcode = draft.barcode.orEmpty(),
+                normalizedBarcode = draft.barcode?.let(::normalizeGtinForLookup),
+                openFoodFactsEnabled = openFoodFactsEnabled,
+                openFoodFactsConfigured = true,
+                firecrawlEnabled = firecrawlSearchEnabled,
+                firecrawlConfigured = firecrawlKeySaved && !firecrawlKeyNeedsReplacement,
+                extractorProvider = when (scanExtractor) {
+                    AutomaticBottleExtractor.ON_DEVICE -> "On-device Qwen3"
+                    AutomaticBottleExtractor.OLLAMA_CLOUD -> "Ollama Cloud"
+                    null -> null
+                },
+                modelIdentifier = when (scanExtractor) {
+                    AutomaticBottleExtractor.ON_DEVICE -> LOCAL_MODEL_LABEL
+                    AutomaticBottleExtractor.OLLAMA_CLOUD -> ollamaCloudModel
+                    null -> null
+                },
+                query = scanQuery,
+                onDeviceAiEnabled = localAiEnabled,
+                onDeviceModelInstalled = localModelFile != null,
+                ollamaCloudEnabled = ollamaCloudEnabled,
+                ollamaCloudConfigured = ollamaCloudKeySaved && !ollamaCloudKeyNeedsReplacement,
+                ollamaCloudModelIdentifier = ollamaCloudModel,
+                localModelIdentifier = LOCAL_MODEL_LABEL.takeIf { localModelFile != null },
+            )
+            debugReport.record(BottleLookupDebugEvent(
+                stage = BottleLookupDebugStage.LOCAL_MATCH,
+                provider = "Local database",
+                result = if (localMatch) "MATCH" else "NO_MATCH",
+            ))
+            persistBottleLookupDebug(debugReport)
+            fun recordDebugEvent(event: BottleLookupDebugEvent) {
+                debugReport.record(event)
+                persistBottleLookupDebug(debugReport)
+            }
+
             val result: com.davidhayesbc.cocktails.android.product.ScannedBottleOutcome? = try {
-                val scanExtractor = automaticBottleExtractor(
-                    onDeviceEnabled = localAiEnabled && localModelFile != null,
-                    ollamaCloudEnabled = ollamaCloudEnabled && ollamaCloudKeySaved && !ollamaCloudKeyNeedsReplacement && isValidOllamaModelIdentifier(ollamaCloudModel),
-                )
-                val scanPlan = ScannedBottlePlan(
-                    openFoodFactsEnabled = openFoodFactsEnabled,
-                    firecrawlEnabled = firecrawlSearchEnabled && firecrawlKeySaved && !firecrawlKeyNeedsReplacement,
-                    extractor = scanExtractor,
-                )
                 val coordinator = ScannedBottleEnrichmentCoordinator(
-                    lookup = { code -> openFoodFactsClient.lookup(code, installedAppVersion.name) },
-                    search = { query -> firecrawlSearchProvider.search(query, 5) },
-                    fetch = firecrawlSearchProvider::fetch,
+                    lookup = { code ->
+                        var status: Int? = null
+                        val value = openFoodFactsClient.lookup(code, installedAppVersion.name) { status = it }
+                        BottleProviderCall(value, status)
+                    },
+                    search = { query -> firecrawlSearchProvider.searchDetailed(query, 5) },
+                    fetch = firecrawlSearchProvider::fetchDetailed,
                     extract = { page, provider, requiredBarcode ->
                         when (provider) {
-                            AutomaticBottleExtractor.OLLAMA_CLOUD -> ollamaCloudExtractor.extract(page, ollamaCloudModel, requiredBarcode)
+                            AutomaticBottleExtractor.OLLAMA_CLOUD -> ollamaCloudExtractor.extractDetailed(page, ollamaCloudModel, requiredBarcode)
                             AutomaticBottleExtractor.ON_DEVICE -> {
                                 val modelFile = localModelFileStore.installedModel()
-                                if (modelFile == null) BottleDetailExtractionResult.SetupRequired else {
+                                if (modelFile == null) BottleProviderCall(BottleDetailExtractionResult.SetupRequired) else {
                                     val runner = LlamaCppLocalInferenceRunner(context)
-                                    LocalBottleDetailExtractor({ modelFile.absolutePath }, runner).extract(page, LOCAL_MODEL_LABEL, requiredBarcode)
+                                    BottleProviderCall(LocalBottleDetailExtractor({ modelFile.absolutePath }, runner).extract(page, LOCAL_MODEL_LABEL, requiredBarcode))
                                 }
                             }
                         }
@@ -848,6 +907,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 coordinator.processScannedBarcode(
                     barcode = draft.barcode.orEmpty(),
                     plan = scanPlan,
+                    onDebugEvent = ::recordDebugEvent,
                     onStage = { stage, sourceUrl ->
                         val stageLabel = when (stage) {
                             ScannedBottleStage.BARCODE_LOOKUP -> "Checking Open Food Facts"
@@ -879,16 +939,32 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                         val prior = bottleWebSearchStates[draft.id] ?: BottleWebSearchState(automatedScan = true)
                         bottleWebSearchStates = bottleWebSearchStates + (draft.id to prior.copy(
                             searching = stage == ScannedBottleStage.WEB_SEARCH,
-                            fetchingUrl = if (stage == ScannedBottleStage.SOURCE_FETCH) "Looking up the first search result…" else prior.fetchingUrl,
+                            fetchingUrl = if (stage == ScannedBottleStage.SOURCE_FETCH) "Checking a selected search result…" else prior.fetchingUrl,
                             extracting = stage == ScannedBottleStage.DETAIL_EXTRACTION,
                             automaticStage = stageLabel,
                         ))
                     },
                 )
             } catch (cancelled: CancellationException) {
+                recordDebugEvent(BottleLookupDebugEvent(BottleLookupDebugStage.COMPLETE, "APP", "CANCELLED", reasonCodes = listOf("REQUEST_CANCELLED")))
+                debugReport.finish("CANCELLED")
+                persistBottleLookupDebug(debugReport)
                 throw cancelled
             } catch (_: Exception) {
+                recordDebugEvent(BottleLookupDebugEvent(BottleLookupDebugStage.COMPLETE, "APP", "UNEXPECTED_ERROR", reasonCodes = listOf("UNEXPECTED_EXCEPTION")))
+                debugReport.finish("FAILED")
+                persistBottleLookupDebug(debugReport)
                 null
+            }
+            if (result != null) {
+                val finalOutcome = when {
+                    result.extraction is BottleDetailExtractionResult.Found -> "SUCCESS"
+                    result.search is WebSearchResult.Found && result.selectedHit == null -> "NOT_FOUND"
+                    !scanPlan.openFoodFactsEnabled && !scanPlan.firecrawlEnabled -> "DISABLED"
+                    else -> "PARTIAL"
+                }
+                debugReport.finish(finalOutcome)
+                persistBottleLookupDebug(debugReport)
             }
             if (bottleWebSearchRequestTokens[draft.id] != requestToken) return@launch
             val previous = bottleWebSearchStates[draft.id] ?: BottleWebSearchState(automatedScan = true)
@@ -1321,6 +1397,11 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 permissionMessage = bottleIntakeCameraMessage,
                 webSearchEnabled = firecrawlSearchEnabled && firecrawlKeySaved && !firecrawlKeyNeedsReplacement,
                 webSearchStates = bottleWebSearchStates,
+                onOpenLookupReport = {
+                    latestLookupReportPreview = LocalDiagnostics.latestBottleLookupPreview()
+                    lookupReportCopyMessage = null
+                    showDiagnostics = true
+                },
                 pendingEnrichmentJobs = pendingBottleEnrichmentJobs,
                 ollamaCloudEnabled = ollamaCloudEnabled && ollamaCloudKeySaved && !ollamaCloudKeyNeedsReplacement && isValidOllamaModelIdentifier(ollamaCloudModel),
                 localAiEnabled = localAiEnabled && localModelFile != null,
@@ -1616,7 +1697,11 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 onImportRecipes = { recipeImportLauncher.launch(arrayOf("text/csv", "application/json", "text/*", "*/*")) },
                 shareMessage = shareMessage,
                 onOpenLocationSettings = { showLocationSettings = true },
-                onOpenDiagnostics = { showDiagnostics = true },
+                onOpenDiagnostics = {
+                    latestLookupReportPreview = LocalDiagnostics.latestBottleLookupPreview()
+                    lookupReportCopyMessage = null
+                    showDiagnostics = true
+                },
                 installedAppVersion = installedAppVersion,
                 openFoodFactsEnabled = openFoodFactsEnabled,
                 onOpenFoodFactsEnabledChanged = { enabled ->
@@ -1716,8 +1801,28 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     if (showDiagnostics) {
         DiagnosticsDialog(
             preview = LocalDiagnostics.preview(),
+            lookupPreview = latestLookupReportPreview,
+            lookupCopyMessage = lookupReportCopyMessage,
+            onCopyLookup = {
+                val report = LocalDiagnostics.latestBottleLookupPreview()
+                if (report == null) {
+                    lookupReportCopyMessage = "There is no bottle lookup report yet."
+                } else {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("CocktAIls bottle lookup report", report))
+                    latestLookupReportPreview = report
+                    lookupReportCopyMessage = "Lookup report copied. Review it before sharing."
+                }
+            },
             onExport = { diagnosticsExportLauncher.launch("CocktAIls-Diagnostics.json") },
-            onClear = { LocalDiagnostics.clear() },
+            onClear = {
+                LocalDiagnostics.clear().also { cleared ->
+                    if (cleared) {
+                        latestLookupReportPreview = null
+                        lookupReportCopyMessage = null
+                    }
+                }
+            },
             onDismiss = { showDiagnostics = false },
         )
     }
@@ -2075,6 +2180,7 @@ internal fun BottleIntakeScreen(
     permissionMessage: String?,
     webSearchEnabled: Boolean,
     webSearchStates: Map<String, BottleWebSearchState>,
+    onOpenLookupReport: () -> Unit = {},
     pendingEnrichmentJobs: Map<String, BottleEnrichmentJob>,
     activeReviewDraftId: String?,
     ollamaCloudEnabled: Boolean,
@@ -2161,6 +2267,7 @@ internal fun BottleIntakeScreen(
                         onRemove = onRemove,
                         webSearchEnabled = webSearchEnabled,
                         webSearchState = webSearchStates[draft.id] ?: BottleWebSearchState(),
+                        onOpenLookupReport = onOpenLookupReport,
                         pendingEnrichmentJob = pendingEnrichmentJobs[draft.id],
                         ollamaCloudEnabled = ollamaCloudEnabled,
                         localAiEnabled = localAiEnabled,
@@ -2225,6 +2332,7 @@ private fun BottleDraftCard(
     onRemove: (BottleIntakeDraft) -> Unit,
     webSearchEnabled: Boolean,
     webSearchState: BottleWebSearchState,
+    onOpenLookupReport: () -> Unit,
     pendingEnrichmentJob: BottleEnrichmentJob?,
     ollamaCloudEnabled: Boolean,
     localAiEnabled: Boolean,
@@ -2372,6 +2480,11 @@ private fun BottleDraftCard(
                 }
             }
             webSearchState.message?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            if (webSearchState.automatedScan) {
+                TextButton(onClick = onOpenLookupReport, modifier = Modifier.testTag("open-bottle-lookup-report")) {
+                    Text("View or copy lookup debug report")
+                }
+            }
             webSearchState.hits.forEach { hit ->
                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(hit.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
@@ -3482,16 +3595,33 @@ private fun OllamaCloudSettingsDialog(
 }
 
 @Composable
-private fun DiagnosticsDialog(preview: String, onExport: () -> Unit, onClear: () -> Boolean, onDismiss: () -> Unit) {
+private fun DiagnosticsDialog(
+    preview: String,
+    lookupPreview: String?,
+    lookupCopyMessage: String?,
+    onCopyLookup: () -> Unit,
+    onExport: () -> Unit,
+    onClear: () -> Boolean,
+    onDismiss: () -> Unit,
+) {
     var clearError by remember { mutableStateOf<String?>(null) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Local diagnostics") },
         text = {
-            Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Stored only on this phone. Nothing is uploaded automatically. Export saves a file you choose to share.")
-                Text("Includes app/device version, camera event categories, and crash stack frames. Excludes recipes, household/member data, photos, barcode values, and exception messages.")
+            Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()).testTag("diagnostics-dialog-scroll"), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Stored only on this phone. Nothing is uploaded automatically. Export or copy only when you choose to share.")
+                Text("Crash details include app/device version, camera event categories, and stack frames. Lookup reports include scanned barcode digits, provider/model status, safe source URLs, timings, HTTP statuses, and fixed rejection codes.")
+                Text("Reports exclude API keys and headers, raw responses, page text, prompts, bottle names, recipes, household/member data, photos, location, and exception messages.")
                 Text("This captures uncaught Java/Kotlin exceptions. It does not collect logcat and may not capture native crashes or ANRs.", style = MaterialTheme.typography.bodySmall)
+                Text("Latest bottle lookup report", style = MaterialTheme.typography.titleSmall)
+                Text(lookupPreview ?: "No barcode lookup report yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("latest-lookup-report-preview"))
+                if (lookupPreview != null) {
+                    OutlinedButton(onClick = onCopyLookup, modifier = Modifier.fillMaxWidth().testTag("copy-bottle-lookup-report")) {
+                        Text("Copy lookup debug report")
+                    }
+                }
+                lookupCopyMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
                 Text(preview, style = MaterialTheme.typography.bodySmall)
                 clearError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
