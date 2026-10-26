@@ -164,6 +164,9 @@ import com.davidhayesbc.cocktails.android.product.BottleDetailExtractionResult
 import com.davidhayesbc.cocktails.android.product.BottleDetailSuggestions
 import com.davidhayesbc.cocktails.android.product.BottleFactField
 import com.davidhayesbc.cocktails.android.product.unresolvedBottleSourceFields
+import com.davidhayesbc.cocktails.android.product.PendingBottleEvidenceStore
+import com.davidhayesbc.cocktails.android.product.SharedPreferencesPendingBottleEvidenceStorage
+import com.davidhayesbc.cocktails.android.product.BottleDraftField
 import com.davidhayesbc.cocktails.android.product.isValidOllamaModelIdentifier
 import com.davidhayesbc.cocktails.android.product.LocalModelFileStore
 import com.davidhayesbc.cocktails.android.product.LocalModelInstallResult
@@ -214,6 +217,7 @@ internal data class BottleWebSearchState(
     val openFoodFactsResult: OpenFoodFactsLookupResult? = null,
     val localMatch: Boolean = false,
     val automatedScan: Boolean = false,
+    val userEditedFields: Set<BottleDraftField> = emptySet(),
     val automaticStage: String? = null,
     val barcodeVerifiedInPage: Boolean = false,
     val message: String? = null,
@@ -302,6 +306,9 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     val localModelFileStore = remember(context) { LocalModelFileStore(File(context.filesDir, "local-models")) }
     val bottleEnrichmentQueue = remember(context) {
         BottleEnrichmentQueue(SharedPreferencesBottleEnrichmentQueueStorage(context)).also { it.recoverInterrupted() }
+    }
+    val pendingBottleEvidenceStore = remember(context) {
+        PendingBottleEvidenceStore(SharedPreferencesPendingBottleEvidenceStorage(context))
     }
     var pendingBottleEnrichmentJobs by remember(bottleEnrichmentQueue) {
         mutableStateOf(bottleEnrichmentQueue.jobs().associateBy { it.draftId })
@@ -427,15 +434,27 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     }
     var bottleIntakeCameraMessage by remember { mutableStateOf<String?>(null) }
     var bottleIntakeSession by remember(repository) { mutableStateOf(repository.openBottleIntakeSession()) }
-    LaunchedEffect(activeScannedDraftId, bottleIntakeSession?.id) {
+    LaunchedEffect(showBottleIntake, activeScannedDraftId, bottleIntakeSession?.id) {
         val draft = bottleIntakeSession?.drafts?.firstOrNull { it.id == activeScannedDraftId }
-        if (draft != null && bottleWebSearchStates[draft.id]?.automatedScan != true) {
+        if (showBottleIntake && draft != null && bottleWebSearchStates[draft.id]?.automatedScan != true) {
             val paused = pendingBottleEnrichmentJobs[draft.id]
+            val editedFields = pendingBottleEvidenceStore.editedFields(draft.id)
+            val savedSuggestions = pendingBottleEvidenceStore.read(draft.id)?.takeIf { saved ->
+                saved.targetBarcode?.let { normalizeGtinForLookup(it) } == normalizeGtinForLookup(draft.barcode.orEmpty()) &&
+                    saved.identityEvidence?.let { sourceMentionsScannedBarcode(draft.barcode.orEmpty(), it) } == true
+            }
             bottleWebSearchStates = bottleWebSearchStates + (draft.id to BottleWebSearchState(
                 automatedScan = true,
+                userEditedFields = editedFields,
                 localMatch = repository.localProductForBarcode(draft.barcode.orEmpty()) != null,
-                message = if (paused != null) "This scan's enrichment was interrupted. Resume only when you choose; no request restarted automatically."
-                else "This bottle draft was kept for review. No online lookup is restarted automatically.",
+                barcodeVerifiedInPage = savedSuggestions?.targetBarcode != null,
+                page = savedSuggestions?.let { WebPageText("Verified source", it.sourceUrl, "", it.provider) },
+                extractedSuggestions = savedSuggestions,
+                message = when {
+                    savedSuggestions != null -> "Restored the verified source and suggestions for this unaccepted bottle. Review them; no provider request restarted."
+                    paused != null -> "This scan's enrichment was interrupted. Resume only when you choose; no request restarted automatically."
+                    else -> "This bottle draft was kept for review. No online lookup is restarted automatically."
+                },
             ))
         }
     }
@@ -681,12 +700,17 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         refreshPendingBottleEnrichmentJobs()
         bottleWebSearchStates = bottleWebSearchStates + (draftId to (bottleWebSearchStates[draftId] ?: BottleWebSearchState()).copy(extracting = true, extractingWith = "Ollama Cloud", extractedSuggestions = null, message = null))
         bottleExtractionJobs[draftId] = coroutineScope.launch {
-            val result = try {
-                ollamaCloudExtractor.extract(page, ollamaCloudModel)
+            val extracted = try {
+                val requiredBarcode = bottleWebSearchStates[draftId]?.takeIf { it.automatedScan }?.let { currentDraft.barcode }
+                ollamaCloudExtractor.extract(page, ollamaCloudModel, requiredBarcode)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
                 BottleDetailExtractionResult.Unavailable
+            }
+            val result = when (extracted) {
+                is BottleDetailExtractionResult.Found -> if (pendingBottleEvidenceStore.save(draftId, extracted.suggestions)) extracted else BottleDetailExtractionResult.InvalidResponse
+                else -> extracted
             }
             if (result is BottleDetailExtractionResult.Found) bottleEnrichmentQueue.remove(queueJob.id)
             else bottleEnrichmentQueue.pause(queueJob.id, System.currentTimeMillis())
@@ -740,14 +764,19 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             message = "Running the selected page through the local model. Source text stays on this phone.",
         ))
         bottleExtractionJobs[draftId] = coroutineScope.launch {
-            val result = try {
+            val extracted = try {
                 val runner = LlamaCppLocalInferenceRunner(context)
+                val requiredBarcode = bottleWebSearchStates[draftId]?.takeIf { it.automatedScan }?.let { currentDraft.barcode }
                 LocalBottleDetailExtractor({ modelFile.absolutePath }, runner)
-                    .extract(page, LOCAL_MODEL_LABEL)
+                    .extract(page, LOCAL_MODEL_LABEL, requiredBarcode)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
                 BottleDetailExtractionResult.Unavailable
+            }
+            val result = when (extracted) {
+                is BottleDetailExtractionResult.Found -> if (pendingBottleEvidenceStore.save(draftId, extracted.suggestions)) extracted else BottleDetailExtractionResult.InvalidResponse
+                else -> extracted
             }
             if (result is BottleDetailExtractionResult.Found) bottleEnrichmentQueue.remove(queueJob.id)
             else bottleEnrichmentQueue.pause(queueJob.id, System.currentTimeMillis())
@@ -802,14 +831,14 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     lookup = { code -> openFoodFactsClient.lookup(code, installedAppVersion.name) },
                     search = { query -> firecrawlSearchProvider.search(query, 5) },
                     fetch = firecrawlSearchProvider::fetch,
-                    extract = { page, provider ->
+                    extract = { page, provider, requiredBarcode ->
                         when (provider) {
-                            AutomaticBottleExtractor.OLLAMA_CLOUD -> ollamaCloudExtractor.extract(page, ollamaCloudModel)
+                            AutomaticBottleExtractor.OLLAMA_CLOUD -> ollamaCloudExtractor.extract(page, ollamaCloudModel, requiredBarcode)
                             AutomaticBottleExtractor.ON_DEVICE -> {
                                 val modelFile = localModelFileStore.installedModel()
                                 if (modelFile == null) BottleDetailExtractionResult.SetupRequired else {
                                     val runner = LlamaCppLocalInferenceRunner(context)
-                                    LocalBottleDetailExtractor({ modelFile.absolutePath }, runner).extract(page, LOCAL_MODEL_LABEL)
+                                    LocalBottleDetailExtractor({ modelFile.absolutePath }, runner).extract(page, LOCAL_MODEL_LABEL, requiredBarcode)
                                 }
                             }
                         }
@@ -864,11 +893,13 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             val previous = bottleWebSearchStates[draft.id] ?: BottleWebSearchState(automatedScan = true)
             val searchResult = result?.search
             val page = (result?.page as? WebPageResult.Found)?.page
-            val extraction = (result?.extraction as? BottleDetailExtractionResult.Found)?.suggestions
+            val candidateExtraction = (result?.extraction as? BottleDetailExtractionResult.Found)?.suggestions
+            val extraction = candidateExtraction?.takeIf { pendingBottleEvidenceStore.save(draft.id, it) }
             val message = when {
                 result == null -> "Automatic lookup could not finish. Your bottle draft is still here; continue manually or retry."
                 result.page is WebPageResult.Found && !result.barcodeVerifiedInPage -> "The fetched page did not show this barcode. No model extraction was run; inspect a source or continue manually."
-                result.extraction is BottleDetailExtractionResult.Found -> "Suggestions are ready. Check the source and each value before applying any details."
+                candidateExtraction != null && extraction == null -> "Suggestions could not be saved with their source evidence. They were not applied; enter details manually."
+                result.extraction is BottleDetailExtractionResult.Found -> "Suggestions are ready in the review fields. Check the source and each value before accepting."
                 result.extraction != null -> "The enabled model could not produce verified details. Your draft is unchanged; continue manually."
                 result.search is WebSearchResult.Found && result.selectedHit == null -> "No source result was found for this barcode. Continue manually or search again later."
                 result.search == WebSearchResult.QuotaExceeded -> "Firecrawl's plan quota is exhausted. No retry was made; continue manually."
@@ -1324,6 +1355,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 onAcceptAndScanNext = { draftId ->
                     val draft = bottleIntakeSession?.drafts?.firstOrNull { it.id == draftId }
                     if (draft != null && draftId == activeScannedDraftId && draft.ingredientName.isNotBlank() && draft.ingredientName != "Unidentified bottle") {
+                        pendingBottleEvidenceStore.remove(draftId)
                         activeScannedDraftId = null
                         context.getSharedPreferences("cocktails_local_scan_review", Context.MODE_PRIVATE).edit().remove("active_draft_id").apply()
                         beginBottleBarcodeScan()
@@ -1347,6 +1379,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 },
                 onRemove = { draft ->
                     cancelBottleSourceSearch(draft.id)
+                    pendingBottleEvidenceStore.remove(draft.id)
                     bottleWebSearchStates = bottleWebSearchStates - draft.id
                     repository.removeBottleIntakeDraft(draft.sessionId, draft.id)
                     if (activeScannedDraftId == draft.id) {
@@ -1367,6 +1400,13 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     if (saved) bottleIntakeSession = repository.openBottleIntakeSession()
                     saved
                 },
+                onFieldEdited = { draftId, field ->
+                    val state = bottleWebSearchStates[draftId]
+                    if (state?.automatedScan == true && field !in state.userEditedFields) {
+                        pendingBottleEvidenceStore.markEdited(draftId, field)
+                        bottleWebSearchStates = bottleWebSearchStates + (draftId to state.copy(userEditedFields = state.userEditedFields + field))
+                    }
+                },
                 onHomeChanged = { home -> repository.setBottleIntakeHome(bottleIntakeSession!!.id, home, System.currentTimeMillis()); bottleIntakeSession = repository.openBottleIntakeSession() },
                 onLevelChanged = { level -> repository.setBottleIntakeDefaultLevel(bottleIntakeSession!!.id, level, System.currentTimeMillis()); bottleIntakeSession = repository.openBottleIntakeSession() },
                 onConfirm = {
@@ -1374,6 +1414,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     when (result) {
                         is BottleIntakeCommitResult.Confirmed, is BottleIntakeCommitResult.AlreadyConfirmed -> {
                             cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = false)
+                            bottleIntakeSession?.drafts?.forEach { pendingBottleEvidenceStore.remove(it.id) }
                             bottleWebSearchStates = emptyMap()
                             refreshPantry()
                             bottleIntakeSession = null
@@ -1389,6 +1430,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 },
                 onCancel = {
                     cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = false)
+                    bottleIntakeSession?.drafts?.forEach { pendingBottleEvidenceStore.remove(it.id) }
                     bottleWebSearchStates = emptyMap()
                     repository.cancelBottleIntakeSession(bottleIntakeSession!!.id)
                     clearPendingBottleCapture()
@@ -2042,6 +2084,7 @@ internal fun BottleIntakeScreen(
     onAddManual: (String, String, String?, String?, String?, InventoryLevel, ByteArray?) -> Boolean,
     onRemove: (BottleIntakeDraft) -> Unit,
     onUpdate: (BottleIntakeDraft) -> Boolean,
+    onFieldEdited: (String, BottleDraftField) -> Unit,
     onHomeChanged: (String) -> Unit,
     onLevelChanged: (InventoryLevel) -> Unit,
     onConfirm: () -> BottleIntakeCommitResult,
@@ -2104,6 +2147,7 @@ internal fun BottleIntakeScreen(
                         draft = draft,
                         homes = homes,
                         onUpdate = onUpdate,
+                        onFieldEdited = onFieldEdited,
                         onValidityChanged = { id, valid -> invalidDraftIds = (if (valid) invalidDraftIds - id else invalidDraftIds + id).toMutableSet() },
                         onRemove = onRemove,
                         webSearchEnabled = webSearchEnabled,
@@ -2167,6 +2211,7 @@ private fun BottleDraftCard(
     draft: BottleIntakeDraft,
     homes: List<HomeLocation>,
     onUpdate: (BottleIntakeDraft) -> Boolean,
+    onFieldEdited: (String, BottleDraftField) -> Unit,
     onValidityChanged: (String, Boolean) -> Unit,
     onRemove: (BottleIntakeDraft) -> Unit,
     webSearchEnabled: Boolean,
@@ -2191,14 +2236,17 @@ private fun BottleDraftCard(
     }
     var homeMenu by remember(draft.id) { mutableStateOf(false) }
     var levelMenu by remember(draft.id) { mutableStateOf(false) }
-    LaunchedEffect(draft.id, webSearchState.extractedSuggestions, webSearchState.automatedScan, webSearchState.barcodeVerifiedInPage) {
+    LaunchedEffect(draft.id, webSearchState.extractedSuggestions, webSearchState.automatedScan, webSearchState.barcodeVerifiedInPage, webSearchState.userEditedFields) {
         val suggestions = webSearchState.extractedSuggestions
         if (activeReview && webSearchState.automatedScan && webSearchState.barcodeVerifiedInPage && suggestions != null) {
             val suggestedName = suggestions.facts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }?.value?.trim().orEmpty()
             val suggestedBrand = suggestions.facts.firstOrNull { it.field == BottleFactField.BRAND }?.value?.trim().orEmpty()
-            val nextName = if ((name.isBlank() || name == "Unidentified bottle") && suggestedName.isNotEmpty()) suggestedName else name
-            val nextProductName = productName.ifBlank { suggestedName }
-            val nextBrand = brand.ifBlank { suggestedBrand }
+            val ingredientNameEdited = BottleDraftField.INGREDIENT_NAME in webSearchState.userEditedFields
+            val productNameEdited = BottleDraftField.PRODUCT_NAME in webSearchState.userEditedFields
+            val brandEdited = BottleDraftField.BRAND in webSearchState.userEditedFields
+            val nextName = if (!ingredientNameEdited && (name.isBlank() || name == "Unidentified bottle") && suggestedName.isNotEmpty()) suggestedName else name
+            val nextProductName = if (!productNameEdited) productName.ifBlank { suggestedName } else productName
+            val nextBrand = if (!brandEdited) brand.ifBlank { suggestedBrand } else brand
             if (nextName != name || nextProductName != productName || nextBrand != brand) {
                 val saved = onUpdate(draft.copy(
                     ingredientName = nextName,
@@ -2223,6 +2271,7 @@ private fun BottleDraftCard(
                 name,
                 { value ->
                     name = value
+                    onFieldEdited(draft.id, BottleDraftField.INGREDIENT_NAME)
                     if (value.isBlank()) {
                         val saved = onUpdate(draft.copy(
                             ingredientName = value,
@@ -2249,11 +2298,13 @@ private fun BottleDraftCard(
             draft.barcode?.let { Text("Barcode: $it", style = MaterialTheme.typography.bodySmall) }
             OutlinedTextField(brand, { value ->
                 brand = value
+                onFieldEdited(draft.id, BottleDraftField.BRAND)
                 val saved = onUpdate(draft.copy(ingredientName = name, brand = value.trim().ifEmpty { null }, productName = productName.trim().ifEmpty { null }))
                 onValidityChanged(draft.id, name.isNotBlank() && saved)
             }, label = { Text("Brand · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("bottle-intake-draft-brand-${draft.position}"))
             OutlinedTextField(productName, { value ->
                 productName = value
+                onFieldEdited(draft.id, BottleDraftField.PRODUCT_NAME)
                 val saved = onUpdate(draft.copy(ingredientName = name, brand = brand.trim().ifEmpty { null }, productName = value.trim().ifEmpty { null }))
                 onValidityChanged(draft.id, name.isNotBlank() && saved)
             }, label = { Text("Product · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("bottle-intake-draft-product-${draft.position}"))
@@ -2332,18 +2383,21 @@ private fun BottleDraftCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(page.markdown.take(1_200), style = MaterialTheme.typography.bodySmall)
+                if (page.markdown.isBlank()) {
+                    Text("The source page text was not retained after the app closed. Search and fetch it again only if you want more suggestions.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 unresolvedBottleSourceFields(page.markdown).forEach { field ->
                     Text("${field.label} appears with conflicting values on this page. No value was selected.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
                 OutlinedButton(
                     onClick = onExtractDetails,
-                    enabled = ollamaCloudEnabled && !webSearchState.extracting && (!webSearchState.automatedScan || webSearchState.barcodeVerifiedInPage),
+                    enabled = page.markdown.isNotBlank() && ollamaCloudEnabled && !webSearchState.extracting && (!webSearchState.automatedScan || webSearchState.barcodeVerifiedInPage),
                     modifier = Modifier.testTag("extract-bottle-${draft.id}"),
                 ) { Text(if (webSearchState.extracting) "Extracting…" else "Suggest details with Ollama Cloud") }
                 if (!ollamaCloudEnabled) Text("Enable Ollama Cloud extraction in More to use this option.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 OutlinedButton(
                     onClick = onExtractDetailsOnDevice,
-                    enabled = localAiEnabled && !webSearchState.extracting && (!webSearchState.automatedScan || webSearchState.barcodeVerifiedInPage),
+                    enabled = page.markdown.isNotBlank() && localAiEnabled && !webSearchState.extracting && (!webSearchState.automatedScan || webSearchState.barcodeVerifiedInPage),
                     modifier = Modifier.testTag("extract-bottle-local-${draft.id}"),
                 ) { Text(if (webSearchState.extracting && webSearchState.extractingWith == "On-device Qwen3") "Running on this phone…" else "Suggest details on this phone") }
                 if (!localAiEnabled) Text("Install the Qwen3 model and enable on-device suggestions in More to use this option.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

@@ -51,8 +51,9 @@ class ScannedBottleWorkflowTest {
                 WebSearchResult.Found(listOf(WebSearchHit("Three Wood", "https://shop.example/three-wood", null)))
             },
             fetch = { url -> calls += "fetch:$url"; WebPageResult.Found(page) },
-            extract = { fetched, provider ->
+            extract = { fetched, provider, requiredBarcode ->
                 calls += "extract:${provider.name}"
+                assertEquals("5011333150725", requiredBarcode)
                 assertEquals(page, fetched)
                 BottleDetailExtractionResult.InvalidResponse
             },
@@ -80,7 +81,7 @@ class ScannedBottleWorkflowTest {
             lookup = { calls += "off"; OpenFoodFactsLookupResult.NotFound },
             search = { calls += "search"; WebSearchResult.Found(listOf(WebSearchHit("Whisky", "https://shop.example/wrong", null))) },
             fetch = { calls += "fetch"; WebPageResult.Found(WebPageText("Different whisky", "https://shop.example/wrong", "Barcode 5011333150733", "Firecrawl")) },
-            extract = { _, provider -> calls += "extract:${provider.name}"; BottleDetailExtractionResult.InvalidResponse },
+            extract = { _, provider, _ -> calls += "extract:${provider.name}"; BottleDetailExtractionResult.InvalidResponse },
         )
 
         val result = coordinator.processScannedBarcode(
@@ -108,7 +109,7 @@ class ScannedBottleWorkflowTest {
                 fetchedUrl = url
                 WebPageResult.Found(WebPageText("Three Wood", url, "Barcode 5011333150725", "Firecrawl"))
             },
-            extract = { _, _ -> BottleDetailExtractionResult.InvalidResponse },
+            extract = { _, _, _ -> BottleDetailExtractionResult.InvalidResponse },
         )
 
         val result = coordinator.processScannedBarcode("5011333150725", ScannedBottlePlan(false, true, null))
@@ -126,7 +127,7 @@ class ScannedBottleWorkflowTest {
             lookup = { calls++; OpenFoodFactsLookupResult.Unavailable },
             search = { calls++; WebSearchResult.SetupRequired },
             fetch = { calls++; WebPageResult.Unavailable },
-            extract = { _, _ -> calls++; BottleDetailExtractionResult.Unavailable },
+            extract = { _, _, _ -> calls++; BottleDetailExtractionResult.Unavailable },
         )
 
         val result = coordinator.processScannedBarcode("5011333150725", ScannedBottlePlan(false, false, null))
@@ -147,7 +148,7 @@ class ScannedBottleWorkflowTest {
                 lookup = { OpenFoodFactsLookupResult.NotFound },
                 search = { searchResult },
                 fetch = { fetches++; WebPageResult.Unavailable },
-                extract = { _, _ -> extractions++; BottleDetailExtractionResult.Unavailable },
+                extract = { _, _, _ -> extractions++; BottleDetailExtractionResult.Unavailable },
             )
             val result = coordinator.processScannedBarcode("5011333150725", ScannedBottlePlan(true, true, AutomaticBottleExtractor.OLLAMA_CLOUD))
             assertEquals(searchResult, result.search)
@@ -164,7 +165,7 @@ class ScannedBottleWorkflowTest {
             lookup = { OpenFoodFactsLookupResult.NotFound },
             search = { throw CancellationException("user canceled") },
             fetch = { fetches++; WebPageResult.Unavailable },
-            extract = { _, _ -> extractions++; BottleDetailExtractionResult.Unavailable },
+            extract = { _, _, _ -> extractions++; BottleDetailExtractionResult.Unavailable },
         )
 
         val canceled = runCatching {
@@ -174,6 +175,25 @@ class ScannedBottleWorkflowTest {
         assertTrue(canceled.exceptionOrNull() is CancellationException)
         assertEquals(0, fetches)
         assertEquals(0, extractions)
+    }
+
+    @Test
+    fun cancellationAfterFetchNeverReturnsLateModelSuggestions() = runBlocking {
+        var extractions = 0
+        val page = WebPageText("Three Wood", "https://shop.example/item", "UPC 5011333150725", "Firecrawl")
+        val coordinator = ScannedBottleEnrichmentCoordinator(
+            lookup = { OpenFoodFactsLookupResult.NotFound },
+            search = { WebSearchResult.Found(listOf(WebSearchHit("Three Wood", page.sourceUrl, null))) },
+            fetch = { WebPageResult.Found(page) },
+            extract = { _, _, _ -> extractions++; throw CancellationException("user canceled") },
+        )
+
+        val canceled = runCatching {
+            coordinator.processScannedBarcode("5011333150725", ScannedBottlePlan(false, true, AutomaticBottleExtractor.ON_DEVICE))
+        }
+
+        assertTrue(canceled.exceptionOrNull() is CancellationException)
+        assertEquals(1, extractions)
     }
 
     @Test
@@ -188,7 +208,7 @@ class ScannedBottleWorkflowTest {
             lookup = { OpenFoodFactsLookupResult.NotFound },
             search = { WebSearchResult.Found(listOf(WebSearchHit("Three Wood", page.sourceUrl, null))) },
             fetch = { WebPageResult.Found(page) },
-            extract = { fetched, _ ->
+            extract = { fetched, _, _ ->
                 assertTrue(fetched.markdown.contains("700 mL and 750 mL"))
                 BottleDetailExtractionResult.InvalidResponse
             },

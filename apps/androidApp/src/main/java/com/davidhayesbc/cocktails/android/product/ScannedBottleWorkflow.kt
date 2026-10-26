@@ -56,7 +56,7 @@ internal class ScannedBottleEnrichmentCoordinator(
     private val lookup: suspend (String) -> OpenFoodFactsLookupResult,
     private val search: suspend (String) -> WebSearchResult,
     private val fetch: suspend (String) -> WebPageResult,
-    private val extract: suspend (WebPageText, AutomaticBottleExtractor) -> BottleDetailExtractionResult,
+    private val extract: suspend (WebPageText, AutomaticBottleExtractor, requiredBarcode: String) -> BottleDetailExtractionResult,
 ) {
     suspend fun processScannedBarcode(
         barcode: String,
@@ -92,6 +92,6 @@ internal class ScannedBottleEnrichmentCoordinator(
         if (!verified || extractor == null) return outcome
 
         onStage(ScannedBottleStage.DETAIL_EXTRACTION, page.sourceUrl)
-        return outcome.copy(extraction = extract(page, extractor))
+        return outcome.copy(extraction = extract(page, extractor, barcode))
     }
 }

@@ -83,6 +83,50 @@ class OllamaCloudBottleDetailExtractorTest {
     }
 
     @Test
+    fun conflictingSourceAbvValuesRemainUnresolvedInsteadOfSelectingOne() {
+        val sourceText = "Example Gin 40% ABV. A related product is 50% ABV."
+        val candidate = """{"facts":[{"field":"product_name","value":"Example Gin","evidence":"Example Gin 40% ABV"},{"field":"abv_percent","value":"40%","evidence":"Example Gin 40% ABV"}]}"""
+
+        val result = parseBottleFactCandidate(candidate, "Ollama Cloud", "model", "https://shop.example/item", sourceText)
+
+        val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
+        assertTrue(BottleFactField.ABV_PERCENT in suggestions.unresolvedFields)
+        assertTrue(suggestions.facts.none { it.field == BottleFactField.ABV_PERCENT })
+        assertTrue(suggestions.facts.any { it.field == BottleFactField.PRODUCT_NAME })
+    }
+
+    @Test
+    fun automaticExtractionRequiresIdentityEvidenceLinkingScannedCodeAndProductName() {
+        val sourceText = "UPC 5011333150725 applies to Auchentoshan Three Wood. Related whisky: Other Reserve; Brand: WrongBrand."
+        val wrongProduct = """{"identity":{"barcode":"5011333150725","evidence":"UPC 5011333150725 applies to Auchentoshan Three Wood"},"facts":[{"field":"product_name","value":"Other Reserve","evidence":"Related whisky: Other Reserve"},{"field":"brand","value":"WrongBrand","evidence":"Brand: WrongBrand"}]}"""
+
+        assertTrue(
+            parseBottleFactCandidate(wrongProduct, "Ollama Cloud", "model", "https://shop.example/item", sourceText, "5011333150725") is
+                BottleDetailExtractionResult.InvalidResponse,
+        )
+
+        val linkedProduct = """{"identity":{"barcode":"5011333150725","evidence":"UPC 5011333150725 applies to Auchentoshan Three Wood"},"facts":[{"field":"product_name","value":"Auchentoshan Three Wood","evidence":"UPC 5011333150725 applies to Auchentoshan Three Wood"}]}"""
+        val result = parseBottleFactCandidate(linkedProduct, "Ollama Cloud", "model", "https://shop.example/item", sourceText, "5011333150725")
+        val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
+        assertEquals("5011333150725", suggestions.targetBarcode)
+        assertTrue(suggestions.identityEvidence.orEmpty().contains("Auchentoshan Three Wood"))
+    }
+
+    @Test
+    fun cloudRequestForScannedBottleRequiresExactCodeAndProductIdentityEvidence() = runBlocking {
+        val page = source.copy(markdown = "UPC 5011333150725 applies to Example Gin 40% ABV.")
+        val content = """{"identity":{"barcode":"5011333150725","evidence":"UPC 5011333150725 applies to Example Gin"},"facts":[{"field":"product_name","value":"Example Gin","evidence":"UPC 5011333150725 applies to Example Gin"},{"field":"abv_percent","value":"40%","evidence":"Example Gin 40% ABV"}]}"""
+        val transport = FakeTransport(OllamaCloudHttpResponse.Success(response(content)))
+        val provider = OllamaCloudBottleDetailExtractor({ "synthetic-key" }, transport)
+
+        val result = provider.extract(page, "qwen3:8b-cloud", "5011333150725")
+
+        assertTrue(result is BottleDetailExtractionResult.Found)
+        assertTrue(transport.lastBody.contains("identity"))
+        assertTrue(transport.lastBody.contains("5011333150725"))
+    }
+
+    @Test
     fun stripsLinksUrlsQueryStringsHtmlAndControlCharactersBeforeCloudRequest() = runBlocking {
         val pageText = "Gin brand [official page](https://example.org/gin?token=private123)\nRaw https://shop.example/item?email=person%40example.org\u0001"
         val transport = FakeTransport(OllamaCloudHttpResponse.Success(response(

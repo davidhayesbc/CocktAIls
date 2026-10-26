@@ -30,7 +30,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.activity.compose.setContent
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.ComposeView
 import com.davidhayesbc.cocktails.android.ui.BottleIntakeScreen
 import com.davidhayesbc.cocktails.android.ui.BottleWebSearchState
 import com.davidhayesbc.cocktails.android.ui.theme.CocktailsTheme
@@ -39,6 +40,8 @@ import com.davidhayesbc.cocktails.android.product.BottleFactEvidence
 import com.davidhayesbc.cocktails.android.product.BottleFactField
 import com.davidhayesbc.cocktails.android.product.WebPageText
 import com.davidhayesbc.cocktails.android.product.WebSearchHit
+import com.davidhayesbc.cocktails.android.product.PendingBottleEvidenceStore
+import com.davidhayesbc.cocktails.android.product.SharedPreferencesPendingBottleEvidenceStorage
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.test.SemanticsMatcher
@@ -156,6 +159,8 @@ class OfflineRecipeSmokeTest {
                 BottleFactEvidence(BottleFactField.ABV_PERCENT, "43%", "43% ABV"),
             ),
             unresolvedFields = setOf(BottleFactField.QUANTITY),
+            targetBarcode = barcode,
+            identityEvidence = "UPC 5011333150725 · Product name Auchentoshan Three Wood",
         )
         var activeSession by mutableStateOf(repository.openBottleIntakeSession()!!)
         var activeDraftId by mutableStateOf<String?>(first.id)
@@ -171,7 +176,7 @@ class OfflineRecipeSmokeTest {
         var secondDraftId by mutableStateOf<String?>(null)
 
         try {
-            composeRule.setContent {
+            setTestContent {
                 CocktailsTheme {
                     BottleIntakeScreen(
                         modifier = Modifier.fillMaxSize(),
@@ -214,6 +219,9 @@ class OfflineRecipeSmokeTest {
                             if (updated) activeSession = repository.openBottleIntakeSession()!!
                             updated
                         },
+                        onFieldEdited = { draftId, field ->
+                            webStates = webStates + (draftId to webStates[draftId]!!.copy(userEditedFields = webStates[draftId]!!.userEditedFields + field))
+                        },
                         onHomeChanged = {},
                         onLevelChanged = {},
                         onConfirm = { BottleIntakeCommitResult.Invalid("Test review only") },
@@ -241,10 +249,172 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("bottle-intake-draft-name-1").assertIsDisplayed()
             assertEquals(2, repository.openBottleIntakeSession()!!.drafts.size)
         } finally {
-            composeRule.runOnUiThread { composeRule.activity.setContent {} }
+            setTestContent { }
             driver.close()
             context.deleteDatabase(databaseName)
         }
+    }
+
+    @Test
+    fun delayedSuggestionsDoNotOverwriteUserEditedOrClearedBottleFields() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val databaseName = "scanned-edit-race-${System.currentTimeMillis()}.db"
+        context.deleteDatabase(databaseName)
+        val driver = AndroidSqliteDriver(CocktailsDatabase.Schema, context, databaseName)
+        val repository = LocalCocktailRepository(CocktailsDatabase(driver))
+        repository.initialize(10)
+        val home = repository.locations().single()
+        val session = repository.startBottleIntakeSession(home.id, InventoryLevel.FULL, 11)
+        val draft = repository.addBottleIntakeDraft(
+            session.id, "Unidentified bottle", "Spirit", home.id, InventoryLevel.FULL, 12, barcode = "5011333150725",
+        )!!
+        val sourceUrl = "https://shop.example/three-wood"
+        val page = WebPageText("Three Wood", sourceUrl, "UPC 5011333150725 · Three Wood · Brand: Example Brand", "Firecrawl")
+        val delayedSuggestions = BottleDetailSuggestions(
+            provider = "Ollama Cloud", model = "test-model", sourceUrl = sourceUrl,
+            facts = listOf(
+                BottleFactEvidence(BottleFactField.PRODUCT_NAME, "Three Wood", "UPC 5011333150725 · Three Wood"),
+                BottleFactEvidence(BottleFactField.BRAND, "Example Brand", "Three Wood · Brand: Example Brand"),
+            ),
+            targetBarcode = "5011333150725",
+            identityEvidence = "UPC 5011333150725 · Three Wood",
+        )
+        var activeSession by mutableStateOf(repository.openBottleIntakeSession()!!)
+        var webState by mutableStateOf(BottleWebSearchState(automatedScan = true, barcodeVerifiedInPage = true, page = page))
+
+        try {
+            setTestContent {
+                CocktailsTheme {
+                    BottleIntakeScreen(
+                        modifier = Modifier.fillMaxSize(), session = activeSession, homes = listOf(home),
+                        capturePhoto = null, captureMessage = null, permissionMessage = null,
+                        webSearchEnabled = false, webSearchStates = mapOf(draft.id to webState),
+                        pendingEnrichmentJobs = emptyMap(), activeReviewDraftId = draft.id,
+                        ollamaCloudEnabled = false, localAiEnabled = false,
+                        onSearchDraft = {}, onFetchDraftSource = { _, _ -> }, onExtractDraftDetails = {},
+                        onExtractDraftDetailsOnDevice = {}, onResumeEnrichment = { _, _ -> }, onCancelDraftSearch = {},
+                        onCaptureLabel = {}, onDiscardCapturedLabel = {}, onAttachCapturedLabel = {}, onScan = {},
+                        onAcceptAndScanNext = {}, onAddManual = { _, _, _, _, _, _, _ -> false },
+                        onRemove = { },
+                        onUpdate = { updated ->
+                            val saved = repository.updateBottleIntakeDraft(updated)
+                            if (saved) activeSession = repository.openBottleIntakeSession()!!
+                            saved
+                        },
+                        onFieldEdited = { id, field ->
+                            webState = webState.copy(userEditedFields = webState.userEditedFields + field)
+                        },
+                        onHomeChanged = {}, onLevelChanged = {},
+                        onConfirm = { BottleIntakeCommitResult.Invalid("Test only") }, onCancel = {}, onDismiss = {},
+                    )
+                }
+            }
+
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-name-0"))
+            composeRule.onNodeWithTag("bottle-intake-draft-name-0").performTextClearance()
+            composeRule.onNodeWithTag("bottle-intake-draft-name-0").performTextInput("My chosen whisky")
+            webState = webState.copy(extractedSuggestions = delayedSuggestions)
+            composeRule.waitForIdle()
+            composeRule.onNodeWithTag("bottle-intake-draft-name-0").assert(
+                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("My chosen whisky")),
+            )
+            composeRule.onNodeWithTag("bottle-intake-draft-brand-0").assert(
+                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("Example Brand")),
+            )
+            composeRule.onNodeWithTag("bottle-intake-draft-product-0").assert(
+                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("Three Wood")),
+            )
+
+            composeRule.onNodeWithTag("bottle-intake-draft-name-0").performTextClearance()
+            webState = webState.copy(extractedSuggestions = delayedSuggestions.copy(
+                facts = delayedSuggestions.facts.map { fact ->
+                    if (fact.field == BottleFactField.PRODUCT_NAME) fact.copy(value = "Another suggested bottle") else fact
+                },
+            ))
+            composeRule.waitForIdle()
+            composeRule.onNodeWithTag("bottle-intake-draft-name-0").assert(
+                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")),
+            )
+            composeRule.onNodeWithTag("batch-confirm").assertIsNotEnabled()
+        } finally {
+            setTestContent { }
+            driver.close()
+            context.deleteDatabase(databaseName)
+        }
+    }
+
+    @Test
+    fun unacceptedScannedBottleEvidenceRestoresAfterKeepLaterAndActivityRecreation() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val preferences = context.getSharedPreferences("cocktails_local_scan_review", android.content.Context.MODE_PRIVATE)
+        val evidenceStore = PendingBottleEvidenceStore(SharedPreferencesPendingBottleEvidenceStorage(context))
+        val driver = AndroidSqliteDriver(CocktailsDatabase.Schema, context, "cocktails.db")
+        val repository = LocalCocktailRepository(CocktailsDatabase(driver))
+        repository.initialize(5)
+        val priorSession = repository.openBottleIntakeSession()
+        val home = repository.locations().first()
+        val session = repository.startBottleIntakeSession(home.id, InventoryLevel.FULL, System.currentTimeMillis())
+        val code = "5011333150725"
+        val draft = repository.addBottleIntakeDraft(
+            session.id, "Auchentoshan Three Wood", "Spirit", session.locationId, InventoryLevel.FULL,
+            System.currentTimeMillis(), barcode = code, brand = "Auchentoshan", productName = "Auchentoshan Three Wood",
+        )!!
+        assertTrue(evidenceStore.save(draft.id, BottleDetailSuggestions(
+            provider = "On-device Qwen3", model = "Qwen3-0.6B-Q8_0", sourceUrl = "https://shop.example/item",
+            facts = listOf(BottleFactEvidence(BottleFactField.PRODUCT_NAME, "Auchentoshan Three Wood", "UPC 5011333150725 · Auchentoshan Three Wood")),
+            targetBarcode = code,
+            identityEvidence = "UPC 5011333150725 · Auchentoshan Three Wood",
+        )))
+        preferences.edit().putString("active_draft_id", draft.id).commit()
+        driver.close()
+
+        try {
+            composeRule.activityRule.scenario.recreate()
+            openBottleIntake()
+            assertRestoredBottleEvidenceVisible()
+
+            keepBottleIntakeForLater()
+            openBottleIntake()
+            assertRestoredBottleEvidenceVisible()
+
+            keepBottleIntakeForLater()
+            composeRule.activityRule.scenario.recreate()
+            openBottleIntake()
+            assertRestoredBottleEvidenceVisible()
+        } finally {
+            preferences.edit().remove("active_draft_id").commit()
+            evidenceStore.remove(draft.id)
+            val cleanupDriver = AndroidSqliteDriver(CocktailsDatabase.Schema, context, "cocktails.db")
+            val cleanup = LocalCocktailRepository(CocktailsDatabase(cleanupDriver))
+            if (priorSession == null) cleanup.cancelBottleIntakeSession(session.id)
+            else cleanup.removeBottleIntakeDraft(session.id, draft.id)
+            cleanupDriver.close()
+        }
+    }
+
+    private fun openBottleIntake() {
+        composeRule.onNodeWithText("My Bar").performClick()
+        composeRule.onNodeWithTag("start-bottle-intake").performClick()
+    }
+
+    private fun setTestContent(content: @Composable () -> Unit) {
+        composeRule.runOnUiThread {
+            composeRule.activity.findViewById<ComposeView>(android.R.id.content).setContent(content)
+        }
+    }
+
+    private fun assertRestoredBottleEvidenceVisible() {
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(
+            hasText("Restored the verified source and suggestions for this unaccepted bottle. Review them; no provider request restarted."),
+        )
+        composeRule.onNodeWithText("Restored the verified source and suggestions for this unaccepted bottle. Review them; no provider request restarted.").assertIsDisplayed()
+        composeRule.onNodeWithText("Suggestions · On-device Qwen3 · Qwen3-0.6B-Q8_0").assertIsDisplayed()
+        composeRule.onNodeWithTag("batch-scan-bottles").assertIsNotEnabled()
+    }
+
+    private fun keepBottleIntakeForLater() {
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("Keep for later"))
+        composeRule.onNodeWithText("Keep for later").performClick()
     }
 
     private fun assertBatchCountVisibleWithDiagnostics() {
