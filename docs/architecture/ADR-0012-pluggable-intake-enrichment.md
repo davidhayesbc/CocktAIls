@@ -1,6 +1,6 @@
 # ADR-0012: Keep intake retrieval, extraction, and persistence separate
 
-- **Status:** Accepted; Firecrawl retrieval and Ollama Cloud extraction are implemented, local inference remains future work
+- **Status:** Accepted; Firecrawl retrieval, Ollama Cloud extraction, and the optional local-model integration are implemented. Local weight verification is tested; device inference still needs physical-device validation.
 - **Date:** 2026-10-25
 
 ## Context
@@ -20,7 +20,7 @@ Large bottle collections benefit from optional source discovery, but scanning an
 - Ollama Cloud does not support constrained JSON output. The request asks for a compact candidate, then the client strictly parses the response and accepts only allowlisted fields whose value is supported by an exact quoted source passage. Invalid or unsupported output is rejected. Suggestions are temporary, visibly attributed to provider/model/source, and never copied into bottle fields automatically.
 - Before cloud inference, remove HTML/Markdown link targets, raw URLs (including query strings), and control characters from the selected page text. This is a narrow data reduction step, not general personal-information redaction; warn users that other personal details in source text may still be sent.
 - Persist only bounded enrichment-job metadata (operation, draft/session IDs, selected source URL or model, and status). Never persist search query text, source page text, model output, or credentials. On restart, in-flight jobs become paused and require explicit user action; a retried fetch may consume provider quota again.
-- Keep on-device inference behind the same extraction boundary. The app does not yet include a local runtime or model download. Do not raise the app's minimum Android version to satisfy a model library; the manual and online paths remain available without a local model. Public contribution/upload is not included.
+- Keep on-device inference behind the same extraction boundary. The first runtime is llama.cpp pinned to commit `d854d98bae598388ecea1ed84396587e5edc326d`, building arm64-v8a and x86_64 without raising the app's minimum Android version. The user may select the official Qwen3 0.6B Q8_0 GGUF from device storage; the importer checks the GGUF header and pinned SHA-256, enforces a 900 MiB limit, installs atomically in app-private storage, and never downloads weights automatically. Model installation and local-AI enablement are separate opt-ins. Local prompts use selected page text only and share the same strict evidence validator as cloud suggestions. Model downloads, output, and prompts are not persisted in household records or backups. Public contribution/upload is not included.
 - A language model may only produce a nullable, typed candidate tied to explicit source evidence. It receives no tools or authority to follow instructions embedded in web content. There is no silent fallback from local inference to a cloud provider.
 
 ## Consequences
@@ -29,6 +29,7 @@ Large bottle collections benefit from optional source discovery, but scanning an
 - Each Firecrawl request consumes the user's own provider-plan quota. The app does not make background requests or use the credential for unrelated destinations.
 - Extraction is a review-only suggestion flow, not an automatic field update. Cloud results depend on the user's own API plan and selected model; no live credential or provider call is part of repository testing.
 - A metadata-only resumable queue is implemented. It does not save page text or model output and never restarts provider requests automatically.
+- Local runtime initialization and native libraries compile for both Android ABIs. The model was not downloaded here and no real device inference has been run; performance, memory use, and output quality remain to be checked on the Pixel 10 Pro.
 - Firecrawl results remain device-session data and are not restored through household backups. A future persistent cache or contribution path needs a separate license and transfer review.
 
 ## References
@@ -39,4 +40,7 @@ Large bottle collections benefit from optional source discovery, but scanning an
 - Ollama chat API: <https://docs.ollama.com/api/chat>
 - Ollama Cloud: <https://docs.ollama.com/cloud>
 - Ollama structured outputs (cloud does not currently support constrained output): <https://docs.ollama.com/capabilities/structured-outputs>
+- llama.cpp Android sample/runtime: <https://github.com/ggml-org/llama.cpp/tree/d854d98bae598388ecea1ed84396587e5edc326d/examples/llama.android>
+- Qwen3 0.6B GGUF source and model license: <https://huggingface.co/Qwen/Qwen3-0.6B-GGUF>
+- Native and model notices: [LOCAL_AI.md](../licensing/LOCAL_AI.md)
 - Related decisions: [physical bottle intake](ADR-0007-physical-bottle-intake.md), [assistant provider boundary](ADR-0005-assistant-provider-boundary.md)

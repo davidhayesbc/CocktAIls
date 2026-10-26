@@ -19,17 +19,23 @@ An offline-first cocktail library and household bar companion for Android. The a
 - `catalogs/core/`: catalog pack policy and directory notes.
 - `docs/`: product, architecture, and delivery decisions.
 
-The first release targets Android. Shared Kotlin Multiplatform domain/data logic and a portable file format are intended to support a future native iPhone app. Household records stay on-device and can be shared by versioned file exchange. The Recipes screen offers an optional local install of eight source-attributed classics; see the pack notice and [bounded source review](docs/planning/CATALOG_DATA_REVIEW.md). Other cocktail or product datasets require separate source and license review. Network services and language models remain optional capabilities layered on later.
+The first release targets Android. Shared Kotlin Multiplatform domain/data logic and a portable file format are intended to support a future native iPhone app. Household records stay on-device and can be shared by versioned file exchange. The Recipes screen offers an optional local install of eight source-attributed classics; see the pack notice and [bounded source review](docs/planning/CATALOG_DATA_REVIEW.md). Other cocktail or product datasets require separate source and license review. Optional product lookup, web discovery, Ollama Cloud suggestions, and an on-device Qwen model are independent capabilities; bottle intake and manual review do not require network access or a model.
 
 ## Build the Android app
 
-Requirements: JDK 17 or newer, Android SDK Platform 36 and Build Tools 36.0.0, and network access to Maven Central and Google's Maven repository for first-time dependency resolution.
+Requirements: JDK 17 or newer, Android SDK Platform 36 and Build Tools 36.0.0, NDK 29.0.14206865, CMake 3.31.6, the pinned `third_party/llama.cpp` submodule, and network access to Maven Central and Google's Maven repository for first-time dependency resolution.
+
+After cloning, initialize the native runtime submodule:
+
+```bash
+git submodule update --init --recursive
+```
 
 ```bash
 ./gradlew :apps:androidApp:assembleDebug
 ```
 
-The debug APK is created at `apps/androidApp/build/outputs/apk/debug/androidApp-debug.apk`. The Android app supports local ingredient and recipe entry, multiple homes, approximate stock levels, the offline starter recipes, recipe search/availability filters, tasting notes, shop suggestions, barcode capture/manual entry, photos, and manual backup/restore. See the Phase 1 status for current checks and remaining physical-device validation.
+The debug APK is created at `apps/androidApp/build/outputs/apk/debug/androidApp-debug.apk`. The Android app supports local ingredient and recipe entry, multiple homes, approximate stock levels, the offline starter recipes, recipe search/availability filters, tasting notes, shop suggestions, barcode capture/manual entry, photos, and manual backup/restore. The optional on-device model is not bundled; users import the reviewed GGUF file from device storage. See the [local AI licensing and verification notes](docs/licensing/LOCAL_AI.md) and the Phase 1 status for current checks and remaining physical-device validation.
 
 ## Current state
 

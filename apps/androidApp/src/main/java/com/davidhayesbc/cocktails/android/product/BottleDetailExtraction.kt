@@ -58,6 +58,10 @@ internal interface BottleDetailExtractor {
     suspend fun extract(page: WebPageText, model: String): BottleDetailExtractionResult
 }
 
+internal fun interface LocalInferenceRunner {
+    suspend fun generate(modelPath: String, systemPrompt: String, userPrompt: String, maxTokens: Int): String
+}
+
 internal class OllamaCloudBottleDetailExtractor(
     private val keyProvider: () -> String?,
     private val transport: OllamaCloudTransport = UrlConnectionOllamaCloudTransport(),
@@ -221,7 +225,17 @@ internal fun parseOllamaExtractionResponse(
     if (root["done"]?.jsonPrimitive?.booleanOrNull != true) return BottleDetailExtractionResult.InvalidResponse
     val content = root["message"]?.jsonObject?.string("content")
         ?: return BottleDetailExtractionResult.InvalidResponse
-    val contentObject = Json.parseToJsonElement(content).jsonObject
+    parseBottleFactCandidate(content, "Ollama Cloud", model, sourceUrl, sourceText)
+}.getOrDefault(BottleDetailExtractionResult.InvalidResponse)
+
+internal fun parseBottleFactCandidate(
+    rawCandidate: String,
+    provider: String,
+    model: String,
+    sourceUrl: String,
+    sourceText: String,
+): BottleDetailExtractionResult = runCatching {
+    val contentObject = Json.parseToJsonElement(rawCandidate).jsonObject
     val facts = (contentObject["facts"] as? JsonArray)?.mapNotNull { value ->
         val fact = value as? JsonObject ?: return@mapNotNull null
         val field = fact.string("field")?.let { name -> BottleFactField.entries.firstOrNull { it.wireValue == name } }
@@ -243,7 +257,7 @@ internal fun parseOllamaExtractionResponse(
     val acceptedFacts = facts.distinctBy(BottleFactEvidence::field).take(MAX_FACTS)
     if (acceptedFacts.isEmpty()) return BottleDetailExtractionResult.InvalidResponse
     BottleDetailExtractionResult.Found(
-        BottleDetailSuggestions("Ollama Cloud", model, sourceUrl, acceptedFacts),
+        BottleDetailSuggestions(provider, model, sourceUrl, acceptedFacts),
     )
 }.getOrDefault(BottleDetailExtractionResult.InvalidResponse)
 

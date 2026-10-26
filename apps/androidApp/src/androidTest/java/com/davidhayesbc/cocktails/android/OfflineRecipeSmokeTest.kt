@@ -56,6 +56,14 @@ class OfflineRecipeSmokeTest {
     val composeRule = createAndroidComposeRule<MainActivity>()
 
     @Test
+    fun onDeviceModelControlsAreHonestWhenNoWeightsAreInstalled() {
+        composeRule.onNodeWithText("More").performClick()
+        composeRule.onNodeWithText("On-device model · Qwen3 0.6B Q8").assertIsDisplayed()
+        composeRule.onNodeWithTag("local-ai-toggle").assertIsNotEnabled()
+        composeRule.onNodeWithTag("choose-local-model").assertIsDisplayed()
+    }
+
+    @Test
     fun batchIntakeDraftsResumeAfterActivityRecreationAndConfirmSeparateBottles() {
         val bottleName = "Batch Test Gin ${System.currentTimeMillis()}"
         composeRule.onNodeWithText("My Bar").performClick()

@@ -49,6 +49,29 @@ class BottleEnrichmentQueueTest {
     }
 
     @Test
+    fun localExtractionPersistsOnlySourceAndModelMetadataAndPausesOnRestart() {
+        val storage = MemoryStorage()
+        val queue = BottleEnrichmentQueue(storage)
+        val running = queue.begin(
+            "session-local",
+            "draft-local",
+            BottleEnrichmentOperation.LOCAL_EXTRACTION,
+            sourceUrl = "https://example.org/gin",
+            model = LOCAL_MODEL_LABEL,
+            nowMillis = 10,
+        )!!
+
+        val restored = BottleEnrichmentQueue(storage).recoverInterrupted().single()
+
+        assertEquals(running.id, restored.id)
+        assertEquals(BottleEnrichmentOperation.LOCAL_EXTRACTION, restored.operation)
+        assertEquals(BottleEnrichmentStatus.PAUSED, restored.status)
+        assertFalse(storage.raw.orEmpty().contains("source text"))
+        assertFalse(storage.raw.orEmpty().contains("generated output"))
+        assertFalse(storage.raw.orEmpty().contains("apiKey"))
+    }
+
+    @Test
     fun malformedQueueStorageFailsClosedWithoutIssuingRequests() {
         val storage = MemoryStorage("not-json")
         val queue = BottleEnrichmentQueue(storage)

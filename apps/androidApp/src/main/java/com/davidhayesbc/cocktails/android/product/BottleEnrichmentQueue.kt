@@ -16,6 +16,7 @@ internal enum class BottleEnrichmentOperation {
     FIRECRAWL_SEARCH,
     FIRECRAWL_FETCH,
     OLLAMA_EXTRACTION,
+    LOCAL_EXTRACTION,
 }
 
 internal enum class BottleEnrichmentStatus {
@@ -172,6 +173,7 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
             BottleEnrichmentOperation.FIRECRAWL_SEARCH -> sourceUrl == null && model == null
             BottleEnrichmentOperation.FIRECRAWL_FETCH -> normalizePublicHttpsUrl(sourceUrl.orEmpty()) == sourceUrl && model == null
             BottleEnrichmentOperation.OLLAMA_EXTRACTION -> normalizePublicHttpsUrl(sourceUrl.orEmpty()) == sourceUrl && isValidOllamaModelIdentifier(model.orEmpty())
+            BottleEnrichmentOperation.LOCAL_EXTRACTION -> normalizePublicHttpsUrl(sourceUrl.orEmpty()) == sourceUrl && model == LOCAL_MODEL_LABEL
         }
     }
 

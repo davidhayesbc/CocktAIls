@@ -8,6 +8,7 @@ plugins {
 android {
     namespace = "com.davidhayesbc.cocktails.android"
     compileSdk = 36
+    ndkVersion = "29.0.14206865"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -21,9 +22,28 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         versionCode = providers.environmentVariable("GITHUB_RUN_NUMBER").orNull?.toIntOrNull() ?: 1
         versionName = providers.environmentVariable("COCKTAILS_VERSION_NAME").orNull ?: "0.1.0"
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
+        externalNativeBuild {
+            cmake {
+                arguments += listOf(
+                    "-DCMAKE_BUILD_TYPE=Release",
+                    "-DCMAKE_MESSAGE_LOG_LEVEL=WARNING",
+                    "-DBUILD_SHARED_LIBS=ON",
+                )
+            }
+        }
     }
 
     sourceSets["main"].assets.srcDir(rootProject.file("catalog-packs"))
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.31.6"
+        }
+    }
 }
 
 kotlin {

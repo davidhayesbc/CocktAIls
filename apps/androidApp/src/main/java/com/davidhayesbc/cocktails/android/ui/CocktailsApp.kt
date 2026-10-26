@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.content.pm.ApplicationInfo
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
@@ -150,6 +151,12 @@ import com.davidhayesbc.cocktails.android.product.OllamaCloudBottleDetailExtract
 import com.davidhayesbc.cocktails.android.product.BottleDetailExtractionResult
 import com.davidhayesbc.cocktails.android.product.BottleDetailSuggestions
 import com.davidhayesbc.cocktails.android.product.isValidOllamaModelIdentifier
+import com.davidhayesbc.cocktails.android.product.LocalModelFileStore
+import com.davidhayesbc.cocktails.android.product.LocalModelInstallResult
+import com.davidhayesbc.cocktails.android.product.LocalBottleDetailExtractor
+import com.davidhayesbc.cocktails.android.product.LlamaCppLocalInferenceRunner
+import com.davidhayesbc.cocktails.android.product.LOCAL_MODEL_LABEL
+import com.davidhayesbc.cocktails.android.product.QWEN3_06B_MODEL_PAGE
 import com.davidhayesbc.cocktails.android.product.WebSearchHit
 import com.davidhayesbc.cocktails.android.product.WebPageText
 import com.davidhayesbc.cocktails.android.product.WebSearchResult
@@ -184,6 +191,7 @@ private data class BottleWebSearchState(
     val searching: Boolean = false,
     val fetchingUrl: String? = null,
     val extracting: Boolean = false,
+    val extractingWith: String? = null,
     val hits: List<WebSearchHit> = emptyList(),
     val page: WebPageText? = null,
     val extractedSuggestions: BottleDetailSuggestions? = null,
@@ -270,6 +278,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     val ollamaCloudExtractor = remember(ollamaCloudCredentialStore) {
         OllamaCloudBottleDetailExtractor(keyProvider = ollamaCloudCredentialStore::readApiKey)
     }
+    val localModelFileStore = remember(context) { LocalModelFileStore(File(context.filesDir, "local-models")) }
     val bottleEnrichmentQueue = remember(context) {
         BottleEnrichmentQueue(SharedPreferencesBottleEnrichmentQueueStorage(context)).also { it.recoverInterrupted() }
     }
@@ -300,6 +309,11 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var ollamaCloudModel by remember(context) {
         mutableStateOf(context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).getString("ollama_cloud_model", "").orEmpty())
     }
+    var localModelFile by remember(context) { mutableStateOf(localModelFileStore.installedModel()) }
+    var localAiEnabled by remember(context) {
+        mutableStateOf(context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).getBoolean("local_ai_enabled", false) && localModelFileStore.installedModel() != null)
+    }
+    var localModelMessage by remember { mutableStateOf<String?>(null) }
     var showFirecrawlCredentialDialog by remember { mutableStateOf(false) }
     var showOllamaCloudSettingsDialog by remember { mutableStateOf(false) }
     var bottleWebSearchStates by remember { mutableStateOf<Map<String, BottleWebSearchState>>(emptyMap()) }
@@ -555,6 +569,13 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 ))
                 fetchBottleSource(draft, WebSearchHit("Previously selected source", url, null))
             }
+            BottleEnrichmentOperation.LOCAL_EXTRACTION -> {
+                val url = job.sourceUrl ?: return
+                bottleWebSearchStates = bottleWebSearchStates + (draft.id to (bottleWebSearchStates[draft.id] ?: BottleWebSearchState()).copy(
+                    message = "The interrupted local extraction was not saved. Re-fetch the selected source, then choose local extraction again.",
+                ))
+                fetchBottleSource(draft, WebSearchHit("Previously selected source", url, null))
+            }
         }
     }
 
@@ -575,7 +596,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             return
         }
         refreshPendingBottleEnrichmentJobs()
-        bottleWebSearchStates = bottleWebSearchStates + (draftId to (bottleWebSearchStates[draftId] ?: BottleWebSearchState()).copy(extracting = true, extractedSuggestions = null, message = null))
+        bottleWebSearchStates = bottleWebSearchStates + (draftId to (bottleWebSearchStates[draftId] ?: BottleWebSearchState()).copy(extracting = true, extractingWith = "Ollama Cloud", extractedSuggestions = null, message = null))
         bottleExtractionJobs[draftId] = coroutineScope.launch {
             val result = try {
                 ollamaCloudExtractor.extract(page, ollamaCloudModel)
@@ -597,6 +618,67 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     BottleDetailExtractionResult.QuotaOrRateLimited -> previous.copy(extracting = false, message = "Ollama Cloud reported a quota or rate limit. No retry was made.")
                     BottleDetailExtractionResult.Unavailable -> previous.copy(extracting = false, message = "Ollama Cloud could not be reached. Your draft is unchanged.")
                     BottleDetailExtractionResult.InvalidResponse -> previous.copy(extracting = false, message = "Ollama Cloud returned suggestions without usable source evidence.")
+                })
+            }
+            if (bottleExtractionRequestTokens[draftId] == requestToken) bottleExtractionJobs.remove(draftId)
+        }
+    }
+
+    fun extractBottleDetailsOnDevice(draftId: String) {
+        if (!localAiEnabled) return
+        val page = bottleWebSearchStates[draftId]?.page ?: return
+        val modelFile = localModelFileStore.installedModel() ?: run {
+            localModelFile = null
+            localAiEnabled = false
+            localModelMessage = "The installed model file is missing. Select it again in More."
+            return
+        }
+        bottleExtractionJobs.remove(draftId)?.cancel()
+        val requestToken = (bottleExtractionRequestTokens[draftId] ?: 0) + 1
+        bottleExtractionRequestTokens[draftId] = requestToken
+        val currentDraft = bottleIntakeSession?.drafts?.firstOrNull { it.id == draftId } ?: return
+        val queueJob = bottleEnrichmentQueue.begin(
+            currentDraft.sessionId,
+            draftId,
+            BottleEnrichmentOperation.LOCAL_EXTRACTION,
+            sourceUrl = page.sourceUrl,
+            model = LOCAL_MODEL_LABEL,
+            nowMillis = System.currentTimeMillis(),
+        )
+        if (queueJob == null) {
+            bottleWebSearchStates = bottleWebSearchStates + (draftId to (bottleWebSearchStates[draftId] ?: BottleWebSearchState()).copy(message = "The local enrichment queue is full or could not be saved. Your draft is unchanged."))
+            return
+        }
+        refreshPendingBottleEnrichmentJobs()
+        bottleWebSearchStates = bottleWebSearchStates + (draftId to (bottleWebSearchStates[draftId] ?: BottleWebSearchState()).copy(
+            extracting = true,
+            extractingWith = "On-device Qwen3",
+            extractedSuggestions = null,
+            message = "Running the selected page through the local model. Source text stays on this phone.",
+        ))
+        bottleExtractionJobs[draftId] = coroutineScope.launch {
+            val result = try {
+                val runner = LlamaCppLocalInferenceRunner(context)
+                LocalBottleDetailExtractor({ modelFile.absolutePath }, runner)
+                    .extract(page, LOCAL_MODEL_LABEL)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                BottleDetailExtractionResult.Unavailable
+            }
+            if (result is BottleDetailExtractionResult.Found) bottleEnrichmentQueue.remove(queueJob.id)
+            else bottleEnrichmentQueue.pause(queueJob.id, System.currentTimeMillis())
+            refreshPendingBottleEnrichmentJobs()
+            if (bottleExtractionRequestTokens[draftId] == requestToken && showBottleIntake && bottleIntakeSession?.drafts?.any { it.id == draftId } == true) {
+                val previous = bottleWebSearchStates[draftId] ?: BottleWebSearchState()
+                bottleWebSearchStates = bottleWebSearchStates + (draftId to when (result) {
+                    is BottleDetailExtractionResult.Found -> previous.copy(extracting = false, extractedSuggestions = result.suggestions)
+                    BottleDetailExtractionResult.SetupRequired -> previous.copy(extracting = false, message = "Install the reviewed Qwen3 model file from More before local extraction.")
+                    BottleDetailExtractionResult.InvalidModel -> previous.copy(extracting = false, message = "The selected on-device model is not supported.")
+                    BottleDetailExtractionResult.AuthenticationRequired -> previous.copy(extracting = false, message = "Unexpected authentication response from the on-device model.")
+                    BottleDetailExtractionResult.QuotaOrRateLimited -> previous.copy(extracting = false, message = "The on-device model is busy. Try again later.")
+                    BottleDetailExtractionResult.Unavailable -> previous.copy(extracting = false, message = "On-device extraction did not finish. Your draft is unchanged; check free memory and try again.")
+                    BottleDetailExtractionResult.InvalidResponse -> previous.copy(extracting = false, message = "The model returned no suggestions with usable source evidence.")
                 })
             }
             if (bottleExtractionRequestTokens[draftId] == requestToken) bottleExtractionJobs.remove(draftId)
@@ -712,6 +794,31 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                         }
                     }
                 }.onFailure { shareMessage = "Recipe preview failed: ${it.message ?: "file could not be read"}" }
+            }
+        }
+    }
+
+    val localModelImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) {
+            localModelMessage = "Model selection canceled. No local file changed."
+        } else {
+            localModelMessage = "Checking the selected model file…"
+            coroutineScope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    val input = context.contentResolver.openInputStream(uri)
+                        ?: return@withContext LocalModelInstallResult.StorageFailure
+                    localModelFileStore.import(input)
+                }
+                when (result) {
+                    is LocalModelInstallResult.Installed -> {
+                        localModelFile = result.file
+                        localModelMessage = "Verified Qwen3 model installed on this phone. It is not enabled until you turn it on below."
+                    }
+                    LocalModelInstallResult.InvalidGguf -> localModelMessage = "That file is not a GGUF model. Nothing was installed."
+                    LocalModelInstallResult.WrongModel -> localModelMessage = "The file is not the reviewed Qwen3 0.6B Q8 model (SHA-256 mismatch). Nothing was installed."
+                    LocalModelInstallResult.TooLarge -> localModelMessage = "The selected file exceeds the 900 MiB safety limit. Nothing was installed."
+                    LocalModelInstallResult.StorageFailure -> localModelMessage = "The model could not be installed atomically. Check free storage and try again; any previous model was kept."
+                }
             }
         }
     }
@@ -1117,6 +1224,28 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).edit().putBoolean("ollama_cloud_enabled", allowed).apply()
                     ollamaCloudEnabled = allowed
                 },
+                localAiEnabled = localAiEnabled,
+                localModelInstalled = localModelFile != null,
+                localModelMessage = localModelMessage,
+                onChooseLocalModel = { localModelMessage = null; localModelImportLauncher.launch(arrayOf("application/octet-stream", "*/*")) },
+                onOpenLocalModelSource = {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(QWEN3_06B_MODEL_PAGE)))
+                },
+                onDeleteLocalModel = {
+                    if (localModelFileStore.delete()) {
+                        localModelFile = null
+                        localAiEnabled = false
+                        context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).edit().putBoolean("local_ai_enabled", false).apply()
+                        localModelMessage = "The local model and interrupted import files were removed from this phone."
+                    } else {
+                        localModelMessage = "The local model could not be fully removed. Try again."
+                    }
+                },
+                onLocalAiEnabledChanged = { enabled ->
+                    val allowed = enabled && localModelFileStore.installedModel() != null
+                    context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).edit().putBoolean("local_ai_enabled", allowed).apply()
+                    localAiEnabled = allowed
+                },
             )
         }
     }
@@ -1235,9 +1364,11 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             webSearchStates = bottleWebSearchStates,
             pendingEnrichmentJobs = pendingBottleEnrichmentJobs,
             ollamaCloudEnabled = ollamaCloudEnabled && ollamaCloudKeySaved && !ollamaCloudKeyNeedsReplacement && isValidOllamaModelIdentifier(ollamaCloudModel),
+            localAiEnabled = localAiEnabled && localModelFile != null,
             onSearchDraft = ::searchBottleSources,
             onFetchDraftSource = ::fetchBottleSource,
             onExtractDraftDetails = ::extractBottleDetails,
+            onExtractDraftDetailsOnDevice = ::extractBottleDetailsOnDevice,
             onResumeEnrichment = ::resumeBottleEnrichment,
             onCancelDraftSearch = ::cancelBottleSourceSearch,
             onCaptureLabel = {
@@ -1610,9 +1741,11 @@ private fun BottleIntakeDialog(
     webSearchStates: Map<String, BottleWebSearchState>,
     pendingEnrichmentJobs: Map<String, BottleEnrichmentJob>,
     ollamaCloudEnabled: Boolean,
+    localAiEnabled: Boolean,
     onSearchDraft: (BottleIntakeDraft) -> Unit,
     onFetchDraftSource: (BottleIntakeDraft, WebSearchHit) -> Unit,
     onExtractDraftDetails: (String) -> Unit,
+    onExtractDraftDetailsOnDevice: (String) -> Unit,
     onResumeEnrichment: (BottleIntakeDraft, BottleEnrichmentJob) -> Unit,
     onCancelDraftSearch: (String) -> Unit,
     onCaptureLabel: () -> Unit,
@@ -1684,9 +1817,11 @@ private fun BottleIntakeDialog(
                         webSearchState = webSearchStates[draft.id] ?: BottleWebSearchState(),
                         pendingEnrichmentJob = pendingEnrichmentJobs[draft.id],
                         ollamaCloudEnabled = ollamaCloudEnabled,
+                        localAiEnabled = localAiEnabled,
                         onSearch = { onSearchDraft(draft) },
                         onFetchSource = { hit -> onFetchDraftSource(draft, hit) },
                         onExtractDetails = { onExtractDraftDetails(draft.id) },
+                        onExtractDetailsOnDevice = { onExtractDraftDetailsOnDevice(draft.id) },
                         onResumeEnrichment = { job -> onResumeEnrichment(draft, job) },
                         onCancelSearch = { onCancelDraftSearch(draft.id) },
                     )
@@ -1739,9 +1874,11 @@ private fun BottleDraftCard(
     webSearchState: BottleWebSearchState,
     pendingEnrichmentJob: BottleEnrichmentJob?,
     ollamaCloudEnabled: Boolean,
+    localAiEnabled: Boolean,
     onSearch: () -> Unit,
     onFetchSource: (WebSearchHit) -> Unit,
     onExtractDetails: () -> Unit,
+    onExtractDetailsOnDevice: () -> Unit,
     onResumeEnrichment: (BottleEnrichmentJob) -> Unit,
     onCancelSearch: () -> Unit,
 ) {
@@ -1822,6 +1959,7 @@ private fun BottleDraftCard(
                         BottleEnrichmentOperation.FIRECRAWL_SEARCH -> "A previous Firecrawl search was interrupted. It will not restart automatically."
                         BottleEnrichmentOperation.FIRECRAWL_FETCH -> "A selected source fetch was interrupted. It will not restart automatically."
                         BottleEnrichmentOperation.OLLAMA_EXTRACTION -> "An Ollama Cloud extraction was interrupted. Source text and model output were not saved."
+                        BottleEnrichmentOperation.LOCAL_EXTRACTION -> "An on-device extraction was interrupted. Source text and model output were not saved."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1851,7 +1989,20 @@ private fun BottleDraftCard(
                     modifier = Modifier.testTag("extract-bottle-${draft.id}"),
                 ) { Text(if (webSearchState.extracting) "Extracting…" else "Suggest details with Ollama Cloud") }
                 if (!ollamaCloudEnabled) Text("Enable Ollama Cloud extraction in More to use this option.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (webSearchState.extracting) Text("Sending selected page text to Ollama Cloud after removing links, URLs and control characters. Review the page first; it may still contain personal details. You can cancel locally; a request already sent may still use plan quota. Bottle fields are unchanged.", style = MaterialTheme.typography.bodySmall)
+                OutlinedButton(
+                    onClick = onExtractDetailsOnDevice,
+                    enabled = localAiEnabled && !webSearchState.extracting,
+                    modifier = Modifier.testTag("extract-bottle-local-${draft.id}"),
+                ) { Text(if (webSearchState.extracting && webSearchState.extractingWith == "On-device Qwen3") "Running on this phone…" else "Suggest details on this phone") }
+                if (!localAiEnabled) Text("Install the Qwen3 model and enable on-device suggestions in More to use this option.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (webSearchState.extracting) {
+                    val provider = webSearchState.extractingWith
+                    Text(
+                        if (provider == "On-device Qwen3") "Running the selected page text on this phone. It is not sent to an AI service. You can cancel locally; bottle fields are unchanged."
+                        else "Sending selected page text to Ollama Cloud after removing links, URLs and control characters. Review the page first; it may still contain personal details. You can cancel locally; a request already sent may still use plan quota. Bottle fields are unchanged.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
                 webSearchState.extractedSuggestions?.let { suggestions ->
                     Text("Suggestions · ${suggestions.provider} · ${suggestions.model}", style = MaterialTheme.typography.titleSmall)
                     Text("Source: ${suggestions.sourceUrl}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
@@ -2655,6 +2806,13 @@ private fun HouseholdScreen(
     onConfigureOllamaCloud: () -> Unit,
     onRemoveOllamaCloudKey: () -> Unit,
     onOllamaCloudEnabledChanged: (Boolean) -> Unit,
+    localAiEnabled: Boolean,
+    localModelInstalled: Boolean,
+    localModelMessage: String?,
+    onChooseLocalModel: () -> Unit,
+    onOpenLocalModelSource: () -> Unit,
+    onDeleteLocalModel: () -> Unit,
+    onLocalAiEnabledChanged: (Boolean) -> Unit,
 ) {
     Column(
         modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).testTag("household-scroll").padding(24.dp),
@@ -2739,7 +2897,33 @@ private fun HouseholdScreen(
             if (ollamaCloudKeySaved) TextButton(onClick = onRemoveOllamaCloudKey, modifier = Modifier.testTag("remove-ollama-cloud-key")) { Text("Remove key") }
         }
         ollamaCredentialMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        Text("On-device AI: model runtime is not installed yet. Intake and manual review work offline without it.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("On-device model · Qwen3 0.6B Q8", style = MaterialTheme.typography.titleSmall)
+        Text(
+            if (localModelInstalled) "The reviewed 639 MiB model is installed in private app storage on this phone."
+            else "Not installed. Download the reviewed model from its source, then select the GGUF file here. The app checks its format and SHA-256 before install.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text("Model weights: Qwen3-0.6B-GGUF · Apache-2.0. Native runtime: llama.cpp · MIT. This is text extraction only; no image recognition.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("On-device extraction sends the selected page text to this phone's local model; it does not call a network service. Output is not constrained JSON and is rejected unless exact source evidence passes validation.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text("Allow on-device model suggestions", style = MaterialTheme.typography.titleSmall)
+                Text(if (localModelInstalled) "Nothing runs until you choose the local extraction action on a selected source." else "Install the model first. Manual intake stays available without it.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Switch(
+                checked = localAiEnabled,
+                enabled = localModelInstalled,
+                onCheckedChange = onLocalAiEnabledChanged,
+                modifier = Modifier.testTag("local-ai-toggle"),
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onOpenLocalModelSource, modifier = Modifier.testTag("local-model-source")) { Text("Open model source") }
+            OutlinedButton(onClick = onChooseLocalModel, modifier = Modifier.testTag("choose-local-model")) { Text(if (localModelInstalled) "Replace model file" else "Choose GGUF file") }
+            if (localModelInstalled) TextButton(onClick = onDeleteLocalModel, modifier = Modifier.testTag("delete-local-model")) { Text("Delete") }
+        }
+        localModelMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         Text("Manual sharing", style = MaterialTheme.typography.titleLarge)
         Button(onClick = onExport, modifier = Modifier.fillMaxWidth()) { Text("Export household backup") }
         OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth()) { Text("Import household backup") }
