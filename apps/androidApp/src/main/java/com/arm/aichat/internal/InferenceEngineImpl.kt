@@ -10,6 +10,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -212,6 +214,7 @@ internal class InferenceEngineImpl private constructor(
 
             _state.value = InferenceEngine.State.Generating
             while (!_cancelGeneration) {
+                currentCoroutineContext().ensureActive()
                 generateNextToken()?.let { utf8token ->
                     if (utf8token.isNotEmpty()) emit(utf8token)
                 } ?: break

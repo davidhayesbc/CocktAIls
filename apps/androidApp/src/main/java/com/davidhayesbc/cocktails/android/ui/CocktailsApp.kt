@@ -48,6 +48,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Switch
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -125,6 +126,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import com.davidhayesbc.cocktails.android.location.ApproximateCoordinates
 import com.davidhayesbc.cocktails.android.location.requestApproximateLocation
@@ -170,6 +173,8 @@ import kotlinx.serialization.json.put
 import java.io.ByteArrayOutputStream
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 private enum class Page(val label: String) {
     MAKE("Make"),
@@ -314,6 +319,10 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         mutableStateOf(context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).getBoolean("local_ai_enabled", false) && localModelFileStore.installedModel() != null)
     }
     var localModelMessage by remember { mutableStateOf<String?>(null) }
+    var localModelImporting by remember { mutableStateOf(false) }
+    var localModelImportProgressBytes by remember { mutableStateOf(0L) }
+    val localModelImportCancelled = remember { AtomicBoolean(false) }
+    val localModelImportProgress = remember { AtomicLong(0L) }
     var showFirecrawlCredentialDialog by remember { mutableStateOf(false) }
     var showOllamaCloudSettingsDialog by remember { mutableStateOf(false) }
     var bottleWebSearchStates by remember { mutableStateOf<Map<String, BottleWebSearchState>>(emptyMap()) }
@@ -321,6 +330,13 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     val bottleWebSearchRequestTokens = remember { mutableMapOf<String, Int>() }
     val bottleExtractionJobs = remember { mutableMapOf<String, Job>() }
     val bottleExtractionRequestTokens = remember { mutableMapOf<String, Int>() }
+
+    LaunchedEffect(localModelImporting) {
+        while (localModelImporting) {
+            localModelImportProgressBytes = localModelImportProgress.get()
+            delay(250)
+        }
+    }
 
     fun refreshPendingBottleEnrichmentJobs() {
         pendingBottleEnrichmentJobs = bottleEnrichmentQueue.jobs().associateBy { it.draftId }
@@ -802,22 +818,43 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         if (uri == null) {
             localModelMessage = "Model selection canceled. No local file changed."
         } else {
-            localModelMessage = "Checking the selected model file…"
+            localModelImportCancelled.set(false)
+            localModelImportProgress.set(0L)
+            localModelImportProgressBytes = 0L
+            localModelImporting = true
+            localModelMessage = "Reading and verifying the selected model. The previous model stays installed until verification finishes."
             coroutineScope.launch {
-                val result = withContext(Dispatchers.IO) {
-                    val input = context.contentResolver.openInputStream(uri)
-                        ?: return@withContext LocalModelInstallResult.StorageFailure
-                    localModelFileStore.import(input)
-                }
-                when (result) {
-                    is LocalModelInstallResult.Installed -> {
-                        localModelFile = result.file
-                        localModelMessage = "Verified Qwen3 model installed on this phone. It is not enabled until you turn it on below."
+                try {
+                    val result = try {
+                        withContext(Dispatchers.IO) {
+                            val input = context.contentResolver.openInputStream(uri)
+                                ?: return@withContext LocalModelInstallResult.StorageFailure
+                            val importJob = currentCoroutineContext()[Job]
+                            localModelFileStore.import(
+                                input,
+                                isCancelled = { localModelImportCancelled.get() || importJob?.isActive == false },
+                                onProgress = { bytes -> localModelImportProgress.set(bytes) },
+                            )
+                        }
+                    } catch (_: CancellationException) {
+                        LocalModelInstallResult.Cancelled
+                    } catch (_: Exception) {
+                        LocalModelInstallResult.StorageFailure
                     }
-                    LocalModelInstallResult.InvalidGguf -> localModelMessage = "That file is not a GGUF model. Nothing was installed."
-                    LocalModelInstallResult.WrongModel -> localModelMessage = "The file is not the reviewed Qwen3 0.6B Q8 model (SHA-256 mismatch). Nothing was installed."
-                    LocalModelInstallResult.TooLarge -> localModelMessage = "The selected file exceeds the 900 MiB safety limit. Nothing was installed."
-                    LocalModelInstallResult.StorageFailure -> localModelMessage = "The model could not be installed atomically. Check free storage and try again; any previous model was kept."
+                    when (result) {
+                        is LocalModelInstallResult.Installed -> {
+                            localModelFile = result.file
+                            localModelMessage = "Verified Qwen3 model installed on this phone. It is not enabled until you turn it on below."
+                        }
+                        LocalModelInstallResult.InvalidGguf -> localModelMessage = "That file is not a GGUF model. Nothing was installed."
+                        LocalModelInstallResult.WrongModel -> localModelMessage = "The file is not the reviewed Qwen3 0.6B Q8 model (SHA-256 mismatch). Nothing was installed."
+                        LocalModelInstallResult.TooLarge -> localModelMessage = "The selected file exceeds the 900 MiB safety limit. Nothing was installed."
+                        LocalModelInstallResult.Cancelled -> localModelMessage = "Model import canceled. The partial file was removed and any previous model was kept."
+                        LocalModelInstallResult.StorageFailure -> localModelMessage = "The model could not be installed atomically. Check free storage and try again; any previous model was kept."
+                    }
+                } finally {
+                    localModelImporting = false
+                    localModelImportProgressBytes = localModelImportProgress.get()
                 }
             }
         }
@@ -1227,7 +1264,13 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 localAiEnabled = localAiEnabled,
                 localModelInstalled = localModelFile != null,
                 localModelMessage = localModelMessage,
+                localModelImporting = localModelImporting,
+                localModelImportProgressBytes = localModelImportProgressBytes,
                 onChooseLocalModel = { localModelMessage = null; localModelImportLauncher.launch(arrayOf("application/octet-stream", "*/*")) },
+                onCancelLocalModelImport = {
+                    localModelImportCancelled.set(true)
+                    localModelMessage = "Canceling model import…"
+                },
                 onOpenLocalModelSource = {
                     context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(QWEN3_06B_MODEL_PAGE)))
                 },
@@ -2809,7 +2852,10 @@ private fun HouseholdScreen(
     localAiEnabled: Boolean,
     localModelInstalled: Boolean,
     localModelMessage: String?,
+    localModelImporting: Boolean,
+    localModelImportProgressBytes: Long,
     onChooseLocalModel: () -> Unit,
+    onCancelLocalModelImport: () -> Unit,
     onOpenLocalModelSource: () -> Unit,
     onDeleteLocalModel: () -> Unit,
     onLocalAiEnabledChanged: (Boolean) -> Unit,
@@ -2918,10 +2964,16 @@ private fun HouseholdScreen(
                 modifier = Modifier.testTag("local-ai-toggle"),
             )
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onOpenLocalModelSource, modifier = Modifier.testTag("local-model-source")) { Text("Open model source") }
-            OutlinedButton(onClick = onChooseLocalModel, modifier = Modifier.testTag("choose-local-model")) { Text(if (localModelInstalled) "Replace model file" else "Choose GGUF file") }
-            if (localModelInstalled) TextButton(onClick = onDeleteLocalModel, modifier = Modifier.testTag("delete-local-model")) { Text("Delete") }
+        if (localModelImporting) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth().testTag("local-model-import-progress"))
+            Text("${localModelImportProgressBytes / (1024 * 1024)} MiB read · checking the pinned SHA-256 · 900 MiB maximum", style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = onCancelLocalModelImport, modifier = Modifier.testTag("cancel-local-model-import")) { Text("Cancel model import") }
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onOpenLocalModelSource, modifier = Modifier.testTag("local-model-source")) { Text("Open model source") }
+                OutlinedButton(onClick = onChooseLocalModel, modifier = Modifier.testTag("choose-local-model")) { Text(if (localModelInstalled) "Replace model file" else "Choose GGUF file") }
+                if (localModelInstalled) TextButton(onClick = onDeleteLocalModel, modifier = Modifier.testTag("delete-local-model")) { Text("Delete") }
+            }
         }
         localModelMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         Text("Manual sharing", style = MaterialTheme.typography.titleLarge)

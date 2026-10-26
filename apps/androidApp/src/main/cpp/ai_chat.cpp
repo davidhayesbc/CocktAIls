@@ -6,6 +6,7 @@
 #include <sampling.h>
 
 #include "logging.h"
+#include "generation_budget.h"
 #include "chat.h"
 #include "common.h"
 #include "llama.h"
@@ -298,12 +299,12 @@ static std::string chat_add_and_format(const std::string &role, const std::strin
  * - token chars caching
  * - current assistant message being generated
  */
-static llama_pos stop_generation_position;
+static generation_budget g_generation_budget;
 static std::string cached_token_chars;
 static std::ostringstream assistant_ss;
 
 static void reset_short_term_states() {
-    stop_generation_position = 0;
+    g_generation_budget.begin_request(0);
     cached_token_chars.clear();
     assistant_ss.str("");
 }
@@ -416,11 +417,15 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_processUserPrompt(
     auto user_tokens = common_tokenize(g_context, formatted_user_prompt, has_chat_template, has_chat_template);
 
     // Ensure user prompt doesn't exceed the context size by truncating if necessary.
-    const int user_prompt_size = (int) user_tokens.size();
-    const int max_batch_size = DEFAULT_CONTEXT_SIZE - OVERFLOW_HEADROOM;
-    if (user_prompt_size > max_batch_size) {
-        const int skipped_tokens = user_prompt_size - max_batch_size;
-        user_tokens.resize(max_batch_size);
+    const int requested_prompt_size = static_cast<int>(user_tokens.size());
+    const int max_prompt_tokens = bounded_prompt_token_count(
+            requested_prompt_size,
+            current_position,
+            DEFAULT_CONTEXT_SIZE,
+            OVERFLOW_HEADROOM);
+    if (requested_prompt_size > max_prompt_tokens) {
+        const int skipped_tokens = requested_prompt_size - max_prompt_tokens;
+        user_tokens.resize(static_cast<size_t>(max_prompt_tokens));
         LOGw("%s: User prompt too long! Skipped %d tokens!", __func__, skipped_tokens);
     }
 
@@ -431,8 +436,8 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_processUserPrompt(
     }
 
     // Update position
-    current_position += user_prompt_size;
-    stop_generation_position = current_position + user_prompt_size + n_predict;
+    current_position += static_cast<llama_pos>(user_tokens.size());
+    g_generation_budget.begin_request(n_predict);
     return 0;
 }
 
@@ -476,15 +481,18 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_generateNextToken(
         JNIEnv *env,
         jobject /*unused*/
 ) {
+    if (!g_generation_budget.has_remaining_tokens()) {
+        return nullptr;
+    }
+
     // Infinite text generation via context shifting
     if (current_position >= DEFAULT_CONTEXT_SIZE - OVERFLOW_HEADROOM) {
         LOGw("%s: Context full! Shifting...", __func__);
         shift_context();
     }
 
-    // Stop if reaching the marked position
-    if (current_position >= stop_generation_position) {
-        LOGw("%s: STOP: hitting stop position: %d", __func__, stop_generation_position);
+    // Context positions may shift, so output length is tracked independently.
+    if (!g_generation_budget.has_remaining_tokens()) {
         return nullptr;
     }
 
@@ -502,6 +510,7 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_generateNextToken(
 
     // Update position
     current_position++;
+    g_generation_budget.record_generated_token();
 
     // Stop if next token is EOG
     if (llama_vocab_is_eog(llama_model_get_vocab(g_model), new_token_id)) {

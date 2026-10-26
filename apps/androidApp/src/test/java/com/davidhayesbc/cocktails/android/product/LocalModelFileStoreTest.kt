@@ -69,6 +69,28 @@ class LocalModelFileStoreTest {
         }
     }
 
+    @Test
+    fun canceledImportRemovesPartialFileAndKeepsPreviousModel() {
+        val dir = Files.createTempDirectory("cocktails-model").toFile()
+        val previous = ggufPayload("previous")
+        val store = LocalModelFileStore(dir, sha256(previous), maxBytes = 1_000)
+        try {
+            val installed = store.import(ByteArrayInputStream(previous)) as LocalModelInstallResult.Installed
+            var bytesRead = 0L
+            val result = store.import(
+                ByteArrayInputStream(ggufPayload("replacement")),
+                isCancelled = { bytesRead > 0 },
+                onProgress = { bytesRead = it },
+            )
+
+            assertEquals(LocalModelInstallResult.Cancelled, result)
+            assertEquals(previous.toList(), installed.file.readBytes().toList())
+            assertTrue(dir.listFiles().orEmpty().none { it.extension == "part" })
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
     private fun ggufPayload(text: String) = byteArrayOf(0x47, 0x47, 0x55, 0x46) + text.toByteArray()
 
     private fun sha256(data: ByteArray) = MessageDigest.getInstance("SHA-256")

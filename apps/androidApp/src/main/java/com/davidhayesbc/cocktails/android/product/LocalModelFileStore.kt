@@ -14,6 +14,7 @@ internal sealed interface LocalModelInstallResult {
     data object InvalidGguf : LocalModelInstallResult
     data object WrongModel : LocalModelInstallResult
     data object TooLarge : LocalModelInstallResult
+    data object Cancelled : LocalModelInstallResult
     data object StorageFailure : LocalModelInstallResult
 }
 
@@ -27,7 +28,11 @@ internal class LocalModelFileStore(
 
     fun installedModel(): File? = modelFile.takeIf { it.isFile && it.length() in 1..maxBytes }
 
-    fun import(input: InputStream): LocalModelInstallResult {
+    fun import(
+        input: InputStream,
+        isCancelled: () -> Boolean = { false },
+        onProgress: (Long) -> Unit = {},
+    ): LocalModelInstallResult {
         if (expectedSha256.length != 64 || expectedSha256.any { it.digitToIntOrNull(16) == null }) {
             input.close()
             return LocalModelInstallResult.StorageFailure
@@ -47,6 +52,7 @@ internal class LocalModelFileStore(
                     val output = rawOutput.buffered()
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
+                        if (isCancelled()) return LocalModelInstallResult.Cancelled
                         val count = source.read(buffer)
                         if (count < 0) break
                         total += count
@@ -58,6 +64,7 @@ internal class LocalModelFileStore(
                         }
                         digest.update(buffer, 0, count)
                         output.write(buffer, 0, count)
+                        onProgress(total)
                     }
                     output.flush()
                     rawOutput.fd.sync()
@@ -66,8 +73,10 @@ internal class LocalModelFileStore(
             if (prefixLength != 4 || !prefix.contentEquals(byteArrayOf('G'.code.toByte(), 'G'.code.toByte(), 'U'.code.toByte(), 'F'.code.toByte()))) {
                 return LocalModelInstallResult.InvalidGguf
             }
+            if (isCancelled()) return LocalModelInstallResult.Cancelled
             val actualHash = digest.digest().joinToString("") { "%02x".format(Locale.ROOT, it.toInt() and 0xff) }
             if (!actualHash.equals(expectedSha256, ignoreCase = true)) return LocalModelInstallResult.WrongModel
+            if (isCancelled()) return LocalModelInstallResult.Cancelled
             return try {
                 java.nio.file.Files.move(
                     temporary.toPath(),
