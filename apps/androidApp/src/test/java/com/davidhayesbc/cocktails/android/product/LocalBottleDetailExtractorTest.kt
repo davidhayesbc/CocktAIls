@@ -62,11 +62,11 @@ class LocalBottleDetailExtractorTest {
         val page = WebPageText(
             "Auchentoshan Three Wood Single Malt Scotch Whisky | Canadian Liquor Store",
             "https://shop.example/auchentoshan-three-wood",
-            "750 mL bottle. 43% ABV. Alternative: Other Reserve 700 mL.",
+            "Auchentoshan Three Wood bottle size: 750 mL. Auchentoshan Three Wood is 43% ABV. Alternative: Other Reserve 700 mL.",
             "Firecrawl",
             listOf(identity),
         )
-        val output = """{"facts":[{"field":"quantity","value":"750 mL","evidence":"750 mL bottle"},{"field":"abv_percent","value":"43%","evidence":"43% ABV"}]}"""
+        val output = """{"facts":[{"field":"quantity","value":"750 mL","evidence":"Auchentoshan Three Wood bottle size: 750 mL"},{"field":"abv_percent","value":"43%","evidence":"Auchentoshan Three Wood is 43% ABV"}]}"""
         var prompt = ""
         val extractor = LocalBottleDetailExtractor({ "/model.gguf" }, LocalInferenceRunner { _, _, userPrompt, _ ->
             prompt = userPrompt

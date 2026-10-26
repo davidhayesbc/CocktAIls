@@ -126,7 +126,7 @@ internal class FirecrawlSearchProvider(
             put("url", safeUrl)
             put("formats", buildJsonArray {
                 add(kotlinx.serialization.json.JsonPrimitive("markdown"))
-                add(kotlinx.serialization.json.JsonPrimitive("html"))
+                add(kotlinx.serialization.json.JsonPrimitive("rawHtml"))
             })
         }.toString()
         return when (val response = transport.post(FIRECRAWL_SCRAPE_PATH, key, body, MAX_SCRAPE_RESPONSE_BYTES)) {
@@ -229,7 +229,9 @@ internal fun parseFirecrawlPageResponse(raw: String): WebPageResult = runCatchin
     val markdown = data.string("markdown")?.take(MAX_PAGE_TEXT_CHARS)?.trim()?.takeIf(String::isNotEmpty)
         ?: return WebPageResult.InvalidResponse
     val metadata = data["metadata"] as? JsonObject
-    val html = data.string("html")?.take(MAX_STRUCTURED_HTML_CHARS).orEmpty()
+    // Processed HTML can omit embedded product/variant JSON. Only use the explicitly requested rawHtml
+    // format for structured identity; if absent, keep markdown extraction/manual review available.
+    val html = data.string("rawHtml")?.take(MAX_STRUCTURED_HTML_CHARS).orEmpty()
     val source = metadata?.string("sourceURL")?.let(::normalizePublicHttpsUrl)
         ?: metadata?.string("url")?.let(::normalizePublicHttpsUrl)
         ?: return WebPageResult.InvalidResponse
@@ -253,7 +255,7 @@ internal fun parseStructuredBottleIdentities(html: String): List<StructuredBottl
     val found = linkedSetOf<StructuredBottleIdentity>()
     var visitedNodes = 0
 
-    fun walk(element: kotlinx.serialization.json.JsonElement, inheritedName: String?, depth: Int) {
+    fun walk(element: kotlinx.serialization.json.JsonElement, inheritedVariantName: String?, depth: Int) {
         if (depth > 16 || visitedNodes >= 5_000 || found.size >= 32) return
         visitedNodes++
         when (element) {
@@ -268,9 +270,14 @@ internal fun parseStructuredBottleIdentities(html: String): List<StructuredBottl
                 val ownName = element.string("name")?.trim()?.takeIf(String::isNotEmpty)
                     ?: element.string("productName")?.trim()?.takeIf(String::isNotEmpty)
                     ?: element.string("title")?.trim()?.takeIf(String::isNotEmpty)?.takeIf { isProduct }
-                val productName = ownName ?: inheritedName
-                val barcode = listOf("gtin8", "gtin12", "gtin13", "gtin14", "gtin", "barcode")
-                    .firstNotNullOfOrNull { key -> element.string(key)?.let(::normalizeStructuredBarcode) }
+                // Only a child in a Product's `variants` array inherits its parent's name. Other
+                // nested records (recommendations, offers, related products) must establish their
+                // own product identity and can never borrow the scanned product's title.
+                val productName = inheritedVariantName ?: ownName
+                val barcode = if (isProduct || inheritedVariantName != null) {
+                    listOf("gtin8", "gtin12", "gtin13", "gtin14", "gtin", "barcode")
+                        .firstNotNullOfOrNull { key -> element.string(key)?.let(::normalizeStructuredBarcode) }
+                } else null
                 val name = productName?.take(180)?.takeIf(String::isNotBlank)
                 if (barcode != null && name != null) {
                     found += StructuredBottleIdentity(
@@ -279,9 +286,12 @@ internal fun parseStructuredBottleIdentities(html: String): List<StructuredBottl
                         evidence = "Structured product fields: barcode $barcode; product $name",
                     )
                 }
-                element.values.forEach { walk(it, productName, depth + 1) }
+                element.forEach { (key, value) ->
+                    val variantName = ownName.takeIf { isProduct && key.equals("variants", ignoreCase = true) }
+                    walk(value, variantName, depth + 1)
+                }
             }
-            is JsonArray -> element.forEach { walk(it, inheritedName, depth + 1) }
+            is JsonArray -> element.forEach { walk(it, inheritedVariantName, depth + 1) }
             else -> Unit
         }
     }

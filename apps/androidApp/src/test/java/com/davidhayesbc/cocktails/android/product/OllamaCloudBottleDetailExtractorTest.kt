@@ -49,12 +49,12 @@ class OllamaCloudBottleDetailExtractorTest {
         val page = WebPageText(
             title = "Auchentoshan Three Wood Single Malt Scotch Whisky | Canadian Liquor Store",
             sourceUrl = "https://example.org/auchentoshan-three-wood",
-            markdown = "750 mL bottle. 43% ABV.",
+            markdown = "Auchentoshan Three Wood bottle size: 750 mL. Auchentoshan Three Wood is 43% ABV.",
             provider = "Firecrawl",
             structuredBottleIdentities = listOf(identity),
         )
         val transport = FakeTransport(OllamaCloudHttpResponse.Success(response(
-            """{"facts":[{"field":"quantity","value":"750 mL","evidence":"750 mL bottle"},{"field":"abv_percent","value":"43%","evidence":"43% ABV"}]}""",
+            """{"facts":[{"field":"quantity","value":"750 mL","evidence":"Auchentoshan Three Wood bottle size: 750 mL"},{"field":"abv_percent","value":"43%","evidence":"Auchentoshan Three Wood is 43% ABV"}]}""",
         )))
         val result = OllamaCloudBottleDetailExtractor({ "synthetic-key" }, transport)
             .extract(page, "qwen3:8b-cloud", "5011333150725")
@@ -73,6 +73,34 @@ class OllamaCloudBottleDetailExtractorTest {
         assertFalse(system.contains(identity.productName))
         assertTrue(user.contains("TARGET PRODUCT NAME (untrusted metadata"))
         assertFalse(user.contains(identity.barcode))
+    }
+
+    @Test
+    fun structuredIdentityDoesNotAuthorizePageWideFactsFromARecommendedProduct() = runBlocking {
+        val identity = StructuredBottleIdentity(
+            "5011333150725",
+            "Auchentoshan Three Wood",
+            "Structured product fields: barcode 5011333150725; product Auchentoshan Three Wood",
+        )
+        val page = WebPageText(
+            title = "Auchentoshan Three Wood Single Malt Scotch Whisky | Canadian Liquor Store",
+            sourceUrl = "https://example.org/auchentoshan-three-wood",
+            markdown = "Auchentoshan Three Wood. Recommended alternative: Other Gin 700 mL, 40% ABV.",
+            provider = "Firecrawl",
+            structuredBottleIdentities = listOf(identity),
+        )
+        val transport = FakeTransport(OllamaCloudHttpResponse.Success(response(
+            """{"facts":[{"field":"quantity","value":"700 mL","evidence":"Other Gin 700 mL"},{"field":"abv_percent","value":"40%","evidence":"Other Gin 40% ABV"}]}""",
+        )))
+
+        val result = OllamaCloudBottleDetailExtractor({ "synthetic-key" }, transport)
+            .extract(page, "qwen3:8b-cloud", identity.barcode)
+
+        assertTrue(result is BottleDetailExtractionResult.Found)
+        val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
+        assertEquals(listOf(BottleFactField.PRODUCT_NAME), suggestions.facts.map(BottleFactEvidence::field))
+        assertTrue(BottleFactField.QUANTITY in suggestions.unresolvedFields)
+        assertTrue(BottleFactField.ABV_PERCENT in suggestions.unresolvedFields)
     }
 
     @Test

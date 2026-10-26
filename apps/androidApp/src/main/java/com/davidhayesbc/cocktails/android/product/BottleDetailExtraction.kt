@@ -313,12 +313,35 @@ internal fun bindStructuredProductIdentity(
         return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
     }
     val structuredNameFact = BottleFactEvidence(BottleFactField.PRODUCT_NAME, identity.productName, identity.evidence)
-    return result.copy(suggestions = result.suggestions.copy(
-        facts = listOf(structuredNameFact) + result.suggestions.facts.filterNot { it.field == BottleFactField.PRODUCT_NAME },
+    val unboundFacts = result.suggestions.facts.filter { fact ->
+        fact.field != BottleFactField.PRODUCT_NAME && !factQuoteIsBoundToStructuredProduct(fact, identity.productName)
+    }
+    val unresolvedFields = result.suggestions.unresolvedFields + unboundFacts.map(BottleFactEvidence::field)
+    val acceptedFacts = (listOf(structuredNameFact) + result.suggestions.facts.filter { fact ->
+        fact.field != BottleFactField.PRODUCT_NAME && fact !in unboundFacts
+    }).filterNot { it.field in unresolvedFields }
+    return result.copy(
+        suggestions = result.suggestions.copy(
+        facts = acceptedFacts,
+        unresolvedFields = unresolvedFields,
         targetBarcode = requiredBarcode,
         identityEvidence = identity.evidence,
-    ))
+        ),
+        rejectedCandidates = result.rejectedCandidates + if (unboundFacts.isNotEmpty()) {
+            setOf(BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE)
+        } else emptySet(),
+    )
 }
+
+/** In a structured-identity flow, each extracted fact must name the verified product in the same quote passage. */
+private fun factQuoteIsBoundToStructuredProduct(fact: BottleFactEvidence, productName: String): Boolean =
+    fact.quote.split(Regex("(?<=[.!?;])\\s+|\\n+|\\s+[|•]\\s+"))
+        .any { passage ->
+            passage.contains(productName, ignoreCase = true) &&
+                passage.contains(fact.value, ignoreCase = true) &&
+                !Regex("(?i)\\b(?:related|similar|recommended|recommendation|alternative|other\\s+products?)\\b")
+                    .containsMatchIn(passage)
+        }
 
 internal fun parseBottleFactCandidate(
     rawCandidate: String,

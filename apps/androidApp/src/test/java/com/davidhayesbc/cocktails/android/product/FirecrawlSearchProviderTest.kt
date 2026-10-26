@@ -50,7 +50,7 @@ class FirecrawlSearchProviderTest {
         assertEquals(1, transport.calls)
         assertEquals("/v2/scrape", transport.lastPath)
         assertTrue(transport.lastBody.contains("markdown"))
-        assertTrue(transport.lastBody.contains("html"))
+        assertTrue(transport.lastBody.contains("rawHtml"))
     }
 
     @Test
@@ -94,7 +94,7 @@ class FirecrawlSearchProviderTest {
             </script>
         """.trimIndent()
         val response = parseFirecrawlPageResponse(
-            """{"success":true,"data":{"markdown":"Auchentoshan Three Wood\\n750 mL\\n43% ABV","html":${kotlinx.serialization.json.JsonPrimitive(html)},"metadata":{"title":"Auchentoshan Three Wood Single Malt Scotch Whisky | Canadian Liquor Store","sourceURL":"https://shop.example/auchentoshan"}}}""",
+            """{"success":true,"data":{"markdown":"Auchentoshan Three Wood\\n750 mL\\n43% ABV","rawHtml":${kotlinx.serialization.json.JsonPrimitive(html)},"metadata":{"title":"Auchentoshan Three Wood Single Malt Scotch Whisky | Canadian Liquor Store","sourceURL":"https://shop.example/auchentoshan"}}}""",
         )
 
         assertTrue(response is WebPageResult.Found)
@@ -106,10 +106,30 @@ class FirecrawlSearchProviderTest {
     }
 
     @Test
+    fun barcodeInRecommendationCannotInheritParentProductName() {
+        val rawHtml = """<script type="application/json">{"product":{"title":"Auchentoshan Three Wood","variants":[],"recommendations":[{"title":"Other Gin","barcode":"5011333150725"}]}}</script>"""
+        val response = parseFirecrawlPageResponse(
+            """{"success":true,"data":{"markdown":"Auchentoshan Three Wood","rawHtml":${kotlinx.serialization.json.JsonPrimitive(rawHtml)},"metadata":{"title":"Auchentoshan Three Wood Single Malt Scotch Whisky","sourceURL":"https://shop.example/auchentoshan"}}}""",
+        )
+        assertTrue(response is WebPageResult.Found)
+        assertTrue((response as WebPageResult.Found).page.structuredBottleIdentities.isEmpty())
+    }
+
+    @Test
+    fun processedHtmlIsNotTreatedAsRawStructuredIdentityEvidence() {
+        val html = """<script type="application/json">{"@type":"Product","name":"Gin","gtin13":"5011333150725"}</script>"""
+        val response = parseFirecrawlPageResponse(
+            """{"success":true,"data":{"markdown":"Gin 40% ABV","html":${kotlinx.serialization.json.JsonPrimitive(html)},"metadata":{"title":"Gin","sourceURL":"https://shop.example/gin"}}}""",
+        )
+        assertTrue(response is WebPageResult.Found)
+        assertTrue((response as WebPageResult.Found).page.structuredBottleIdentities.isEmpty())
+    }
+
+    @Test
     fun structuredBarcodeFieldsMustContainOnlyDigits() {
         val html = """<script type="application/ld+json">{"@type":"Product","name":"Gin","gtin13":"UPC: 5011333150725"}</script>"""
         val response = parseFirecrawlPageResponse(
-            """{"success":true,"data":{"markdown":"Gin 40% ABV","html":${kotlinx.serialization.json.JsonPrimitive(html)},"metadata":{"title":"Gin","sourceURL":"https://shop.example/gin"}}}""",
+            """{"success":true,"data":{"markdown":"Gin 40% ABV","rawHtml":${kotlinx.serialization.json.JsonPrimitive(html)},"metadata":{"title":"Gin","sourceURL":"https://shop.example/gin"}}}""",
         )
         assertTrue(response is WebPageResult.Found)
         assertTrue((response as WebPageResult.Found).page.structuredBottleIdentities.isEmpty())
