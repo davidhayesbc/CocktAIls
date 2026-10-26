@@ -40,6 +40,7 @@ import com.davidhayesbc.cocktails.android.ui.theme.CocktailsTheme
 import com.davidhayesbc.cocktails.android.product.BottleDetailSuggestions
 import com.davidhayesbc.cocktails.android.product.BottleFactEvidence
 import com.davidhayesbc.cocktails.android.product.BottleFactField
+import com.davidhayesbc.cocktails.android.product.acceptedProductSourcesForBottle
 import com.davidhayesbc.cocktails.android.product.WebPageText
 import com.davidhayesbc.cocktails.android.product.WebSearchHit
 import com.davidhayesbc.cocktails.android.product.PendingBottleEvidenceStore
@@ -133,6 +134,9 @@ class OfflineRecipeSmokeTest {
     @Test
     fun scannedBottleReviewPrefillsEvidenceAndAcceptsBeforeNextScan() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val evidencePreferences = context.getSharedPreferences("cocktails_pending_bottle_evidence", 0)
+        evidencePreferences.edit().clear().commit()
+        val pendingEvidenceStore = PendingBottleEvidenceStore(SharedPreferencesPendingBottleEvidenceStorage(context))
         val databaseName = "scanned-review-${System.currentTimeMillis()}.db"
         context.deleteDatabase(databaseName)
         val driver = AndroidSqliteDriver(CocktailsDatabase.Schema, context, databaseName)
@@ -166,6 +170,7 @@ class OfflineRecipeSmokeTest {
         )
         var activeSession by mutableStateOf(repository.openBottleIntakeSession()!!)
         var activeDraftId by mutableStateOf<String?>(first.id)
+        var intakeVisible by mutableStateOf(true)
         var webStates by mutableStateOf(mapOf(first.id to BottleWebSearchState(
             automatedScan = true,
             automaticStage = null,
@@ -180,7 +185,7 @@ class OfflineRecipeSmokeTest {
         try {
             setTestContent {
                 CocktailsTheme {
-                    BottleIntakeScreen(
+                    if (intakeVisible) BottleIntakeScreen(
                         modifier = Modifier.fillMaxSize(),
                         session = activeSession,
                         homes = listOf(home),
@@ -205,13 +210,15 @@ class OfflineRecipeSmokeTest {
                         onScan = { nextScanRequested = true },
                         onAcceptAndScanNext = { draftId ->
                             assertEquals(first.id, draftId)
+                            assertTrue(pendingEvidenceStore.save(draftId, suggestions))
                             nextScanRequested = true
                             val next = repository.addBottleIntakeDraft(
-                                session.id, "Unidentified bottle", "Spirit", home.id, InventoryLevel.FULL, 4, barcode = barcode,
+                                session.id, "Auchentoshan Three Wood", "Spirit", home.id, InventoryLevel.FULL, 4,
+                                barcode = barcode, brand = "Auchentoshan", productName = "Auchentoshan Three Wood",
                             )!!
                             secondDraftId = next.id
                             activeDraftId = next.id
-                            webStates = webStates + (next.id to BottleWebSearchState(automatedScan = true, message = "Review the next bottle."))
+                            webStates = mapOf(next.id to BottleWebSearchState(automatedScan = true, message = "Review the next bottle."))
                             activeSession = repository.openBottleIntakeSession()!!
                         },
                         onAddManual = { _, _, _, _, _, _, _ -> false },
@@ -226,9 +233,24 @@ class OfflineRecipeSmokeTest {
                         },
                         onHomeChanged = {},
                         onLevelChanged = {},
-                        onConfirm = { BottleIntakeCommitResult.Invalid("Test review only") },
+                        onConfirm = {
+                            val openSession = repository.openBottleIntakeSession()!!
+                            val sourcesByDraft = openSession.drafts.mapNotNull { draft ->
+                                acceptedProductSourcesForBottle(draft, pendingEvidenceStore.read(draft.id))
+                                    .takeIf { it.isNotEmpty() }?.let { draft.id to it }
+                            }.toMap()
+                            val result = repository.confirmBottleIntakeSession(openSession.id, 5, sourcesByDraft)
+                            if (result is BottleIntakeCommitResult.Confirmed || result is BottleIntakeCommitResult.AlreadyConfirmed) {
+                                openSession.drafts.forEach { pendingEvidenceStore.remove(it.id) }
+                            }
+                            result
+                        },
                         onCancel = {},
-                        onDismiss = {},
+                        onDismiss = {
+                            webStates = emptyMap()
+                            activeDraftId = null
+                            intakeVisible = false
+                        },
                     )
                 }
             }
@@ -253,8 +275,22 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-name-1"))
             composeRule.onNodeWithTag("bottle-intake-draft-name-1").assertIsDisplayed()
             assertEquals(2, repository.openBottleIntakeSession()!!.drafts.size)
+
+            // Accepting a scan, pausing the batch, and losing the in-memory screen state must not
+            // discard its evidence. Confirmation reads the persisted suggestion and transfers it.
+            composeRule.onNodeWithText("Keep for later").performClick()
+            assertTrue(!intakeVisible)
+            assertEquals(suggestions, pendingEvidenceStore.read(first.id))
+            intakeVisible = true
+            composeRule.waitForIdle()
+            composeRule.onNodeWithTag("batch-confirm").performClick()
+            assertTrue(repository.openBottleIntakeSession() == null)
+            val savedProductId = repository.pantry(home.id).first().productId!!
+            assertEquals(setOf("Auchentoshan Three Wood", "Auchentoshan"), repository.productFactSources(savedProductId).map { it.fieldValue }.toSet())
+            assertEquals(null, pendingEvidenceStore.read(first.id))
         } finally {
             setTestContent { }
+            evidencePreferences.edit().clear().commit()
             driver.close()
             context.deleteDatabase(databaseName)
         }

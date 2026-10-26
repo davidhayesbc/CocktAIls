@@ -1,6 +1,8 @@
 package com.davidhayesbc.cocktails.android.product
 
 import com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup
+import com.davidhayesbc.cocktails.core.model.BottleIntakeDraft
+import com.davidhayesbc.cocktails.core.model.ProductFactSourceDraft
 
 /** Builds a bounded Firecrawl query from the scan itself, never from household names or notes. */
 internal fun scannedBottleSearchQuery(barcode: String): String? {
@@ -46,6 +48,38 @@ internal fun scannedProductIdentityPassage(
             .containsMatchIn(passage)
     ) return null
     return section
+}
+
+/**
+ * Converts only explicitly reviewed values into durable product provenance. This runs at final
+ * batch confirmation, so accepting a scan and then pausing the session does not lose its evidence.
+ */
+internal fun acceptedProductSourcesForBottle(
+    draft: BottleIntakeDraft,
+    suggestions: BottleDetailSuggestions?,
+): List<ProductFactSourceDraft> {
+    val scanned = draft.barcode?.let(::normalizeGtinForLookup) ?: return emptyList()
+    if (suggestions == null || suggestions.targetBarcode?.let(::normalizeGtinForLookup) != scanned ||
+        suggestions.identityEvidence?.let { sourceMentionsScannedBarcode(draft.barcode.orEmpty(), it) } != true
+    ) return emptyList()
+
+    return suggestions.facts.mapNotNull { fact ->
+        val valueWasAccepted = when (fact.field) {
+            BottleFactField.PRODUCT_NAME -> fact.value == draft.productName || fact.value == draft.ingredientName
+            BottleFactField.BRAND -> fact.value == draft.brand
+            else -> false
+        }
+        if (!valueWasAccepted) return@mapNotNull null
+        ProductFactSourceDraft(
+            retrievalProvider = suggestions.retrievalProvider,
+            extractionProvider = suggestions.provider,
+            extractionModel = suggestions.model,
+            sourceUrl = suggestions.sourceUrl,
+            fieldName = fact.field.wireValue,
+            fieldValue = fact.value,
+            evidenceQuote = fact.quote,
+        )
+    }
 }
 
 private fun sourceBarcodeCandidates(text: String): Sequence<String> =

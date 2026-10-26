@@ -7,6 +7,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.CancellationException
+import com.davidhayesbc.cocktails.core.model.BottleIntakeDraft
+import com.davidhayesbc.cocktails.core.model.InventoryLevel
 
 class ScannedBottleWorkflowTest {
     @Test
@@ -25,6 +27,37 @@ class ScannedBottleWorkflowTest {
         assertFalse(sourceMentionsScannedBarcode(barcode, "Auchentoshan Three Wood 700 ml"))
         assertFalse(sourceMentionsScannedBarcode(barcode, "5011333150733"))
         assertFalse(sourceMentionsScannedBarcode("invalid", "5011333150725"))
+    }
+
+    @Test
+    fun onlyStillAcceptedFactValuesBecomeDurableProductSources() {
+        val barcode = "5011333150725"
+        val suggestions = BottleDetailSuggestions(
+            provider = "Ollama Cloud",
+            model = "test-model",
+            retrievalProvider = "Firecrawl",
+            sourceUrl = "https://shop.example/three-wood",
+            facts = listOf(
+                BottleFactEvidence(BottleFactField.PRODUCT_NAME, "Three Wood", "UPC 5011333150725 · Three Wood"),
+                BottleFactEvidence(BottleFactField.BRAND, "Auchentoshan", "Brand: Auchentoshan"),
+                BottleFactEvidence(BottleFactField.ABV_PERCENT, "43%", "43% ABV"),
+            ),
+            targetBarcode = barcode,
+            identityEvidence = "UPC 5011333150725 · Three Wood",
+        )
+        val accepted = BottleIntakeDraft(
+            id = "draft-1", sessionId = "session-1", position = 0, barcode = barcode,
+            productId = null, ingredientName = "Three Wood", category = "Whisky", brand = "Auchentoshan",
+            productName = "Three Wood", photoData = null, photoSha256 = null,
+            locationId = "home-1", level = InventoryLevel.FULL, createdAt = 1,
+        )
+
+        val sources = acceptedProductSourcesForBottle(accepted, suggestions)
+        assertEquals(setOf("product_name" to "Three Wood", "brand" to "Auchentoshan"), sources.map { it.fieldName to it.fieldValue }.toSet())
+        assertTrue(sources.all { it.retrievalProvider == "Firecrawl" && it.extractionProvider == "Ollama Cloud" })
+        assertTrue(acceptedProductSourcesForBottle(accepted.copy(ingredientName = "My own name", productName = "My own name"), suggestions)
+            .none { it.fieldName == "product_name" })
+        assertTrue(acceptedProductSourcesForBottle(accepted.copy(barcode = "5011333150733"), suggestions).isEmpty())
     }
 
     @Test
