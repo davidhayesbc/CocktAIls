@@ -35,39 +35,54 @@ internal data class ScannedBottleSearchSelection(
 /** Avoids spending a page-fetch request on generic barcode lookup tools when a source page is absent. */
 internal fun selectScannedBottleSearchHit(barcode: String, hits: List<WebSearchHit>): ScannedBottleSearchSelection {
     if (hits.isEmpty()) return ScannedBottleSearchSelection(null, "NO_USABLE_SOURCE", emptyList())
-    val eligible = hits.filterNot(::isGenericBarcodeLookupHit)
+    val eligible = hits.filterNot { isGenericBarcodeLookupHit(barcode, it) }
     if (eligible.isEmpty()) {
-        return ScannedBottleSearchSelection(null, "NO_USABLE_SOURCE", List(hits.size) { "GENERIC_BARCODE_LOOKUP" })
+        return ScannedBottleSearchSelection(
+            null,
+            "NO_USABLE_SOURCE",
+            hits.indices.map { "CANDIDATE_${it + 1}_GENERIC_BARCODE_LOOKUP" },
+        )
     }
     val exact = eligible.firstOrNull { hit -> sourceMentionsScannedBarcode(barcode, "${hit.title} ${hit.snippet.orEmpty()}") }
     if (exact != null) {
         return ScannedBottleSearchSelection(
             exact,
             "SELECTED_EXACT_MATCH",
-            hits.filter { it !== exact }.map { rejectionCode(barcode, it) },
+            hits.mapIndexed { index, hit ->
+                val code = when {
+                    hit === exact -> "SELECTED_EXACT_MATCH"
+                    isGenericBarcodeLookupHit(barcode, hit) -> "GENERIC_BARCODE_LOOKUP"
+                    sourceMentionsScannedBarcode(barcode, "${hit.title} ${hit.snippet.orEmpty()}") -> "EXACT_MATCH_NOT_SELECTED"
+                    else -> "HIT_TEXT_MISSING_BARCODE"
+                }
+                "CANDIDATE_${index + 1}_$code"
+            },
         )
     }
     val fallback = eligible.first()
     return ScannedBottleSearchSelection(
         fallback,
         "SELECTED_FALLBACK",
-        hits.filter { it !== fallback }.map { rejectionCode(barcode, it) } + "HIT_TEXT_MISSING_BARCODE",
+        hits.mapIndexed { index, hit ->
+            val code = when {
+                hit === fallback -> "SELECTED_FALLBACK"
+                isGenericBarcodeLookupHit(barcode, hit) -> "GENERIC_BARCODE_LOOKUP"
+                else -> "HIT_TEXT_MISSING_BARCODE"
+            }
+            "CANDIDATE_${index + 1}_$code"
+        },
     )
 }
 
-private fun rejectionCode(barcode: String, hit: WebSearchHit) = when {
-    isGenericBarcodeLookupHit(hit) -> "GENERIC_BARCODE_LOOKUP"
-    !sourceMentionsScannedBarcode(barcode, "${hit.title} ${hit.snippet.orEmpty()}") -> "HIT_TEXT_MISSING_BARCODE"
-    else -> "OTHER"
-}
-
-private fun isGenericBarcodeLookupHit(hit: WebSearchHit): Boolean {
-    val host = runCatching { java.net.URI(hit.url).host?.lowercase() }.getOrNull().orEmpty()
+private fun isGenericBarcodeLookupHit(barcode: String, hit: WebSearchHit): Boolean {
+    val uri = runCatching { java.net.URI(hit.url) }.getOrNull()
+    val host = uri?.host?.lowercase().orEmpty()
     val genericDomains = setOf("barcodelookup.com", "go-upc.com", "ean-search.org", "ean-search.com")
     val genericDomain = genericDomains.any { host == it || host.endsWith(".$it") }
-    val genericTitle = Regex("(?i)^\\s*(?:barcode lookup|upc(?:\\s*/\\s*ean)? (?:lookup|search)|ean search)(?:\\s*[|:-].*)?\\s*$")
+    val exactCodeInHit = sourceMentionsScannedBarcode(barcode, "${hit.title} ${hit.snippet.orEmpty()} ${uri?.rawPath.orEmpty()}")
+    val genericTitle = Regex("(?i)^\\s*(?:barcode lookup(?:\\s*\\|\\s*upc, ean & isbn search)?|upc(?:\\s*/\\s*ean)? (?:lookup|search)|ean search)\\s*$")
         .matches(hit.title.take(180))
-    return genericDomain || genericTitle
+    return genericTitle || (genericDomain && !exactCodeInHit && uri?.rawPath.orEmpty().trim('/') in setOf("", "search", "barcode-lookup"))
 }
 
 /**

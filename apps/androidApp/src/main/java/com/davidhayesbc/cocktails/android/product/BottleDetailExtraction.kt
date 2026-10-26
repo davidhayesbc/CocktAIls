@@ -13,12 +13,12 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.util.Locale
 import com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup
@@ -268,10 +268,10 @@ internal fun parseOllamaExtractionResponse(
 ): BottleDetailExtractionResult {
     val root = runCatching { Json.parseToJsonElement(raw).jsonObject }.getOrNull()
         ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.MALFORMED_MODEL_RESPONSE)
-    if (root["done"]?.jsonPrimitive?.booleanOrNull != true) {
+    if ((root["done"] as? JsonPrimitive)?.booleanOrNull != true) {
         return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.MALFORMED_MODEL_RESPONSE)
     }
-    val content = root["message"]?.jsonObject?.string("content")
+    val content = (root["message"] as? JsonObject)?.string("content")
         ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.MALFORMED_MODEL_RESPONSE)
     return parseBottleFactCandidate(content, "Ollama Cloud", model, sourceUrl, sourceText, requiredBarcode, retrievalProvider)
 }
@@ -287,8 +287,10 @@ internal fun parseBottleFactCandidate(
 ): BottleDetailExtractionResult {
     val contentObject = runCatching { Json.parseToJsonElement(rawCandidate).jsonObject }.getOrNull()
         ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.MALFORMED_MODEL_RESPONSE)
-    val rawFacts = contentObject["facts"] as? JsonArray
+    val rawFactsElement = contentObject["facts"]
         ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.NO_FACTS)
+    val rawFacts = rawFactsElement as? JsonArray
+        ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.INVALID_FACT_SHAPE)
     val rejected = linkedSetOf<BottleExtractionRejectionReason>()
     val facts = rawFacts.mapNotNull { value ->
         val fact = value as? JsonObject ?: run {
@@ -406,7 +408,7 @@ private fun isSupportedAbvCandidate(value: String, evidence: String): Boolean {
     return evidencedNumbers.size == 1 && evidencedNumbers.single() == valueNumber
 }
 
-private fun JsonObject.string(field: String): String? = this[field]?.jsonPrimitive?.contentOrNull
+private fun JsonObject.string(field: String): String? = (this[field] as? JsonPrimitive)?.contentOrNull
 
 private fun Int.toExtractionFailure(): BottleDetailExtractionResult = when (this) {
     401, 403 -> BottleDetailExtractionResult.AuthenticationRequired

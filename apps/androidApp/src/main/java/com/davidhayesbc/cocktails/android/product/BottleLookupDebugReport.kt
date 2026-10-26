@@ -19,6 +19,7 @@ internal enum class BottleLookupDebugStage {
     FIRECRAWL_FETCH,
     BARCODE_MATCH,
     DETAIL_EXTRACTION,
+    REVIEW_PERSISTENCE,
     COMPLETE,
 }
 
@@ -143,8 +144,8 @@ internal class BottleLookupDebugReport(
         durationMillis = event.durationMillis.coerceIn(0, MAX_DURATION_MS),
         httpStatus = event.httpStatus?.takeIf { it in 100..599 },
         resultCount = event.resultCount?.coerceIn(0, MAX_RESULTS),
-        sourceUrls = event.sourceUrls.mapNotNull(::safeDiagnosticUrl).distinct().take(MAX_RESULTS),
-        reasonCodes = event.reasonCodes.map { it.safeCode(REASONS, "OTHER") }.distinct().take(MAX_REASONS),
+        sourceUrls = event.sourceUrls.mapNotNull(::safeDiagnosticUrl).take(MAX_RESULTS),
+        reasonCodes = event.reasonCodes.map { it.safeReasonCode() }.distinct().take(MAX_REASONS),
         factFields = event.factFields.map { it.safeCode(FACT_FIELDS, "OTHER") }.distinct().take(MAX_FACT_FIELDS),
     )
 
@@ -168,6 +169,15 @@ internal class BottleLookupDebugReport(
     private fun String.safeCode(allowed: Set<String>, fallback: String) = uppercase()
         .filter { it.isLetterOrDigit() || it == '_' }.take(48).takeIf(allowed::contains) ?: fallback
 
+    private fun String.safeReasonCode(): String {
+        val normalized = uppercase().filter { it.isLetterOrDigit() || it == '_' }.take(48)
+        if (normalized in REASONS) return normalized
+        return normalized.takeIf {
+            Regex("CANDIDATE_[1-5]_(?:GENERIC_BARCODE_LOOKUP|HIT_TEXT_MISSING_BARCODE|SELECTED_EXACT_MATCH|SELECTED_FALLBACK|EXACT_MATCH_NOT_SELECTED)")
+                .matches(it)
+        } ?: "OTHER"
+    }
+
     companion object {
         const val MAX_EVENTS = 16
         const val MAX_RESULTS = 5
@@ -182,7 +192,7 @@ internal class BottleLookupDebugReport(
             "RATE_LIMITED", "AUTHENTICATION", "QUOTA", "NETWORK_ERROR", "INVALID_RESPONSE", "NO_RESULTS",
             "SELECTED_EXACT_MATCH", "SELECTED_FALLBACK", "NO_USABLE_SOURCE", "FETCHED", "BARCODE_VERIFIED",
             "BARCODE_MISSING", "BARCODE_MISMATCH", "AMBIGUOUS_BARCODE", "CANDIDATES_READY", "CANDIDATES_REJECTED",
-            "CANCELLED", "UNEXPECTED_ERROR", "SKIPPED", "UNKNOWN",
+            "CANCELLED", "UNEXPECTED_ERROR", "SKIPPED", "PERSISTED", "PERSISTENCE_FAILED", "UNKNOWN",
         )
         private val REASONS = setOf(
             "HIT_TEXT_MISSING_BARCODE", "GENERIC_BARCODE_LOOKUP", "NO_EXACT_CODE_IN_PAGE", "TARGET_BARCODE_MISMATCH",
@@ -208,21 +218,9 @@ internal class BottleLookupDebugReport(
             if (!host.contains('.') || host.endsWith('.') || listOf(".local", ".localhost", ".internal", ".lan", ".home").any(host::endsWith)) return null
             // IP literals are not useful as product provenance and could expose a private endpoint.
             if (host.startsWith("[") || host.matches(Regex("[0-9.]+"))) return null
-            val pathSegments = uri.rawPath.orEmpty().ifBlank { "/" }.split('/')
-            val sensitiveSegment = Regex("(?i)^(?:key|api[-_]?key|token|access[-_]?token|signature|sig|auth|secret|credential)$")
-            val safePath = (uri.rawPath.orEmpty().ifBlank { "/" })
-                .split('/')
-                .mapIndexed { index, segment ->
-                    when {
-                        sensitiveSegment.matches(segment) -> "<redacted>"
-                        index > 0 && sensitiveSegment.matches(pathSegments.getOrNull(index - 1).orEmpty()) -> "<redacted>"
-                        segment.length >= 32 && segment.matches(Regex("[A-Za-z0-9_-]+")) -> "<redacted>"
-                        else -> segment.take(80)
-                    }
-                }
-                .joinToString("/")
-                .take(240)
-            URI("https", null, host, -1, safePath.ifBlank { "/" }, null, null).toASCIIString()
+            // Paths can contain short or encoded credentials and personal identifiers. The copied
+            // report retains only the public origin; the exact source remains available in the app.
+            URI("https", null, host, -1, "/", null, null).toASCIIString()
         }.getOrNull()
     }
 }

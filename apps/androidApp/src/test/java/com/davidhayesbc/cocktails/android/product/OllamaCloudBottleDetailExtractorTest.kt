@@ -206,6 +206,29 @@ class OllamaCloudBottleDetailExtractorTest {
         )
     }
 
+    @Test
+    fun parserClassifiesValidJsonWithWrongNestedTypesAsMalformedInsteadOfNetworkFailure() {
+        val malformedEnvelopes = listOf(
+            """{"done":{},"message":{"content":"{}"}}""",
+            """{"done":true,"message":"wrong-shape"}""",
+            """{"done":true,"message":{"content":{}}}""",
+        )
+        malformedEnvelopes.forEach { raw ->
+            assertEquals(
+                BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.MALFORMED_MODEL_RESPONSE),
+                parseOllamaExtractionResponse(raw, "model", source.sourceUrl, source.markdown),
+            )
+        }
+        assertEquals(
+            BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.INVALID_FACT_SHAPE),
+            parseBottleFactCandidate("""{"facts":{}}""", "Ollama Cloud", "model", source.sourceUrl, source.markdown),
+        )
+        assertEquals(
+            BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.INVALID_FACT_SHAPE),
+            parseBottleFactCandidate("""{"facts":[{"field":{},"value":"Gin","evidence":"Gin"}]}""", "Ollama Cloud", "model", source.sourceUrl, source.markdown),
+        )
+    }
+
     private fun response(content: String): String =
         """{"done":true,"message":{"content":${kotlinx.serialization.json.JsonPrimitive(content)}}}"""
 

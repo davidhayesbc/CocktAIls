@@ -151,6 +151,8 @@ class LocalDiagnosticsTest {
             sourceUrls = listOf(
                 "https://shop.example/item?api_key=URL_CANARY&token=URL_TOKEN#fragment",
                 "https://shop.example/item/token/PATH_TOKEN_12345",
+                "https://shop.example/%74oken/abc",
+                "https://shop.example/product/sk-shortSecret",
                 "https://192.168.1.10/private",
             ),
             reasonCodes = listOf("HIT_TEXT_MISSING_BARCODE", "Authorization: HEADER_CANARY"),
@@ -162,7 +164,7 @@ class LocalDiagnosticsTest {
         val exported = reopened.export()
         assertTrue(exported.contains("latestBottleLookup"))
         assertTrue(exported.contains("5011333150725"))
-        assertTrue(exported.contains("shop.example/item"))
+        assertTrue(exported.contains("https://shop.example/"))
         assertTrue(exported.contains("httpStatus"))
         assertTrue(exported.contains("\"ollamaCloud\""))
         assertTrue(exported.contains("\"configured\": true"))
@@ -172,6 +174,8 @@ class LocalDiagnosticsTest {
         assertFalse(exported.contains("api_key="))
         assertFalse(exported.contains("fragment"))
         assertFalse(exported.contains("PATH_TOKEN_12345"))
+        assertFalse(exported.contains("%74oken"))
+        assertFalse(exported.contains("shortSecret"))
         assertFalse(exported.contains("192.168.1.10"))
         assertFalse(exported.contains("raw response"))
         assertTrue(reopened.latestBottleLookupPreview()!!.contains("BARCODE"))

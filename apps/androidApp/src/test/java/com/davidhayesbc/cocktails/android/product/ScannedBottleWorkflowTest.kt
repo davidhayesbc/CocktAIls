@@ -186,8 +186,43 @@ class ScannedBottleWorkflowTest {
         assertNull(outcome.selectedHit)
         val selection = events.single { it.stage == BottleLookupDebugStage.SOURCE_SELECTION }
         assertEquals("NO_USABLE_SOURCE", selection.result)
-        assertEquals(listOf("GENERIC_BARCODE_LOOKUP", "GENERIC_BARCODE_LOOKUP", "GENERIC_BARCODE_LOOKUP"), selection.reasonCodes)
+        assertEquals(listOf(
+            "CANDIDATE_1_GENERIC_BARCODE_LOOKUP",
+            "CANDIDATE_2_GENERIC_BARCODE_LOOKUP",
+            "CANDIDATE_3_GENERIC_BARCODE_LOOKUP",
+        ), selection.reasonCodes)
         assertEquals(3, events.last { it.stage == BottleLookupDebugStage.FIRECRAWL_SEARCH }.resultCount)
+    }
+
+    @Test
+    fun productSpecificHitOnBarcodeLookupDomainIsNotBlacklisted() = runBlocking {
+        var fetchedUrl: String? = null
+        val exact = WebSearchHit(
+            "Auchentoshan Three Wood Single Malt Scotch Whisky",
+            "https://www.barcodelookup.com/5011333150725/auchentoshan-three-wood",
+            "UPC 5011333150725",
+        )
+        val selection = selectScannedBottleSearchHit("5011333150725", listOf(exact))
+        assertEquals(exact, selection.selected)
+        assertEquals("SELECTED_EXACT_MATCH", selection.resultCode)
+
+        val coordinator = ScannedBottleEnrichmentCoordinator(
+            lookup = { BottleProviderCall(OpenFoodFactsLookupResult.NotFound) },
+            search = { BottleProviderCall(WebSearchResult.Found(listOf(exact))) },
+            fetch = { url ->
+                fetchedUrl = url
+                BottleProviderCall(WebPageResult.Found(WebPageText(
+                    "Auchentoshan Three Wood",
+                    url,
+                    "UPC 5011333150725 is Auchentoshan Three Wood.",
+                    "Firecrawl",
+                )))
+            },
+            extract = { _, _, _ -> BottleProviderCall(BottleDetailExtractionResult.Unavailable) },
+        )
+        val outcome = coordinator.processScannedBarcode("5011333150725", ScannedBottlePlan(false, true, null))
+        assertEquals(exact.url, fetchedUrl)
+        assertTrue(outcome.barcodeVerifiedInPage)
     }
 
     @Test
@@ -230,7 +265,8 @@ class ScannedBottleWorkflowTest {
         report.finish("PARTIAL")
         val json = report.toJson()
         assertFalse(json.contains("token="))
-        assertTrue(json.contains("shop.example/item"))
+        assertTrue(json.contains("https://shop.example/"))
+        assertFalse(json.contains("/item"))
         assertTrue(json.contains("5011333150725"))
     }
 

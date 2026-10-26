@@ -956,9 +956,35 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 persistBottleLookupDebug(debugReport)
                 null
             }
+            if (bottleWebSearchRequestTokens[draft.id] != requestToken) {
+                debugReport.record(BottleLookupDebugEvent(
+                    BottleLookupDebugStage.REVIEW_PERSISTENCE,
+                    "APP",
+                    "CANCELLED",
+                    reasonCodes = listOf("REQUEST_CANCELLED"),
+                ))
+                debugReport.finish("CANCELLED")
+                persistBottleLookupDebug(debugReport)
+                return@launch
+            }
+            val previous = bottleWebSearchStates[draft.id] ?: BottleWebSearchState(automatedScan = true)
+            val searchResult = result?.search
+            val page = (result?.page as? WebPageResult.Found)?.page
+            val candidateExtraction = (result?.extraction as? BottleDetailExtractionResult.Found)?.suggestions
+            val extraction = candidateExtraction?.takeIf { pendingBottleEvidenceStore.save(draft.id, it) }
             if (result != null) {
+                debugReport.record(BottleLookupDebugEvent(
+                    stage = BottleLookupDebugStage.REVIEW_PERSISTENCE,
+                    provider = "APP",
+                    result = when {
+                        candidateExtraction == null -> "SKIPPED"
+                        extraction != null -> "PERSISTED"
+                        else -> "PERSISTENCE_FAILED"
+                    },
+                    reasonCodes = if (candidateExtraction != null && extraction == null) listOf("OTHER") else emptyList(),
+                ))
                 val finalOutcome = when {
-                    result.extraction is BottleDetailExtractionResult.Found -> "SUCCESS"
+                    extraction != null -> "SUCCESS"
                     result.search is WebSearchResult.Found && result.selectedHit == null -> "NOT_FOUND"
                     !scanPlan.openFoodFactsEnabled && !scanPlan.firecrawlEnabled -> "DISABLED"
                     else -> "PARTIAL"
@@ -966,12 +992,6 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 debugReport.finish(finalOutcome)
                 persistBottleLookupDebug(debugReport)
             }
-            if (bottleWebSearchRequestTokens[draft.id] != requestToken) return@launch
-            val previous = bottleWebSearchStates[draft.id] ?: BottleWebSearchState(automatedScan = true)
-            val searchResult = result?.search
-            val page = (result?.page as? WebPageResult.Found)?.page
-            val candidateExtraction = (result?.extraction as? BottleDetailExtractionResult.Found)?.suggestions
-            val extraction = candidateExtraction?.takeIf { pendingBottleEvidenceStore.save(draft.id, it) }
             val message = when {
                 result == null -> "Automatic lookup could not finish. Your bottle draft is still here; continue manually or retry."
                 result.page is WebPageResult.Found && !result.barcodeVerifiedInPage -> "The fetched page did not show this barcode. No model extraction was run; inspect a source or continue manually."

@@ -56,7 +56,12 @@ import com.davidhayesbc.cocktails.android.product.OpenFoodFactsSuggestion
 import com.davidhayesbc.cocktails.android.product.SharedPreferencesLookupStorage
 import com.davidhayesbc.cocktails.android.product.BottleLookupDebugEvent
 import com.davidhayesbc.cocktails.android.product.BottleLookupDebugReport
-import com.davidhayesbc.cocktails.android.product.BottleLookupDebugStage
+import com.davidhayesbc.cocktails.android.product.BottleProviderCall
+import com.davidhayesbc.cocktails.android.product.OpenFoodFactsLookupResult
+import com.davidhayesbc.cocktails.android.product.WebSearchResult
+import com.davidhayesbc.cocktails.android.product.ScannedBottleEnrichmentCoordinator
+import com.davidhayesbc.cocktails.android.product.ScannedBottlePlan
+import kotlinx.coroutines.runBlocking
 import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import com.davidhayesbc.cocktails.core.data.CatalogInstallResult
 import com.davidhayesbc.cocktails.core.data.LocalCocktailRepository
@@ -92,6 +97,27 @@ class OfflineRecipeSmokeTest {
     @Test
     fun lookupDebugReportIsPreviewedAndCopiedOnlyAfterUserAction() {
         LocalDiagnostics.clear()
+        val events = mutableListOf<BottleLookupDebugEvent>()
+        val coordinator = ScannedBottleEnrichmentCoordinator(
+            lookup = { BottleProviderCall(OpenFoodFactsLookupResult.NotFound, 404) },
+            search = { query ->
+                assertEquals("\"5011333150725\"", query)
+                BottleProviderCall(WebSearchResult.Found(listOf(
+                    WebSearchHit("Barcode Lookup | UPC, EAN & ISBN Search", "https://www.barcodelookup.com/", "Search by UPC"),
+                    WebSearchHit("UPC Lookup", "https://go-upc.com/barcode-lookup", "Look up product details"),
+                )), 200)
+            },
+            fetch = { error("Generic lookup pages must not be fetched") },
+            extract = { _, _, _ -> error("Unverified pages must not reach extraction") },
+        )
+        val outcome = runBlocking {
+            coordinator.processScannedBarcode(
+                "5011333150725",
+                ScannedBottlePlan(false, true, null),
+                onDebugEvent = events::add,
+            )
+        }
+        assertEquals(null, outcome.selectedHit)
         val report = BottleLookupDebugReport(
             createdAtMillis = 1,
             versionName = "preview-test",
@@ -106,14 +132,7 @@ class OfflineRecipeSmokeTest {
             modelIdentifier = null,
             query = "\"5011333150725\"",
         )
-        report.record(BottleLookupDebugEvent(
-            stage = BottleLookupDebugStage.SOURCE_SELECTION,
-            provider = "APP",
-            result = "NO_USABLE_SOURCE",
-            resultCount = 2,
-            sourceUrls = listOf("https://barcodelookup.example/search?token=NEVER_COPY"),
-            reasonCodes = listOf("GENERIC_BARCODE_LOOKUP"),
-        ))
+        events.forEach(report::record)
         report.finish("NOT_FOUND")
         LocalDiagnostics.recordBottleLookup(report)
 
@@ -130,8 +149,8 @@ class OfflineRecipeSmokeTest {
         val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
         val copied = clipboard.primaryClip!!.getItemAt(0).coerceToText(context).toString()
         assertTrue(copied.contains("5011333150725"))
-        assertTrue(copied.contains("GENERIC_BARCODE_LOOKUP"))
-        assertFalse(copied.contains("NEVER_COPY"))
+        assertTrue(copied.contains("CANDIDATE_1_GENERIC_BARCODE_LOOKUP"))
+        assertFalse(copied.contains("/barcode-lookup"))
         assertFalse(copied.contains("Authorization"))
         assertTrue(copied.contains("No keys"))
         composeRule.onNodeWithText("Lookup report copied. Review it before sharing.").assertIsDisplayed()
