@@ -3635,11 +3635,6 @@ private fun DiagnosticsDialog(
         text = {
             Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()).testTag("diagnostics-dialog-scroll"), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("Latest bottle lookup report", style = MaterialTheme.typography.titleSmall)
-                OutlinedButton(onClick = onCopyLookup, enabled = lookupPreview != null, modifier = Modifier.fillMaxWidth().testTag("copy-bottle-lookup-report")) {
-                    Text("Copy lookup debug report")
-                }
-                lookupCopyMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
-                if (lookupPreview == null) Text("Run a barcode lookup to create a report.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(lookupPreview ?: "No barcode lookup report yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("latest-lookup-report-preview"))
                 Text("Stored only on this phone. Nothing is uploaded automatically. Export or copy only when you choose to share.")
                 Text("Crash details include app/device version, camera event categories, and stack frames. Lookup reports include scanned barcode digits, provider/model status, safe source URLs, timings, HTTP statuses, and fixed rejection codes.")
@@ -3650,7 +3645,20 @@ private fun DiagnosticsDialog(
             }
         },
         confirmButton = {
-            Button(onClick = onExport) { Text("Export diagnostics") }
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                OutlinedButton(
+                    onClick = onCopyLookup,
+                    enabled = lookupPreview != null,
+                    modifier = Modifier.fillMaxWidth().testTag("copy-bottle-lookup-report"),
+                ) { Text("Copy lookup debug report") }
+                lookupCopyMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+                if (lookupPreview == null) Text("Run a barcode lookup to create a report.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Button(onClick = onExport) { Text("Export diagnostics") }
+            }
         },
         dismissButton = {
             Row {
