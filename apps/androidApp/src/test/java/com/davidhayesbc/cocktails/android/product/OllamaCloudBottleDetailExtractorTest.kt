@@ -48,6 +48,44 @@ class OllamaCloudBottleDetailExtractorTest {
     }
 
     @Test
+    fun rejectsNumericSubstringAbvQuantityCrossFieldAndConflictingValues() {
+        val invalidCandidates = listOf(
+            """{"facts":[{"field":"abv_percent","value":"0%","evidence":"40% ABV"}]}""",
+            """{"facts":[{"field":"abv_percent","value":"5%","evidence":"15% ABV"}]}""",
+            """{"facts":[{"field":"quantity","value":"40%","evidence":"40% ABV"}]}""",
+        )
+        invalidCandidates.forEach { content ->
+            assertTrue(
+                parseOllamaExtractionResponse(response(content), "model", source.sourceUrl, source.markdown) is
+                    BottleDetailExtractionResult.InvalidResponse,
+            )
+        }
+
+        val conflictingSource = "Example Gin is 40% ABV. The retailer says 50% ABV."
+        val conflictingContent = """{"facts":[{"field":"abv_percent","value":"40%","evidence":"40% ABV"},{"field":"abv_percent","value":"50%","evidence":"50% ABV"}]}"""
+        assertTrue(
+            parseOllamaExtractionResponse(response(conflictingContent), "model", source.sourceUrl, conflictingSource) is
+                BottleDetailExtractionResult.InvalidResponse,
+        )
+    }
+
+    @Test
+    fun stripsLinksUrlsQueryStringsHtmlAndControlCharactersBeforeCloudRequest() = runBlocking {
+        val pageText = "Gin brand [official page](https://example.org/gin?token=private123)\nRaw https://shop.example/item?email=person%40example.org\u0001"
+        val transport = FakeTransport(OllamaCloudHttpResponse.Success(response(
+            """{"facts":[{"field":"brand","value":"Gin brand","evidence":"Gin brand"}]}""",
+        )))
+        val provider = OllamaCloudBottleDetailExtractor({ "synthetic-key" }, transport)
+
+        assertTrue(provider.extract(source.copy(markdown = pageText), "qwen3:8b-cloud") is BottleDetailExtractionResult.Found)
+        assertTrue(transport.lastBody.contains("official page"))
+        assertFalse(transport.lastBody.contains("https://"))
+        assertFalse(transport.lastBody.contains("private123"))
+        assertFalse(transport.lastBody.contains("person%40example.org"))
+        assertFalse(transport.lastBody.contains("\u0001"))
+    }
+
+    @Test
     fun missingKeyInvalidModelUnsafeSourceAndFailedResponsesNeverCallTransport() = runBlocking {
         val transport = FakeTransport(OllamaCloudHttpResponse.Success("{}"))
         val missingKey = OllamaCloudBottleDetailExtractor({ null }, transport)

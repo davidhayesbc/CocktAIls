@@ -20,6 +20,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import java.util.Locale
 
 internal data class BottleFactEvidence(
     val field: BottleFactField,
@@ -68,7 +69,7 @@ internal class OllamaCloudBottleDetailExtractor(
             ?: return BottleDetailExtractionResult.InvalidResponse
         val safeModel = model.trim()
         if (!isValidOllamaModelIdentifier(safeModel)) return BottleDetailExtractionResult.InvalidModel
-        val sourceText = page.markdown.take(MAX_SOURCE_TEXT_CHARS)
+        val sourceText = sanitizeSourceTextForCloud(page.markdown).take(MAX_SOURCE_TEXT_CHARS)
         if (sourceText.isBlank()) return BottleDetailExtractionResult.InvalidResponse
         val key = keyProvider()?.trim()?.takeIf(String::isNotEmpty)
             ?: return BottleDetailExtractionResult.SetupRequired
@@ -93,6 +94,25 @@ private const val MAX_OLLAMA_RESPONSE_BYTES = 64 * 1024
 private const val MAX_FACTS = 4
 private const val MAX_FACT_VALUE_CHARS = 120
 private const val MAX_EVIDENCE_QUOTE_CHARS = 320
+
+internal fun sanitizeSourceTextForCloud(markdown: String): String {
+    val linkedLabels = markdown.replace(
+        Regex("""(?is)<a\b[^>]*>(.*?)</a>"""),
+    ) { match -> match.groupValues[1].replace(Regex("<[^>]*>"), "") }
+        .replace(Regex("""(?is)<script\b[^>]*>.*?</script>|<style\b[^>]*>.*?</style>"""), " ")
+        .replace(Regex("<[^>]*>"), " ")
+    val withoutMarkdownTargets = linkedLabels.replace(
+        Regex("""(?i)\[([^\]]{1,500})\]\(https?://[^)]*\)"""),
+    ) { it.groupValues[1] }
+    val withoutUrls = withoutMarkdownTargets
+        .replace(Regex("""(?i)<https?://[^>]*>"""), " ")
+        .replace(Regex("""(?i)\bhttps?://[^\s<>()]+"""), " ")
+    return withoutUrls
+        .filter { character -> character == '\n' || character == '\r' || character == '\t' || character.code >= 0x20 && character.code != 0x7f }
+        .replace(Regex("[ \\t]+"), " ")
+        .replace(Regex(" *\\n *"), "\n")
+        .trim()
+}
 
 internal fun buildOllamaRequest(model: String, sourceText: String): String = buildJsonObject {
     put("model", model)
@@ -213,20 +233,33 @@ internal fun parseOllamaExtractionResponse(
         if (!sourceText.contains(quote, ignoreCase = true)) return@mapNotNull null
         if (!quote.contains(text, ignoreCase = true)) return@mapNotNull null
         if (field == BottleFactField.ABV_PERCENT && !isSupportedAbvCandidate(text, quote)) return@mapNotNull null
+        if (field == BottleFactField.QUANTITY && Regex("""(?i)\b(?:ABV|alc(?:ohol)?|vol(?:ume)?)\b|%""").containsMatchIn(text)) return@mapNotNull null
         BottleFactEvidence(field, text, quote)
-    }?.distinctBy(BottleFactEvidence::field)?.take(MAX_FACTS)
-        ?: return BottleDetailExtractionResult.InvalidResponse
-    if (facts.isEmpty()) return BottleDetailExtractionResult.InvalidResponse
+    } ?: return BottleDetailExtractionResult.InvalidResponse
+    val conflictingFields = facts.groupBy(BottleFactEvidence::field).values.any { fieldFacts ->
+        fieldFacts.map { it.value.trim().lowercase(Locale.ROOT) }.distinct().size > 1
+    }
+    if (conflictingFields) return BottleDetailExtractionResult.InvalidResponse
+    val acceptedFacts = facts.distinctBy(BottleFactEvidence::field).take(MAX_FACTS)
+    if (acceptedFacts.isEmpty()) return BottleDetailExtractionResult.InvalidResponse
     BottleDetailExtractionResult.Found(
-        BottleDetailSuggestions("Ollama Cloud", model, sourceUrl, facts),
+        BottleDetailSuggestions("Ollama Cloud", model, sourceUrl, acceptedFacts),
     )
 }.getOrDefault(BottleDetailExtractionResult.InvalidResponse)
 
 private fun isSupportedAbvCandidate(value: String, evidence: String): Boolean {
-    val numeric = value.removeSuffix("%").trim().toDoubleOrNull() ?: return false
-    val statesAlcoholUnit = evidence.contains('%') || evidence.contains("abv", ignoreCase = true) ||
-        evidence.contains("alc", ignoreCase = true)
-    return numeric in 0.0..100.0 && statesAlcoholUnit
+    val valueNumber = Regex("""^\s*(\d{1,3}(?:[.,]\d{1,2})?)\s*%?\s*$""")
+        .matchEntire(value)?.groupValues?.get(1)?.replace(',', '.')?.toDoubleOrNull() ?: return false
+    if (valueNumber !in 0.0..100.0) return false
+    val unit = "(?:ABV|ALC(?:OHOL)?(?:\\s+BY\\s+VOLUME)?|ALC\\.?\\s*/\\s*VOL\\.?|VOL(?:UME)?)"
+    val number = "(\\d{1,3}(?:[.,]\\d{1,2})?)"
+    val unitAfter = Regex("""(?i)(?<![\d.,])$number\s*%\s*$unit\b""")
+    val unitBefore = Regex("""(?i)$unit\s*[:=]?\s*$number\s*%""")
+    val evidencedNumbers = (unitAfter.findAll(evidence).mapNotNull { it.groups[1]?.value } +
+        unitBefore.findAll(evidence).mapNotNull { it.groups[1]?.value })
+        .mapNotNull { it.replace(',', '.').toDoubleOrNull() }
+        .toSet()
+    return evidencedNumbers.size == 1 && evidencedNumbers.single() == valueNumber
 }
 
 private fun JsonObject.string(field: String): String? = this[field]?.jsonPrimitive?.contentOrNull

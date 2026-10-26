@@ -1851,7 +1851,7 @@ private fun BottleDraftCard(
                     modifier = Modifier.testTag("extract-bottle-${draft.id}"),
                 ) { Text(if (webSearchState.extracting) "Extracting…" else "Suggest details with Ollama Cloud") }
                 if (!ollamaCloudEnabled) Text("Enable Ollama Cloud extraction in More to use this option.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (webSearchState.extracting) Text("Sending this selected page text to Ollama Cloud. You can cancel locally; a request already sent may still use plan quota. Bottle fields are unchanged.", style = MaterialTheme.typography.bodySmall)
+                if (webSearchState.extracting) Text("Sending selected page text to Ollama Cloud after removing links, URLs and control characters. Review the page first; it may still contain personal details. You can cancel locally; a request already sent may still use plan quota. Bottle fields are unchanged.", style = MaterialTheme.typography.bodySmall)
                 webSearchState.extractedSuggestions?.let { suggestions ->
                     Text("Suggestions · ${suggestions.provider} · ${suggestions.model}", style = MaterialTheme.typography.titleSmall)
                     Text("Source: ${suggestions.sourceUrl}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
@@ -2732,7 +2732,7 @@ private fun HouseholdScreen(
                 modifier = Modifier.testTag("ollama-cloud-extraction-toggle"),
             )
         }
-        Text("When you choose extraction, Ollama Cloud receives the selected source page text (up to 24,000 characters), your chosen model identifier, and normal network metadata. The app does not send barcode, home, pantry, member, photo, or recipe data. Model output is untrusted and must include exact source quotes; suggestions stay on this screen and never change bottle fields automatically.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("When you choose extraction, Ollama Cloud receives selected source page text (up to 24,000 characters) after links, URLs and control characters are removed, plus your chosen model identifier and normal network metadata. Review the page first; it may still contain personal details. The app does not send barcode, home, pantry, member, photo, or recipe data. Model output is untrusted and must include exact source quotes; suggestions stay on this screen and never change bottle fields automatically.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("Ollama Cloud's chat API does not support constrained JSON output. The app asks for JSON, validates it and rejects unsupported claims; this is not a guarantee of complete or correct extraction.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onConfigureOllamaCloud, modifier = Modifier.testTag("configure-ollama-cloud")) { Text(if (ollamaCloudKeySaved) "Replace key / model" else "Add key / model") }
@@ -2803,7 +2803,7 @@ private fun OllamaCloudSettingsDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("This phone encrypts your key with Android Keystore. The key goes only to ollama.com. Saving does not enable cloud extraction.")
-                Text("When you explicitly request extraction, up to 24,000 characters of the selected source page and this model name are sent to Ollama Cloud. No barcode, home, pantry, member, photo, or recipe data is sent. This consumes your Ollama Cloud plan usage; the app will not enable paid upgrades or automatic retries.", style = MaterialTheme.typography.bodySmall)
+                Text("When you explicitly request extraction, up to 24,000 characters of the selected source page (after removing links, URLs and control characters) and this model name are sent to Ollama Cloud. Review the page first; it may still contain personal details. No barcode, home, pantry, member, photo, or recipe data is sent. This consumes your Ollama Cloud plan usage; the app will not enable paid upgrades or automatic retries.", style = MaterialTheme.typography.bodySmall)
                 OutlinedTextField(
                     value = model,
                     onValueChange = { model = it.trim(); error = null },
