@@ -58,6 +58,7 @@ class OfflineRecipeSmokeTest {
     @Test
     fun onDeviceModelControlsAreHonestWhenNoWeightsAreInstalled() {
         composeRule.onNodeWithText("More").performClick()
+        composeRule.onNodeWithTag("household-scroll").performScrollToNode(hasText("On-device model · Qwen3 0.6B Q8"))
         composeRule.onNodeWithText("On-device model · Qwen3 0.6B Q8").assertIsDisplayed()
         composeRule.onNodeWithTag("local-ai-toggle").assertIsNotEnabled()
         composeRule.onNodeWithTag("choose-local-model").assertIsDisplayed()
