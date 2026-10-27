@@ -1,5 +1,10 @@
 package com.davidhayesbc.cocktails.android.product
 
+import android.graphics.RectF
+import androidx.annotation.OptIn
+import androidx.camera.view.transform.CoordinateTransform
+import androidx.camera.view.transform.OutputTransform
+import androidx.camera.view.TransformExperimental
 import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.MatOfPoint
@@ -125,37 +130,33 @@ internal class LiveBottleLabelEdgeStabilizer(
             abs(first.right - second.right) <= tolerance && abs(first.bottom - second.bottom) <= tolerance
 }
 
-/** Camera analysis frames are often rotated relative to the portrait preview. */
-internal fun rotateNormalizedCrop(crop: NormalizedLabelCrop, rotationDegrees: Int): NormalizedLabelCrop = when (rotationDegrees) {
-    0 -> crop
-    90 -> NormalizedLabelCrop(1f - crop.bottom, crop.left, 1f - crop.top, crop.right)
-    180 -> NormalizedLabelCrop(1f - crop.right, 1f - crop.bottom, 1f - crop.left, 1f - crop.top)
-    270 -> NormalizedLabelCrop(crop.top, 1f - crop.right, crop.bottom, 1f - crop.left)
-    else -> error("Camera rotation must be 0, 90, 180 or 270 degrees.")
-}
-
-/** Maps a rotated normalized box through PreviewView's center-crop geometry. */
-internal fun mapFillCenterCropToView(
+/** Maps a normalized analysis crop through CameraX's shared-viewport transforms. */
+@OptIn(TransformExperimental::class)
+internal fun mapAnalysisCropToPreview(
     crop: NormalizedLabelCrop,
-    sourceWidth: Int,
-    sourceHeight: Int,
+    analysisCropWidth: Int,
+    analysisCropHeight: Int,
+    sourceTransform: OutputTransform,
+    previewTransform: OutputTransform,
     viewWidth: Int,
     viewHeight: Int,
 ): NormalizedLabelCrop? {
-    if (sourceWidth <= 0 || sourceHeight <= 0 || viewWidth <= 0 || viewHeight <= 0) return null
-    val scale = max(viewWidth.toFloat() / sourceWidth, viewHeight.toFloat() / sourceHeight)
-    val renderedWidth = sourceWidth * scale
-    val renderedHeight = sourceHeight * scale
-    val offsetX = (viewWidth - renderedWidth) / 2f
-    val offsetY = (viewHeight - renderedHeight) / 2f
-    fun x(value: Float) = ((value * renderedWidth + offsetX) / viewWidth).coerceIn(0f, 1f)
-    fun y(value: Float) = ((value * renderedHeight + offsetY) / viewHeight).coerceIn(0f, 1f)
-    val left = x(crop.left)
-    val top = y(crop.top)
-    val right = x(crop.right)
-    val bottom = y(crop.bottom)
-    if (right - left < NormalizedLabelCrop.MIN_CROP_SIDE || bottom - top < NormalizedLabelCrop.MIN_CROP_SIDE) return null
-    return NormalizedLabelCrop(left, top, right, bottom)
+    if (analysisCropWidth <= 0 || analysisCropHeight <= 0 || viewWidth <= 0 || viewHeight <= 0) return null
+    return runCatching {
+        val mapped = RectF(
+            crop.left * analysisCropWidth,
+            crop.top * analysisCropHeight,
+            crop.right * analysisCropWidth,
+            crop.bottom * analysisCropHeight,
+        )
+        CoordinateTransform(sourceTransform, previewTransform).mapRect(mapped)
+        val left = (mapped.left / viewWidth).coerceIn(0f, 1f)
+        val top = (mapped.top / viewHeight).coerceIn(0f, 1f)
+        val right = (mapped.right / viewWidth).coerceIn(0f, 1f)
+        val bottom = (mapped.bottom / viewHeight).coerceIn(0f, 1f)
+        if (right - left < NormalizedLabelCrop.MIN_CROP_SIDE || bottom - top < NormalizedLabelCrop.MIN_CROP_SIDE) null
+        else NormalizedLabelCrop(left, top, right, bottom)
+    }.getOrNull()
 }
 
 /** Copies and downsamples only the Y plane while honoring CameraX strides and crop bounds. */

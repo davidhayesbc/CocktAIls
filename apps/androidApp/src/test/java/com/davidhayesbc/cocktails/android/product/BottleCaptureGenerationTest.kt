@@ -81,4 +81,19 @@ class BottleCaptureGenerationTest {
         assertEquals(current, processingBottleCaptureAfterCompletion(current, old))
         assertNull(processingBottleCaptureAfterCompletion(old, old))
     }
+
+    @Test
+    fun delayedCameraCallbackKeepsTheTokenThatCreatedIt() {
+        val first = BottleCaptureToken(60, "draft-first")
+        val second = BottleCaptureToken(61, "draft-second")
+        val current = second
+        var callbackToken: BottleCaptureToken? = null
+        val callback = bindBottleCaptureCallback(first) { callbackToken = it }
+
+        callback()
+
+        assertEquals(first, callbackToken)
+        assertEquals("A late first result must not take ownership of the second capture", second, current)
+        assertFalse(isCurrentBottleCapture(first, current.generation, current.draftId))
+    }
 }

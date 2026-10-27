@@ -3,6 +3,12 @@ package com.davidhayesbc.cocktails.android.product
 /** Token used to discard late camera, decode, and crop completions after the user changes bottles. */
 internal data class BottleCaptureToken(val generation: Long, val draftId: String?)
 
+/** Captures the immutable owner for a camera callback instead of reading the current owner later. */
+internal fun bindBottleCaptureCallback(
+    token: BottleCaptureToken,
+    callback: (BottleCaptureToken) -> Unit,
+): () -> Unit = { callback(token) }
+
 internal fun bottleCaptureTempFileName(token: BottleCaptureToken): String =
     "capture-${token.generation}-${token.draftId?.takeIf { it.matches(Regex("[A-Za-z0-9-]{1,100}")) } ?: "manual"}.jpg"
 

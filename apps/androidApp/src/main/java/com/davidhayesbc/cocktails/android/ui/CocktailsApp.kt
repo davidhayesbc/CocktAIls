@@ -1394,7 +1394,11 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         }
     }
 
-    fun handleBottleLabelCameraResult(token: BottleCaptureToken, captured: Boolean) {
+    fun handleBottleLabelCameraResult(
+        token: BottleCaptureToken,
+        captured: Boolean,
+        liveDetectedCrop: NormalizedLabelCrop? = null,
+    ) {
         if (processingBottleCameraToken == token) return
         if (!isCurrentBottleCaptureOperation(token)) {
             File(File(context.cacheDir, "intake-labels"), bottleCaptureTempFileName(token)).delete()
@@ -1425,7 +1429,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 Result.failure(failure)
             }
                 val originalPhoto = result.getOrNull()
-                val suggestion = originalPhoto?.let { bytes ->
+                val suggestion = liveDetectedCrop ?: originalPhoto?.let { bytes ->
                     withContext(Dispatchers.Default) { runCatching { BottleLabelCropper.suggest(bytes) }.getOrNull() }
                 }
                 if (!isCurrentBottleCaptureOperation(token)) {
@@ -1478,10 +1482,6 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 clearPersistedCameraLaunch(token)
                 processingBottleCameraToken = processingBottleCaptureAfterCompletion(processingBottleCameraToken, token)
         }
-    }
-
-    val bottleLabelCaptureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { captured ->
-        launchedBottleCameraToken?.let { handleBottleLabelCameraResult(it, captured) }
     }
 
     LaunchedEffect(launchedBottleCameraToken, processingBottleCameraToken) {
@@ -1683,6 +1683,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         },
     ) { contentPadding ->
         if (showBottleIntake && bottleIntakeSession != null) {
+            val cameraTokenForScreen = launchedBottleCameraToken
             BottleIntakeScreen(
                 modifier = Modifier.fillMaxSize().padding(contentPadding),
                 session = bottleIntakeSession!!,
@@ -1696,12 +1697,13 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 captureMessage = bottleLabelCaptureMessage,
                 permissionMessage = bottleIntakeCameraMessage,
                 pendingLabelDraftId = pendingBottleLabelDraftId,
-                labelCameraOutputFile = launchedBottleCameraToken?.let { token ->
+                labelCameraToken = cameraTokenForScreen,
+                labelCameraOutputFile = cameraTokenForScreen?.let { token ->
                     File(File(context.cacheDir, "intake-labels"), bottleCaptureTempFileName(token))
                 },
                 labelCaptureProcessing = processingBottleCameraToken != null,
-                onLabelPhotoSaved = { launchedBottleCameraToken?.let { handleBottleLabelCameraResult(it, captured = true) } },
-                onLabelCameraCancel = { launchedBottleCameraToken?.let { handleBottleLabelCameraResult(it, captured = false) } },
+                onLabelPhotoSaved = { token, crop -> handleBottleLabelCameraResult(token, captured = true, liveDetectedCrop = crop) },
+                onLabelCameraCancel = { token -> handleBottleLabelCameraResult(token, captured = false) },
                 webSearchEnabled = firecrawlSearchEnabled && firecrawlKeySaved && !firecrawlKeyNeedsReplacement,
                 webSearchStates = bottleWebSearchStates,
                 onOpenLookupReport = {
@@ -2608,8 +2610,9 @@ internal fun BottleIntakeScreen(
     pendingLabelDraftId: String? = null,
     labelCameraOutputFile: File? = null,
     labelCaptureProcessing: Boolean = false,
-    onLabelPhotoSaved: () -> Unit = {},
-    onLabelCameraCancel: () -> Unit = {},
+    labelCameraToken: BottleCaptureToken? = null,
+    onLabelPhotoSaved: (BottleCaptureToken, NormalizedLabelCrop?) -> Unit = { _, _ -> },
+    onLabelCameraCancel: (BottleCaptureToken) -> Unit = {},
     webSearchEnabled: Boolean,
     webSearchStates: Map<String, BottleWebSearchState>,
     onOpenLookupReport: () -> Unit = {},
@@ -2661,6 +2664,7 @@ internal fun BottleIntakeScreen(
         pendingLabelDraftId = pendingLabelDraftId,
         labelCameraOutputFile = labelCameraOutputFile,
         labelCaptureProcessing = labelCaptureProcessing,
+        labelCameraToken = labelCameraToken,
         onLabelPhotoSaved = onLabelPhotoSaved,
         onLabelCameraCancel = onLabelCameraCancel,
         webSearchEnabled = webSearchEnabled,
@@ -2718,8 +2722,9 @@ private fun BottleIntakeFlowScreen(
     pendingLabelDraftId: String?,
     labelCameraOutputFile: File?,
     labelCaptureProcessing: Boolean,
-    onLabelPhotoSaved: () -> Unit,
-    onLabelCameraCancel: () -> Unit,
+    labelCameraToken: BottleCaptureToken?,
+    onLabelPhotoSaved: (BottleCaptureToken, NormalizedLabelCrop?) -> Unit,
+    onLabelCameraCancel: (BottleCaptureToken) -> Unit,
     webSearchEnabled: Boolean,
     webSearchStates: Map<String, BottleWebSearchState>,
     onOpenLookupReport: () -> Unit,
@@ -2798,22 +2803,31 @@ private fun BottleIntakeFlowScreen(
             }
         }
 
-        if (labelCameraOutputFile != null && capturePhoto == null) {
+        if (labelCameraOutputFile != null && labelCameraToken != null) {
             Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp)) {
                 val draft = drafts.firstOrNull { it.id == pendingLabelDraftId }
                 draft?.let { Text("Bottle #${it.position + 1} · ${it.barcode.orEmpty()}", Modifier.padding(bottom = 8.dp), style = MaterialTheme.typography.titleSmall) }
+                if (capturePhoto != null) Text("Retaking label · your previous photo stays safe until you use the new one.", style = MaterialTheme.typography.bodySmall)
                 BottleLabelCameraScreen(
                     outputFile = labelCameraOutputFile,
+                    captureToken = labelCameraToken,
                     onPhotoSaved = onLabelPhotoSaved,
                     onCancel = onLabelCameraCancel,
                 )
             }
-        } else if (labelCaptureProcessing && capturePhoto == null) {
+        } else if (labelCaptureProcessing) {
             Column(Modifier.weight(1f).fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text("Preparing the label photo…", style = MaterialTheme.typography.titleLarge)
+                Text(if (capturePhoto == null) "Preparing the label photo…" else "Preparing the retaken label photo…", style = MaterialTheme.typography.titleLarge)
                 LinearProgressIndicator(Modifier.fillMaxWidth())
-                Text("This stays on your phone. You can skip the photo and continue scanning.", style = MaterialTheme.typography.bodyMedium)
-                pendingLabelDraftId?.let { id -> TextButton(onClick = { onSkipPendingLabel(id) }) { Text("Skip photo & scan next") } }
+                Text(
+                    if (capturePhoto == null) "This stays on your phone. You can skip the photo and continue scanning."
+                    else "Your previous label is still safe. Keep it or wait for the retake to finish.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                pendingLabelDraftId?.let { id ->
+                    if (capturePhoto != null) TextButton(onClick = { onUsePendingLabel(id) }) { Text("Keep previous label & scan next") }
+                    else TextButton(onClick = { onSkipPendingLabel(id) }) { Text("Skip photo & scan next") }
+                }
             }
         } else when (route) {
             BottleIntakeRoute.SETUP -> Column(

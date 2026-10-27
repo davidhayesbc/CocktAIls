@@ -3,7 +3,12 @@ package com.davidhayesbc.cocktails.android.product
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Paint
+import android.util.Size
+import androidx.camera.view.transform.OutputTransform
+import androidx.camera.view.TransformExperimental
+import androidx.annotation.OptIn
 import com.davidhayesbc.cocktails.core.interchange.isProductPhotoJpeg
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertNotNull
@@ -16,6 +21,7 @@ import org.junit.runner.RunWith
 import java.io.ByteArrayOutputStream
 
 @RunWith(AndroidJUnit4::class)
+@OptIn(markerClass = [TransformExperimental::class])
 class BottleLabelCropperTest {
     @Test
     fun liveEdgeDetectorFindsOnlyClearRectangularCandidates() {
@@ -47,14 +53,46 @@ class BottleLabelCropperTest {
     @Test
     fun liveCropMappingAndCameraLumaRespectRotationCropAndStrides() {
         val source = NormalizedLabelCrop(0.2f, 0.3f, 0.6f, 0.8f)
-        assertEquals(NormalizedLabelCrop(0.2f, 0.2f, 0.7f, 0.6f), rotateNormalizedCrop(source, 90))
-        assertEquals(NormalizedLabelCrop(0.4f, 0.2f, 0.8f, 0.7f), rotateNormalizedCrop(source, 180))
-        assertEquals(NormalizedLabelCrop(0.3f, 0.4f, 0.8f, 0.8f), rotateNormalizedCrop(source, 270))
-        assertEquals(source, mapFillCenterCropToView(source, 400, 800, 400, 800))
-        val centerCropped = mapFillCenterCropToView(source, 400, 800, 800, 400)
-        assertNotNull(centerCropped)
-        assertTrue(centerCropped!!.left in 0f..1f && centerCropped.right in 0f..1f)
-        assertTrue(centerCropped.top in 0f..1f && centerCropped.bottom in 0f..1f)
+        val analysisTransform = OutputTransform(Matrix().apply { setScale(400f, 300f) }, Size(400, 300))
+        val previewTransform = OutputTransform(Matrix().apply { setScale(800f, 600f) }, Size(800, 600))
+        val mapped = mapAnalysisCropToPreview(
+            crop = source,
+            analysisCropWidth = 400,
+            analysisCropHeight = 300,
+            sourceTransform = analysisTransform,
+            previewTransform = previewTransform,
+            viewWidth = 800,
+            viewHeight = 600,
+        )
+        assertNotNull("Different analysis and preview resolutions must map through CameraX coordinates", mapped)
+        assertCropClose(source, mapped!!)
+
+        val portraitPreviewTransform = OutputTransform(Matrix().apply { setScale(600f, 800f) }, Size(600, 800))
+        val portraitMapped = mapAnalysisCropToPreview(
+            crop = source,
+            analysisCropWidth = 400,
+            analysisCropHeight = 300,
+            sourceTransform = analysisTransform,
+            previewTransform = portraitPreviewTransform,
+            viewWidth = 600,
+            viewHeight = 800,
+        )
+        assertNotNull("Preview rotation and scaling must preserve normalized crop bounds", portraitMapped)
+        assertCropClose(source, portraitMapped!!)
+
+        val squareIdentity = OutputTransform(Matrix(), Size(100, 100))
+        val rotatedPreview = OutputTransform(Matrix().apply { setRotate(90f, 50f, 50f) }, Size(100, 100))
+        val rotated = mapAnalysisCropToPreview(
+            crop = source,
+            analysisCropWidth = 100,
+            analysisCropHeight = 100,
+            sourceTransform = squareIdentity,
+            previewTransform = rotatedPreview,
+            viewWidth = 100,
+            viewHeight = 100,
+        )
+        assertNotNull("A quarter-turn must be mapped by the camera transform", rotated)
+        assertCropClose(NormalizedLabelCrop(0.2f, 0.2f, 0.7f, 0.6f), rotated!!)
 
         val width = 64
         val height = 64
@@ -68,6 +106,13 @@ class BottleLabelCropperTest {
         assertEquals((6 + 4).toByte(), downsampled.bytes[0])
         assertEquals((6 + 31 + 4 + 31).toByte(), downsampled.bytes.last())
         assertNull(downsampleCameraLuma(plane, width, height, rowStride, pixelStride, 60, 60, 32, 32, maxDimension = 32))
+    }
+
+    private fun assertCropClose(expected: NormalizedLabelCrop, actual: NormalizedLabelCrop, tolerance: Float = 0.00001f) {
+        assertTrue("left ${actual.left} != ${expected.left}", kotlin.math.abs(actual.left - expected.left) <= tolerance)
+        assertTrue("top ${actual.top} != ${expected.top}", kotlin.math.abs(actual.top - expected.top) <= tolerance)
+        assertTrue("right ${actual.right} != ${expected.right}", kotlin.math.abs(actual.right - expected.right) <= tolerance)
+        assertTrue("bottom ${actual.bottom} != ${expected.bottom}", kotlin.math.abs(actual.bottom - expected.bottom) <= tolerance)
     }
 
     @Test

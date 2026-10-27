@@ -27,6 +27,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -40,6 +41,7 @@ import com.davidhayesbc.cocktails.android.ui.BottleLabelCameraScreen
 import com.davidhayesbc.cocktails.android.ui.BottleWebSearchState
 import com.davidhayesbc.cocktails.android.ui.theme.CocktailsTheme
 import com.davidhayesbc.cocktails.android.product.BottleDetailSuggestions
+import com.davidhayesbc.cocktails.android.product.BottleCaptureToken
 import com.davidhayesbc.cocktails.android.product.BottleEnrichmentJob
 import com.davidhayesbc.cocktails.android.product.BottleEnrichmentOperation
 import com.davidhayesbc.cocktails.android.product.BottleEnrichmentQueue
@@ -496,6 +498,12 @@ class OfflineRecipeSmokeTest {
             session.id, "Unidentified bottle", "Spirit", home.id, InventoryLevel.FULL, 12, barcode = "5011333150725",
         )!!
         var captureRequested = false
+        val cameraToken = mutableStateOf<BottleCaptureToken?>(null)
+        val bitmap = android.graphics.Bitmap.createBitmap(8, 8, android.graphics.Bitmap.Config.ARGB_8888)
+        val photoOutput = java.io.ByteArrayOutputStream()
+        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, photoOutput)
+        bitmap.recycle()
+        val labelPhoto = photoOutput.toByteArray()
         var skippedDraft: String? = null
         try {
             setTestContent {
@@ -503,13 +511,18 @@ class OfflineRecipeSmokeTest {
                     BottleIntakeScreen(
                         modifier = Modifier.fillMaxSize(), session = repository.openBottleIntakeSession()!!,
                         route = BottleIntakeRoute.CAPTURE_LABEL, onRouteChange = {}, homes = listOf(home),
-                        capturePhoto = null, captureMessage = null, permissionMessage = null,
+                        capturePhoto = labelPhoto, originalCapturePhoto = labelPhoto, captureMessage = null, permissionMessage = null,
                         pendingLabelDraftId = draft.id,
+                        labelCameraToken = cameraToken.value,
+                        labelCameraOutputFile = cameraToken.value?.let { File(context.cacheDir, "${it.generation}-${it.draftId}.jpg") },
                         webSearchEnabled = false, webSearchStates = emptyMap(), pendingEnrichmentJobs = emptyMap(),
                         activeReviewDraftId = null, ollamaCloudEnabled = false, localAiEnabled = false,
                         onSearchDraft = {}, onFetchDraftSource = { _, _ -> }, onExtractDraftDetails = {},
                         onExtractDraftDetailsOnDevice = {}, onResumeEnrichment = { _, _ -> }, onCancelDraftSearch = {},
-                        onCaptureLabel = { captureRequested = true }, onUsePendingLabel = { true },
+                        onCaptureLabel = { captureRequested = true; cameraToken.value = BottleCaptureToken(1, draft.id) },
+                        onLabelPhotoSaved = { _, _ -> cameraToken.value = null },
+                        onLabelCameraCancel = { cameraToken.value = null },
+                        onUsePendingLabel = { true },
                         onSkipPendingLabel = { skippedDraft = it; true }, onDiscardCapturedLabel = {},
                         onAttachCapturedLabel = {}, onScan = {}, onAcceptAndScanNext = {},
                         onAddManual = { _, _, _, _, _, _, _ -> false }, onRemove = {}, onUpdate = { true },
@@ -521,8 +534,12 @@ class OfflineRecipeSmokeTest {
             }
             composeRule.onNodeWithText("Barcode captured · Bottle #1").assertIsDisplayed()
             composeRule.onNodeWithText("5011333150725").assertIsDisplayed()
-            composeRule.onNodeWithTag("capture-label-${draft.id}").assertIsDisplayed().performClick()
+            composeRule.onNodeWithTag("retake-label-${draft.id}").assertIsDisplayed().performClick()
             assertTrue(captureRequested)
+            composeRule.onNodeWithTag("label-live-camera").assertIsDisplayed()
+            composeRule.onNodeWithText("Retaking label · your previous photo stays safe until you use the new one.").assertIsDisplayed()
+            composeRule.onNodeWithTag("cancel-live-label").performClick()
+            composeRule.onNodeWithTag("retake-label-${draft.id}").assertIsDisplayed()
             composeRule.onNodeWithTag("skip-label-${draft.id}").assertIsDisplayed().performClick()
             assertEquals(draft.id, skippedDraft)
         } finally {
@@ -534,14 +551,17 @@ class OfflineRecipeSmokeTest {
     fun liveLabelCameraShowsEdgeGuideAndWaitsForExplicitShutter() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val output = File(context.cacheDir, "label-camera-ui-test.jpg")
+        val captureToken = BottleCaptureToken(7, "camera-test-draft")
         var photoSaved = false
+        var cancelledToken: BottleCaptureToken? = null
         try {
             setTestContent {
                 CocktailsTheme {
                     BottleLabelCameraScreen(
                         outputFile = output,
-                        onPhotoSaved = { photoSaved = true },
-                        onCancel = {},
+                        captureToken = captureToken,
+                        onPhotoSaved = { token, _ -> photoSaved = token == captureToken },
+                        onCancel = { cancelledToken = it },
                     )
                 }
             }
@@ -551,6 +571,8 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("capture-live-label").assertExists()
             composeRule.onNodeWithText("Take label photo").assertExists()
             assertTrue("A label must not be captured before the user taps the shutter", !photoSaved)
+            composeRule.onNodeWithTag("cancel-live-label").performClick()
+            assertEquals("The callback must retain the capture that opened this screen", captureToken, cancelledToken)
         } finally {
             setTestContent { }
             output.delete()
