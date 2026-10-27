@@ -5,19 +5,35 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import java.util.concurrent.atomic.AtomicInteger
 
 class BottleEnrichmentQueueTest {
     @Test
     fun interruptedWorkPersistsOnlyBoundedMetadataAndRequiresExplicitResume() {
         val storage = MemoryStorage()
         val queue = BottleEnrichmentQueue(storage)
+        val waitingForLabel = queue.requireLabel("session-1", "draft-1", nowMillis = 5)!!
+        assertEquals(BottleEnrichmentStatus.QUEUED, waitingForLabel.status)
+        assertTrue(waitingForLabel.labelCaptureRequired)
+        val queued = queue.enqueue("session-1", "draft-1", nowMillis = 8)!!
+        assertEquals(waitingForLabel.id, queued.id)
+        assertEquals(BottleEnrichmentStatus.QUEUED, queued.status)
+        assertTrue(queued.labelCaptureRequired)
         val search = queue.begin("session-1", "draft-1", BottleEnrichmentOperation.FIRECRAWL_SEARCH, nowMillis = 10)!!
+        assertTrue(search.labelCaptureRequired)
+        assertTrue(queue.completeLabelCapture("draft-1", nowMillis = 15))
+        assertFalse(queue.status("draft-1")!!.labelCaptureRequired)
         val fetch = queue.begin(
             "session-1", "draft-1", BottleEnrichmentOperation.FIRECRAWL_FETCH,
             sourceUrl = "https://example.com/product", nowMillis = 20,
         )!!
         assertEquals(1, queue.jobs().size)
-        assertFalse(search.id == fetch.id)
+        assertEquals(search.id, fetch.id)
         assertTrue(storage.raw!!.contains("https://example.com/product"))
         assertFalse(storage.raw!!.contains("search terms"))
         assertFalse(storage.raw!!.contains("page markdown"))
@@ -77,6 +93,121 @@ class BottleEnrichmentQueueTest {
         val queue = BottleEnrichmentQueue(storage)
         assertTrue(queue.jobs().isEmpty())
         assertTrue(queue.recoverInterrupted().isEmpty())
+    }
+
+    @Test
+    fun completedSuggestionsRemainInReviewQueueAndNeverPersistPageOrModelOutput() {
+        val storage = MemoryStorage()
+        val queue = BottleEnrichmentQueue(storage)
+        val job = queue.enqueue("session-review", "draft-review", nowMillis = 1)!!
+        queue.begin(
+            sessionId = job.sessionId,
+            draftId = job.draftId,
+            operation = BottleEnrichmentOperation.LOCAL_EXTRACTION,
+            sourceUrl = "https://example.com/product",
+            model = LOCAL_MODEL_LABEL,
+            nowMillis = 2,
+        )
+
+        assertTrue(queue.finish(job.draftId, BottleEnrichmentStatus.READY_FOR_REVIEW, "CANDIDATES_READY", 3))
+        val restored = BottleEnrichmentQueue(storage).jobs().single()
+
+        assertEquals(BottleEnrichmentStatus.READY_FOR_REVIEW, restored.status)
+        assertEquals("CANDIDATES_READY", restored.resultCode)
+        assertEquals(job.id, restored.id)
+        assertTrue(storage.raw.orEmpty().contains("https://example.com/product"))
+        assertFalse(storage.raw.orEmpty().contains("page markdown"))
+        assertFalse(storage.raw.orEmpty().contains("generated output"))
+        assertFalse(storage.raw.orEmpty().contains("api-key-canary"))
+    }
+
+    @Test
+    fun queuedJobsPauseOnRestartAndFinishedStatesAreNotRetriedAutomatically() {
+        val storage = MemoryStorage()
+        val queue = BottleEnrichmentQueue(storage)
+        queue.enqueue("session", "draft-queued", nowMillis = 1)
+        queue.enqueue("session", "draft-ready", nowMillis = 2)
+        queue.finish("draft-ready", BottleEnrichmentStatus.NEEDS_ATTENTION, "NO_MATCH", 3)
+
+        val recovered = BottleEnrichmentQueue(storage).recoverInterrupted().associateBy { it.draftId }
+
+        assertEquals(BottleEnrichmentStatus.PAUSED, recovered.getValue("draft-queued").status)
+        assertEquals(BottleEnrichmentStatus.NEEDS_ATTENTION, recovered.getValue("draft-ready").status)
+    }
+
+    @Test
+    fun labelCaptureAndLookupCanOverlapAndCaptureStateSurvivesRestart() {
+        val storage = MemoryStorage()
+        val queue = BottleEnrichmentQueue(storage)
+        val job = queue.requireLabel("session", "draft", nowMillis = 1)!!
+        queue.begin("session", "draft", BottleEnrichmentOperation.FIRECRAWL_SEARCH, nowMillis = 2)
+
+        val restarted = BottleEnrichmentQueue(storage).recoverInterrupted().single()
+
+        assertEquals(job.id, restarted.id)
+        assertEquals(BottleEnrichmentStatus.PAUSED, restarted.status)
+        assertTrue(restarted.labelCaptureRequired)
+        assertTrue(BottleEnrichmentQueue(storage).completeLabelCapture("draft", nowMillis = 3))
+        val completed = BottleEnrichmentQueue(storage).jobs().single()
+        assertFalse(completed.labelCaptureRequired)
+        assertEquals(BottleEnrichmentStatus.PAUSED, completed.status)
+    }
+
+    @Test
+    fun lookupCanFinishBeforeLabelCaptureWithoutLosingEitherResult() {
+        val queue = BottleEnrichmentQueue(MemoryStorage())
+        queue.requireLabel("session", "draft", nowMillis = 1)
+        queue.begin("session", "draft", BottleEnrichmentOperation.FIRECRAWL_SEARCH, nowMillis = 2)
+
+        assertTrue(queue.finish("draft", BottleEnrichmentStatus.READY_FOR_REVIEW, "CANDIDATES_READY", 3))
+        val ready = queue.status("draft")!!
+        assertTrue(ready.labelCaptureRequired)
+        assertEquals(BottleEnrichmentStatus.READY_FOR_REVIEW, ready.status)
+
+        assertTrue(queue.completeLabelCapture("draft", nowMillis = 4))
+        val afterCapture = queue.status("draft")!!
+        assertFalse(afterCapture.labelCaptureRequired)
+        assertEquals(BottleEnrichmentStatus.READY_FOR_REVIEW, afterCapture.status)
+        assertEquals("CANDIDATES_READY", afterCapture.resultCode)
+    }
+
+    @Test
+    fun cancellationAndRetryKeepTheSameBottleJobWithoutRestartingItAutomatically() {
+        val storage = MemoryStorage()
+        val queue = BottleEnrichmentQueue(storage)
+        val queued = queue.enqueue("session", "draft", nowMillis = 1)!!
+        assertTrue(queue.finish("draft", BottleEnrichmentStatus.CANCELLED, "CANCELLED_BY_USER", 2))
+
+        val cancelled = BottleEnrichmentQueue(storage).jobs().single()
+        assertEquals(queued.id, cancelled.id)
+        assertEquals(BottleEnrichmentStatus.CANCELLED, cancelled.status)
+        assertTrue(queue.jobs().none { it.status == BottleEnrichmentStatus.RUNNING })
+
+        val retried = queue.enqueue("session", "draft", nowMillis = 3)!!
+        assertEquals(queued.id, retried.id)
+        assertEquals(BottleEnrichmentStatus.QUEUED, retried.status)
+        assertNull(retried.resultCode)
+    }
+
+    @Test
+    fun scanPipelineRunsOneProviderAndLocalModelJobAtATime() = runBlocking {
+        val gate = BottleEnrichmentSerialGate()
+        val active = AtomicInteger(0)
+        val maximum = AtomicInteger(0)
+        coroutineScope {
+            (1..5).map {
+                async(Dispatchers.Default) {
+                    gate.withSlot {
+                        val nowActive = active.incrementAndGet()
+                        maximum.updateAndGet { prior -> maxOf(prior, nowActive) }
+                        delay(20)
+                        active.decrementAndGet()
+                    }
+                }
+            }.forEach { it.await() }
+        }
+        assertEquals(1, maximum.get())
+        assertEquals(0, active.get())
     }
 
     private class MemoryStorage(var raw: String? = null) : BottleEnrichmentQueueStorage {

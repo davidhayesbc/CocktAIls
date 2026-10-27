@@ -68,6 +68,7 @@ dependencies {
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
     implementation(libs.zxing.core)
+    implementation("org.opencv:opencv:4.10.0")
     implementation(compose.runtime)
     implementation(compose.foundation)
     implementation(compose.material3)

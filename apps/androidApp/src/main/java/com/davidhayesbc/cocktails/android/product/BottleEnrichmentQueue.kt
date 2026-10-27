@@ -6,10 +6,12 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.coroutines.sync.Mutex
 import java.util.UUID
 
 internal enum class BottleEnrichmentOperation {
@@ -20,8 +22,14 @@ internal enum class BottleEnrichmentOperation {
 }
 
 internal enum class BottleEnrichmentStatus {
+    CAPTURE_REQUIRED,
+    QUEUED,
     RUNNING,
     PAUSED,
+    READY_FOR_REVIEW,
+    NEEDS_ATTENTION,
+    REVIEWED,
+    CANCELLED,
 }
 
 /** Metadata only: never stores search queries, page text, model output or credentials. */
@@ -33,6 +41,8 @@ internal data class BottleEnrichmentJob(
     val status: BottleEnrichmentStatus,
     val sourceUrl: String?,
     val model: String?,
+    val resultCode: String?,
+    val labelCaptureRequired: Boolean,
     val updatedAtMillis: Long,
 )
 
@@ -66,26 +76,102 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
         nowMillis: Long,
     ): BottleEnrichmentJob? {
         if (!isSafeJobMetadata(sessionId, draftId, operation, sourceUrl, model)) return null
-        val current = jobs().filterNot { it.draftId == draftId }
-        if (current.size >= MAX_JOBS) return null
+        val current = jobs()
+        val existing = current.firstOrNull { it.draftId == draftId }
+        val withoutDraft = current.filterNot { it.draftId == draftId }
+        if (existing == null && withoutDraft.size >= MAX_JOBS) return null
         val job = BottleEnrichmentJob(
-            id = UUID.randomUUID().toString(),
+            id = existing?.id ?: UUID.randomUUID().toString(),
             sessionId = sessionId,
             draftId = draftId,
             operation = operation,
             status = BottleEnrichmentStatus.RUNNING,
             sourceUrl = sourceUrl,
             model = model,
+            resultCode = null,
+            labelCaptureRequired = existing?.labelCaptureRequired ?: false,
             updatedAtMillis = nowMillis,
         )
-        return job.takeIf { write(current + it) }
+        return job.takeIf { write(withoutDraft + it) }
+    }
+
+    fun requireLabel(sessionId: String, draftId: String, nowMillis: Long): BottleEnrichmentJob? = putState(
+        sessionId = sessionId,
+        draftId = draftId,
+        operation = BottleEnrichmentOperation.FIRECRAWL_SEARCH,
+        status = BottleEnrichmentStatus.QUEUED,
+        labelCaptureRequired = true,
+        nowMillis = nowMillis,
+    )
+
+    fun enqueue(sessionId: String, draftId: String, nowMillis: Long): BottleEnrichmentJob? = putState(
+        sessionId = sessionId,
+        draftId = draftId,
+        operation = BottleEnrichmentOperation.FIRECRAWL_SEARCH,
+        status = BottleEnrichmentStatus.QUEUED,
+        nowMillis = nowMillis,
+    )
+
+    /** Completes the independent photo step without resetting an already-running lookup. */
+    fun completeLabelCapture(draftId: String, nowMillis: Long): Boolean {
+        val current = jobs()
+        if (current.none { it.draftId == draftId }) return false
+        return write(current.map { job ->
+            if (job.draftId == draftId) job.copy(
+                status = if (job.status == BottleEnrichmentStatus.CAPTURE_REQUIRED) BottleEnrichmentStatus.QUEUED else job.status,
+                labelCaptureRequired = false,
+                updatedAtMillis = nowMillis,
+            ) else job
+        })
+    }
+
+    fun status(draftId: String): BottleEnrichmentJob? = jobs().firstOrNull { it.draftId == draftId }
+
+    fun finish(draftId: String, status: BottleEnrichmentStatus, resultCode: String, nowMillis: Long): Boolean {
+        require(status in setOf(BottleEnrichmentStatus.READY_FOR_REVIEW, BottleEnrichmentStatus.NEEDS_ATTENTION, BottleEnrichmentStatus.REVIEWED, BottleEnrichmentStatus.CANCELLED))
+        if (!resultCode.matches(Regex("[A-Z0-9_]{1,80}"))) return false
+        val current = jobs()
+        val match = current.firstOrNull { it.draftId == draftId } ?: return false
+        return write(current.map { job ->
+            if (job.draftId == draftId) job.copy(status = status, resultCode = resultCode, updatedAtMillis = nowMillis) else job
+        })
+    }
+
+    private fun putState(
+        sessionId: String,
+        draftId: String,
+        operation: BottleEnrichmentOperation,
+        status: BottleEnrichmentStatus,
+        labelCaptureRequired: Boolean? = null,
+        nowMillis: Long,
+    ): BottleEnrichmentJob? {
+        if (!isSafeJobMetadata(sessionId, draftId, operation, null, null)) return null
+        val current = jobs()
+        val existing = current.firstOrNull { it.draftId == draftId }
+        val withoutDraft = current.filterNot { it.draftId == draftId }
+        if (existing == null && withoutDraft.size >= MAX_JOBS) return null
+        val job = BottleEnrichmentJob(
+            id = existing?.id ?: UUID.randomUUID().toString(),
+            sessionId = sessionId,
+            draftId = draftId,
+            operation = operation,
+            status = status,
+            sourceUrl = null,
+            model = null,
+            resultCode = null,
+            labelCaptureRequired = labelCaptureRequired ?: existing?.labelCaptureRequired ?: false,
+            updatedAtMillis = nowMillis,
+        )
+        return job.takeIf { write(withoutDraft + it) }
     }
 
     /** Converts process-death RUNNING rows to PAUSED; caller must ask the user before retrying. */
     fun recoverInterrupted(): List<BottleEnrichmentJob> {
         val current = jobs()
         val recovered = current.map { job ->
-            if (job.status == BottleEnrichmentStatus.RUNNING) job.copy(status = BottleEnrichmentStatus.PAUSED) else job
+            if (job.status == BottleEnrichmentStatus.RUNNING || job.status == BottleEnrichmentStatus.QUEUED) {
+                job.copy(status = BottleEnrichmentStatus.PAUSED)
+            } else job
         }
         if (recovered != current) write(recovered)
         return recovered
@@ -127,6 +213,8 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
                     put("status", job.status.name)
                     job.sourceUrl?.let { put("sourceUrl", it) }
                     job.model?.let { put("model", it) }
+                    job.resultCode?.let { put("resultCode", it) }
+                    put("labelCaptureRequired", job.labelCaptureRequired)
                     put("updatedAtMillis", job.updatedAtMillis)
                 })
             }
@@ -155,6 +243,9 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
                     status = status,
                     sourceUrl = url,
                     model = model,
+                    resultCode = obj.string("resultCode")?.takeIf { it.matches(Regex("[A-Z0-9_]{1,80}")) },
+                    labelCaptureRequired = obj["labelCaptureRequired"]?.jsonPrimitive?.booleanOrNull
+                        ?: (status == BottleEnrichmentStatus.CAPTURE_REQUIRED),
                     updatedAtMillis = obj["updatedAtMillis"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: return@mapNotNull null,
                 )
             }.take(MAX_JOBS)
@@ -187,3 +278,17 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
 private fun JsonObject.string(field: String): String? = this[field]?.jsonPrimitive?.contentOrNull
 
 private fun JsonArray?.orEmpty(): List<kotlinx.serialization.json.JsonElement> = this?.toList().orEmpty()
+
+/** Serializes page/model processing across bottle drafts while allowing scanning to continue. */
+internal class BottleEnrichmentSerialGate {
+    private val mutex = Mutex()
+
+    suspend fun <T> withSlot(block: suspend () -> T): T {
+        mutex.lock()
+        return try {
+            block()
+        } finally {
+            mutex.unlock()
+        }
+    }
+}
