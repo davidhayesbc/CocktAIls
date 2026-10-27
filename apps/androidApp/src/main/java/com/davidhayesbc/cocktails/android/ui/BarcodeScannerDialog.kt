@@ -7,12 +7,16 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -26,6 +30,18 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -46,6 +62,13 @@ internal fun BarcodeScannerDialog(
     onDetected: (String) -> Unit,
     onDismiss: () -> Unit,
     continuous: Boolean = false,
+    fullScreen: Boolean = false,
+    batchBottleCount: Int? = null,
+    readyCount: Int = 0,
+    runningCount: Int = 0,
+    pendingCount: Int = 0,
+    onReviewReady: () -> Unit = {},
+    onPause: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
@@ -184,7 +207,53 @@ internal fun BarcodeScannerDialog(
 
     LaunchedEffect(Unit) { LocalDiagnostics.recordEvent("CAMERA_SCAN_OPENED") }
 
-    AlertDialog(
+    if (fullScreen) {
+        Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                Column(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(if (continuous) "Add bottles" else "Scan the next bottle", style = MaterialTheme.typography.headlineMedium)
+                    Text(scannerMessage, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Box(Modifier.weight(1f).fillMaxWidth().testTag("barcode-camera-frame")) {
+                        AndroidView(
+                            factory = { viewContext -> PreviewView(viewContext).also { previewView = it } },
+                            modifier = Modifier.fillMaxSize().testTag("barcode-camera-preview"),
+                        )
+                        Canvas(Modifier.align(Alignment.Center).fillMaxWidth(0.84f).height(152.dp)) {
+                            val inset = 3.dp.toPx()
+                            drawRoundRect(
+                                color = Color(0xFF9BC9AE),
+                                topLeft = Offset(inset, inset),
+                                size = Size(size.width - inset * 2, size.height - inset * 2),
+                                cornerRadius = CornerRadius(18.dp.toPx()),
+                                style = Stroke(width = 3.dp.toPx()),
+                            )
+                        }
+                    }
+                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Text("$readyCount ready", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                                Text("$runningCount running", style = MaterialTheme.typography.labelLarge)
+                                Text("$pendingCount pending", style = MaterialTheme.typography.labelLarge)
+                            }
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text("${batchBottleCount ?: acceptedCount} bottles in this batch", style = MaterialTheme.typography.bodySmall)
+                                if (readyCount > 0) TextButton(onClick = onReviewReady, modifier = Modifier.testTag("scanner-review-ready")) { Text("Review ready") }
+                                else TextButton(onClick = onDismiss) { Text("Enter manually") }
+                                TextButton(onClick = onPause, modifier = Modifier.testTag("scanner-pause")) { Text("Pause") }
+                            }
+                        }
+                    }
+                    if (continuous && lastAccepted != null) {
+                        TextButton(onClick = { lastAccepted?.let(currentOnDetected); acceptedCount += 1 }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Add another bottle with this barcode")
+                        }
+                    }
+                    TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Close scanner") }
+                }
+            }
+        }
+    } else AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (continuous) "Add bottles" else "Scan a bottle") },
         text = {

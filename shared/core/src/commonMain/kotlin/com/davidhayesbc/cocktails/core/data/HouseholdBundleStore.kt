@@ -331,7 +331,10 @@ class HouseholdBundleStore internal constructor(
                 "productName" to str(it.product_name), "barcode" to nullableString(it.barcode),
                 "photoMimeType" to nullableString(it.photo_mime_type),
                 "photoBase64" to (it.photo_data?.let { bytes -> str(encodePhotoBase64(bytes)) } ?: JsonNull),
-                "photoSha256" to nullableString(it.photo_sha256), "createdAt" to num(it.created_at),
+                "photoSha256" to nullableString(it.photo_sha256),
+                "bottleQuantity" to nullableString(it.bottle_quantity),
+                "abvPercent" to nullableString(it.abv_percent),
+                "createdAt" to num(it.created_at),
             ))
         }
         val productSources = queries.selectAllProductSourcesForBundle().executeAsList().map { row ->
@@ -557,9 +560,13 @@ class HouseholdBundleStore internal constructor(
         val photoBase64 = data.optionalNullableString("photoBase64")
         val photoBytes = photoBase64?.let { decodePhotoBase64(it) ?: error("Product photo is not valid base64.") }
         val photoSha = data.optionalNullableString("photoSha256")
+        val hasPackageFacts = listOf("bottleQuantity", "abvPercent").any(data::containsKey)
+        val quantity = data.optionalNullableString("bottleQuantity")
+        val abvPercent = data.optionalNullableString("abvPercent")
         queries.insertProductIgnore(record.id, ingredientId, brand, name, barcode, createdAt)
         queries.updateProduct(ingredientId, brand, name, barcode, record.id)
         if (hasPhotoFields) queries.updateProductPhoto(photoMimeType, photoBytes, photoSha, record.id)
+        if (hasPackageFacts) queries.updateProductPackageFacts(quantity, abvPercent, record.id)
     }
 
     private fun writeProductSource(source: ProductFactSource) {

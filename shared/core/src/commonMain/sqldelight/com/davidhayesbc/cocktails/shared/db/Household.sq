@@ -63,6 +63,8 @@ CREATE TABLE ingredient_product (
     photo_mime_type TEXT,
     photo_data BLOB,
     photo_sha256 TEXT,
+    bottle_quantity TEXT,
+    abv_percent TEXT,
     created_at INTEGER NOT NULL
 );
 
@@ -122,6 +124,10 @@ CREATE TABLE bottle_intake_draft (
     product_name TEXT,
     photo_data BLOB,
     photo_sha256 TEXT,
+    bottle_quantity TEXT,
+    abv_percent TEXT,
+    bottle_quantity_edited INTEGER NOT NULL DEFAULT 0,
+    abv_percent_edited INTEGER NOT NULL DEFAULT 0,
     location_id TEXT NOT NULL REFERENCES household_location(id),
     level TEXT NOT NULL CHECK (level IN ('FULL', 'MOSTLY_FULL', 'HALF', 'LOW', 'OUT')),
     created_at INTEGER NOT NULL,
@@ -309,7 +315,7 @@ UPDATE bottle_intake_session SET status = 'CONFIRMED', updated_at = ?, confirmed
 
 selectBottleIntakeDrafts:
 SELECT id, session_id, position, barcode, product_id, ingredient_name, category, brand, product_name,
-       photo_data, photo_sha256, location_id, level, created_at
+       photo_data, photo_sha256, bottle_quantity, abv_percent, bottle_quantity_edited, abv_percent_edited, location_id, level, created_at
 FROM bottle_intake_draft WHERE session_id = ? ORDER BY position, id;
 
 selectBottleIntakeDraft:
@@ -321,15 +327,16 @@ SELECT COALESCE(MAX(position) + 1, 0) AS next_position FROM bottle_intake_draft 
 insertBottleIntakeDraft:
 INSERT INTO bottle_intake_draft(
     id, session_id, position, barcode, product_id, ingredient_name, category, brand, product_name,
-    photo_data, photo_sha256, location_id, level, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    photo_data, photo_sha256, bottle_quantity, abv_percent, bottle_quantity_edited, abv_percent_edited, location_id, level, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 deleteBottleIntakeSession:
 DELETE FROM bottle_intake_session WHERE id = ? AND status = 'OPEN';
 
 updateBottleIntakeDraft:
 UPDATE bottle_intake_draft SET barcode = ?, product_id = ?, ingredient_name = ?, category = ?, brand = ?,
-    product_name = ?, photo_data = ?, photo_sha256 = ?, location_id = ?, level = ?
+    product_name = ?, photo_data = ?, photo_sha256 = ?, bottle_quantity = ?, abv_percent = ?,
+    bottle_quantity_edited = ?, abv_percent_edited = ?, location_id = ?, level = ?
 WHERE id = ? AND session_id = ?;
 
 updateBottleIntakeDraftsHome:
@@ -528,7 +535,7 @@ selectAllIngredientsForBundle:
 SELECT id, canonical_name, category, created_at FROM ingredient;
 
 selectAllProductsForBundle:
-SELECT id, ingredient_id, brand, product_name, barcode, photo_mime_type, photo_data, photo_sha256, created_at FROM ingredient_product;
+SELECT id, ingredient_id, brand, product_name, barcode, photo_mime_type, photo_data, photo_sha256, bottle_quantity, abv_percent, created_at FROM ingredient_product;
 
 selectAllProductSourcesForBundle:
 SELECT id, product_id, retrieval_provider, extraction_provider, extraction_model, source_url,
@@ -541,11 +548,11 @@ SELECT id, product_id, retrieval_provider, extraction_provider, extraction_model
 FROM ingredient_product_source WHERE product_id = ? ORDER BY created_at, id;
 
 selectProductForIngredient:
-SELECT id, ingredient_id, brand, product_name, barcode, photo_mime_type, photo_data, photo_sha256, created_at
+SELECT id, ingredient_id, brand, product_name, barcode, photo_mime_type, photo_data, photo_sha256, bottle_quantity, abv_percent, created_at
 FROM ingredient_product WHERE ingredient_id = ? ORDER BY created_at LIMIT 1;
 
 selectProductById:
-SELECT id, ingredient_id, brand, product_name, barcode, photo_mime_type, photo_data, photo_sha256, created_at
+SELECT id, ingredient_id, brand, product_name, barcode, photo_mime_type, photo_data, photo_sha256, bottle_quantity, abv_percent, created_at
 FROM ingredient_product WHERE id = ?;
 
 selectAllInventoryForBundle:
@@ -629,7 +636,8 @@ WHERE barcode IS NOT NULL;
 selectProductsForBarcodeLookup:
 SELECT ingredient_product.id AS product_id, ingredient.id AS ingredient_id,
        ingredient.canonical_name AS ingredient_name, ingredient.category, ingredient_product.brand,
-       ingredient_product.product_name, ingredient_product.barcode
+       ingredient_product.product_name, ingredient_product.barcode,
+       ingredient_product.bottle_quantity, ingredient_product.abv_percent
 FROM ingredient_product
 JOIN ingredient ON ingredient.id = ingredient_product.ingredient_id
 WHERE ingredient_product.barcode IS NOT NULL;
@@ -639,6 +647,9 @@ UPDATE ingredient_product SET ingredient_id = ?, brand = ?, product_name = ?, ba
 
 updateProductPhoto:
 UPDATE ingredient_product SET photo_mime_type = ?, photo_data = ?, photo_sha256 = ? WHERE id = ?;
+
+updateProductPackageFacts:
+UPDATE ingredient_product SET bottle_quantity = ?, abv_percent = ? WHERE id = ?;
 
 insertInventoryBundleIgnore:
 INSERT OR IGNORE INTO inventory_item(id, location_id, ingredient_id, product_id, level, updated_at, updated_by_member_id) VALUES (?, ?, ?, ?, ?, ?, ?);

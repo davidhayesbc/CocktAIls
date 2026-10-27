@@ -10,12 +10,66 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.ByteArrayOutputStream
 
 @RunWith(AndroidJUnit4::class)
 class BottleLabelCropperTest {
+    @Test
+    fun liveEdgeDetectorFindsOnlyClearRectangularCandidates() {
+        assertTrue("OpenCV should be available in the installed test APK", org.opencv.android.OpenCVLoader.initLocal())
+        val width = 200
+        val height = 200
+        val luma = ByteArray(width * height) { 32 }
+        for (y in 55 until 145) for (x in 65 until 135) luma[y * width + x] = 230.toByte()
+
+        val candidate = LiveBottleLabelEdgeDetector.suggestLuma(width, height, luma)
+        assertNotNull("A clear rectangular label should produce a conservative live candidate", candidate)
+        assertTrue(candidate!!.left in 0.25f..0.38f)
+        assertTrue(candidate.top in 0.20f..0.34f)
+        assertTrue(candidate.right in 0.62f..0.75f)
+        assertTrue(candidate.bottom in 0.66f..0.80f)
+        assertNull("Uniform frames must not invent an outline", LiveBottleLabelEdgeDetector.suggestLuma(width, height, ByteArray(width * height) { 90 }))
+    }
+
+    @Test
+    fun liveBoundaryRequiresStableFramesAndClearsAfterLostDetection() {
+        val crop = NormalizedLabelCrop(0.2f, 0.25f, 0.8f, 0.75f)
+        val stabilizer = LiveBottleLabelEdgeStabilizer(requiredStableFrames = 4)
+        repeat(3) { assertFalse(stabilizer.update(crop)!!.stable) }
+        assertTrue(stabilizer.update(crop)!!.stable)
+        assertNull(stabilizer.update(null))
+        assertFalse(stabilizer.update(crop)!!.stable)
+    }
+
+    @Test
+    fun liveCropMappingAndCameraLumaRespectRotationCropAndStrides() {
+        val source = NormalizedLabelCrop(0.2f, 0.3f, 0.6f, 0.8f)
+        assertEquals(NormalizedLabelCrop(0.2f, 0.2f, 0.7f, 0.6f), rotateNormalizedCrop(source, 90))
+        assertEquals(NormalizedLabelCrop(0.4f, 0.2f, 0.8f, 0.7f), rotateNormalizedCrop(source, 180))
+        assertEquals(NormalizedLabelCrop(0.3f, 0.4f, 0.8f, 0.8f), rotateNormalizedCrop(source, 270))
+        assertEquals(source, mapFillCenterCropToView(source, 400, 800, 400, 800))
+        val centerCropped = mapFillCenterCropToView(source, 400, 800, 800, 400)
+        assertNotNull(centerCropped)
+        assertTrue(centerCropped!!.left in 0f..1f && centerCropped.right in 0f..1f)
+        assertTrue(centerCropped.top in 0f..1f && centerCropped.bottom in 0f..1f)
+
+        val width = 64
+        val height = 64
+        val rowStride = 128
+        val pixelStride = 2
+        val plane = ByteArray(rowStride * height)
+        for (y in 0 until height) for (x in 0 until width) plane[y * rowStride + x * pixelStride] = (y + x).toByte()
+        val downsampled = downsampleCameraLuma(plane, width, height, rowStride, pixelStride, 4, 6, 32, 32, maxDimension = 32)
+        assertNotNull(downsampled)
+        assertEquals(32, downsampled!!.width)
+        assertEquals((6 + 4).toByte(), downsampled.bytes[0])
+        assertEquals((6 + 31 + 4 + 31).toByte(), downsampled.bytes.last())
+        assertNull(downsampleCameraLuma(plane, width, height, rowStride, pixelStride, 60, 60, 32, 32, maxDimension = 32))
+    }
+
     @Test
     fun suggestsAndCropsAConservativeRectangularLabelOnDevice() {
         val original = syntheticBottlePhoto(labelColor = Color.WHITE)

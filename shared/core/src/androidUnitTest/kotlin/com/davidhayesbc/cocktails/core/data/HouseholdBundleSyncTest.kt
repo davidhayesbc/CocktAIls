@@ -94,6 +94,53 @@ class HouseholdBundleSyncTest {
     }
 
     @Test
+    fun bottleSizeAndAbvPersistAcrossDraftResumeConfirmationAndHouseholdRestore() {
+        val sourceDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        CocktailsDatabase.Schema.create(sourceDriver)
+        val sourceDatabase = CocktailsDatabase(sourceDriver)
+        val source = LocalCocktailRepository(sourceDatabase)
+        source.initialize(10)
+        val home = source.locations().single().id
+        val session = source.startBottleIntakeSession(home, InventoryLevel.FULL, 20)
+        val draft = source.addBottleIntakeDraft(
+            session.id, "Auchentoshan Three Wood", "Whisky", home, InventoryLevel.FULL, 30,
+            barcode = "5011333150725", brand = "Auchentoshan", productName = "Three Wood",
+            quantity = "750 mL", abvPercent = "43%",
+        )!!
+        assertTrue(source.updateBottleIntakeDraft(draft.copy(quantity = "700 mL", quantityEdited = true, abvPercent = "40%", abvPercentEdited = true)))
+        val resumed = LocalCocktailRepository(CocktailsDatabase(sourceDriver)).openBottleIntakeSession()!!.drafts.single()
+        assertEquals("700 mL", resumed.quantity)
+        assertEquals("40%", resumed.abvPercent)
+        assertTrue(resumed.quantityEdited)
+        assertTrue(resumed.abvPercentEdited)
+        assertIs<com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult.Confirmed>(source.confirmBottleIntakeSession(session.id, 40))
+
+        val backup = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(source.exportHouseholdBundle(50))).bundle
+        val productRecord = backup.records.single { it.type == "PRODUCT" }
+        assertEquals("700 mL", productRecord.data["bottleQuantity"]?.jsonPrimitive?.content)
+        assertEquals("40%", productRecord.data["abvPercent"]?.jsonPrimitive?.content)
+
+        val target = LocalCocktailRepository(database())
+        target.initialize(60)
+        val preview = assertIs<ImportPreviewResult.Valid>(target.previewHouseholdBundle(backup)).preview
+        assertIs<ImportApplyResult.Applied>(target.applyHouseholdBundle(backup, preview, emptyMap(), 70))
+        val restoredProduct = target.localProductForBarcode("5011333150725")!!
+        assertEquals("700 mL", restoredProduct.quantity)
+        assertEquals("40%", restoredProduct.abvPercent)
+
+        val olderBundle = backup.copy(records = backup.records.map { record ->
+            if (record.type == "PRODUCT") record.copy(data = buildJsonObject {
+                record.data.forEach { (key, value) -> if (key != "bottleQuantity" && key != "abvPercent") put(key, value) }
+            }) else record
+        })
+        val olderPreview = assertIs<ImportPreviewResult.Valid>(target.previewHouseholdBundle(olderBundle)).preview
+        assertIs<ImportApplyResult.Applied>(target.applyHouseholdBundle(olderBundle, olderPreview, emptyMap(), 80))
+        assertEquals("700 mL", target.localProductForBarcode("5011333150725")!!.quantity)
+        assertEquals("40%", target.localProductForBarcode("5011333150725")!!.abvPercent)
+        sourceDriver.close()
+    }
+
+    @Test
     fun physicalBottleIntakeKeepsDuplicateBottlesIndependentAndTransfersThemAtomically() {
         val leftDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
         CocktailsDatabase.Schema.create(leftDriver)

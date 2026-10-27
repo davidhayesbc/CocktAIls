@@ -1,0 +1,7 @@
+ALTER TABLE ingredient_product ADD COLUMN bottle_quantity TEXT;
+ALTER TABLE ingredient_product ADD COLUMN abv_percent TEXT;
+
+ALTER TABLE bottle_intake_draft ADD COLUMN bottle_quantity TEXT;
+ALTER TABLE bottle_intake_draft ADD COLUMN abv_percent TEXT;
+ALTER TABLE bottle_intake_draft ADD COLUMN bottle_quantity_edited INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE bottle_intake_draft ADD COLUMN abv_percent_edited INTEGER NOT NULL DEFAULT 0;

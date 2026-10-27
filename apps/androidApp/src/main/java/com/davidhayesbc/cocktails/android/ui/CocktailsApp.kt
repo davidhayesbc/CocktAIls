@@ -25,6 +25,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -54,6 +56,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Switch
@@ -78,8 +81,6 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -236,6 +237,8 @@ private enum class Page(val label: String) {
     RECIPES("Recipes"),
     MORE("More"),
 }
+
+internal enum class BottleIntakeRoute { SETUP, SCANNING, CAPTURE_LABEL, REVIEW, QUEUE, PAUSE, MANUAL_ENTRY }
 
 private const val MAX_SELECTED_PHOTO_BYTES = 20 * 1024 * 1024
 private const val MAX_PRODUCT_PHOTO_DIMENSION = 1440
@@ -493,6 +496,9 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     }
     var bottleIntakeCameraMessage by remember { mutableStateOf<String?>(null) }
     var bottleIntakeSession by remember(repository) { mutableStateOf(repository.openBottleIntakeSession()) }
+    var bottleIntakeRoute by remember(repository) {
+        mutableStateOf(if (repository.openBottleIntakeSession()?.drafts.isNullOrEmpty()) BottleIntakeRoute.SETUP else BottleIntakeRoute.SCANNING)
+    }
     LaunchedEffect(showBottleIntake, bottleIntakeSession?.id, bottleIntakeSession?.drafts?.size, pendingBottleEnrichmentJobs) {
         val session = bottleIntakeSession
         if (showBottleIntake && session != null) {
@@ -1096,7 +1102,8 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             }
             photoWasSaved = true
         }
-        if (!bottleEnrichmentQueue.completeLabelCapture(draft.id, System.currentTimeMillis())) {
+        val queueJob = bottleEnrichmentQueue.status(draft.id)
+        if (queueJob?.labelCaptureRequired == true && !bottleEnrichmentQueue.completeLabelCapture(draft.id, System.currentTimeMillis())) {
             if (photoWasSaved) repository.updateBottleIntakeDraft(draft.copy(photoData = null, photoSha256 = null))
             bottleLabelCaptureMessage = "The local lookup queue could not be saved. The photo remains available; retry or skip the lookup step."
             bottleIntakeSession = repository.openBottleIntakeSession()
@@ -1132,7 +1139,10 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             "Photo skipped. $lookupMessage"
         }
         if (context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            bottleIntakeRoute = BottleIntakeRoute.SCANNING
             showBottleScanner = true
+        } else {
+            bottleIntakeRoute = BottleIntakeRoute.SCANNING
         }
         return true
     }
@@ -1594,6 +1604,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             showBarcodeScanner = true
         } else if (granted && showBottleIntake) {
             bottleIntakeCameraMessage = null
+            bottleIntakeRoute = BottleIntakeRoute.SCANNING
             showBottleScanner = true
         } else if (!granted && showAddIngredient) {
             barcodePermissionMessage = "Camera access wasn't granted. Enter the barcode manually instead."
@@ -1612,6 +1623,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
 
     fun beginBottleBarcodeScan() {
         bottleIntakeCameraMessage = null
+        bottleIntakeRoute = BottleIntakeRoute.SCANNING
         activeScannedDraftId = null
         context.getSharedPreferences("cocktails_local_scan_review", Context.MODE_PRIVATE).edit().remove("active_draft_id").apply()
         if (context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) showBottleScanner = true
@@ -1674,6 +1686,8 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             BottleIntakeScreen(
                 modifier = Modifier.fillMaxSize().padding(contentPadding),
                 session = bottleIntakeSession!!,
+                route = bottleIntakeRoute,
+                onRouteChange = { bottleIntakeRoute = it },
                 homes = locations,
                 capturePhoto = pendingBottleLabelPhoto,
                 originalCapturePhoto = pendingBottleLabelOriginalPhoto,
@@ -1682,6 +1696,12 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 captureMessage = bottleLabelCaptureMessage,
                 permissionMessage = bottleIntakeCameraMessage,
                 pendingLabelDraftId = pendingBottleLabelDraftId,
+                labelCameraOutputFile = launchedBottleCameraToken?.let { token ->
+                    File(File(context.cacheDir, "intake-labels"), bottleCaptureTempFileName(token))
+                },
+                labelCaptureProcessing = processingBottleCameraToken != null,
+                onLabelPhotoSaved = { launchedBottleCameraToken?.let { handleBottleLabelCameraResult(it, captured = true) } },
+                onLabelCameraCancel = { launchedBottleCameraToken?.let { handleBottleLabelCameraResult(it, captured = false) } },
                 webSearchEnabled = firecrawlSearchEnabled && firecrawlKeySaved && !firecrawlKeyNeedsReplacement,
                 webSearchStates = bottleWebSearchStates,
                 onOpenLookupReport = {
@@ -1705,20 +1725,9 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     val token = beginBottleCaptureOperation(targetId)
                     launchedBottleCameraToken = token
                     if (!persistCameraLaunch(token)) {
+                        launchedBottleCameraToken = null
                         invalidateBottleCaptureOperation()
                         bottleLabelCaptureMessage = "The camera session could not be saved. The bottle is still queued; try again or skip the photo."
-                        return@BottleIntakeScreen
-                    }
-                    val file = File(directory, bottleCaptureTempFileName(token))
-                    file.delete()
-                    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                    try {
-                        bottleLabelCaptureLauncher.launch(uri)
-                    } catch (_: Exception) {
-                        file.delete()
-                        clearPersistedCameraLaunch(token)
-                        invalidateBottleCaptureOperation()
-                        bottleLabelCaptureMessage = "The camera could not be opened. The bottle is still queued; try again or skip the photo."
                     }
                 },
                 onUsePendingLabel = { draftId -> finishScannedBottleLabel?.invoke(draftId, pendingBottleLabelPhoto) == true },
@@ -1751,9 +1760,28 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     }
                 },
                 onScan = ::beginBottleBarcodeScan,
+                onPauseQueue = {
+                    showBottleScanner = false
+                    launchedBottleCameraToken?.let { handleBottleLabelCameraResult(it, captured = false) }
+                    cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = true)
+                    refreshPendingBottleEnrichmentJobs()
+                    bottleIntakeRoute = BottleIntakeRoute.PAUSE
+                },
+                onResumeScanning = {
+                    val labelDraftStillNeeded = pendingBottleLabelDraftId?.let { id ->
+                        bottleEnrichmentQueue.status(id)?.labelCaptureRequired == true
+                    } == true
+                    if (labelDraftStillNeeded) {
+                        bottleIntakeRoute = BottleIntakeRoute.CAPTURE_LABEL
+                    } else {
+                        bottleIntakeRoute = BottleIntakeRoute.SCANNING
+                        beginBottleBarcodeScan()
+                    }
+                },
                 activeReviewDraftId = activeScannedDraftId,
                 onReviewBottle = { draftId ->
                     activeScannedDraftId = draftId
+                    bottleIntakeRoute = BottleIntakeRoute.REVIEW
                     context.getSharedPreferences("cocktails_local_scan_review", Context.MODE_PRIVATE).edit().putString("active_draft_id", draftId).apply()
                 },
                 onAcceptAndScanNext = { draftId ->
@@ -1762,6 +1790,8 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                         bottleEnrichmentQueue.finish(draftId, BottleEnrichmentStatus.REVIEWED, "USER_ACCEPTED", System.currentTimeMillis())
                         refreshPendingBottleEnrichmentJobs()
                         activeScannedDraftId = null
+                        bottleIntakeRoute = BottleIntakeRoute.SCANNING
+                        if (context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) showBottleScanner = true
                         context.getSharedPreferences("cocktails_local_scan_review", Context.MODE_PRIVATE).edit().remove("active_draft_id").apply()
                     }
                 },
@@ -1923,6 +1953,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 onAddBottles = {
                     val session = repository.startBottleIntakeSession(selectedLocationId, InventoryLevel.FULL, System.currentTimeMillis())
                     bottleIntakeSession = repository.openBottleIntakeSession() ?: session
+                    bottleIntakeRoute = if (session.drafts.isEmpty()) BottleIntakeRoute.SETUP else BottleIntakeRoute.SCANNING
                     showBottleIntake = true
                 },
                 onAddLocation = { showAddLocation = true },
@@ -2244,6 +2275,30 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     if (showBottleScanner && bottleIntakeSession != null) {
         BarcodeScannerDialog(
             continuous = false,
+            fullScreen = true,
+            batchBottleCount = bottleIntakeSession!!.drafts.size,
+            readyCount = bottleIntakeSession!!.drafts.count { draft ->
+                pendingBottleEnrichmentJobs[draft.id]?.status in setOf(BottleEnrichmentStatus.READY_FOR_REVIEW, BottleEnrichmentStatus.NEEDS_ATTENTION)
+            },
+            runningCount = bottleIntakeSession!!.drafts.count { draft -> pendingBottleEnrichmentJobs[draft.id]?.status == BottleEnrichmentStatus.RUNNING },
+            pendingCount = bottleIntakeSession!!.drafts.count { draft -> pendingBottleEnrichmentJobs[draft.id]?.status in setOf(BottleEnrichmentStatus.QUEUED, BottleEnrichmentStatus.CAPTURE_REQUIRED) },
+            onReviewReady = {
+                val readyDraft = bottleIntakeSession!!.drafts.firstOrNull { draft ->
+                    pendingBottleEnrichmentJobs[draft.id]?.status in setOf(BottleEnrichmentStatus.READY_FOR_REVIEW, BottleEnrichmentStatus.NEEDS_ATTENTION)
+                }
+                if (readyDraft != null) {
+                    showBottleScanner = false
+                    activeScannedDraftId = readyDraft.id
+                    bottleIntakeRoute = BottleIntakeRoute.REVIEW
+                    context.getSharedPreferences("cocktails_local_scan_review", Context.MODE_PRIVATE).edit().putString("active_draft_id", readyDraft.id).apply()
+                }
+            },
+            onPause = {
+                showBottleScanner = false
+                cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = true)
+                refreshPendingBottleEnrichmentJobs()
+                bottleIntakeRoute = BottleIntakeRoute.PAUSE
+            },
             onDetected = { scanned ->
                 if (normalizeGtinForLookup(scanned) != null) {
                     val local = repository.localProductForBarcode(scanned)
@@ -2257,10 +2312,13 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                         barcode = scanned,
                         brand = local?.brand,
                         productName = local?.productName,
+                        quantity = local?.quantity,
+                        abvPercent = local?.abvPercent,
                     )
                     showBottleScanner = false
                     bottleIntakeSession = repository.openBottleIntakeSession()
                     if (draft != null) {
+                        bottleIntakeRoute = BottleIntakeRoute.CAPTURE_LABEL
                         activeScannedDraftId = null
                         context.getSharedPreferences("cocktails_local_scan_review", Context.MODE_PRIVATE).edit().remove("active_draft_id").apply()
                         pendingBottleLabelPhoto = null
@@ -2268,6 +2326,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                         pendingBottleLabelCropSuggestion = null
                         bottleLabelCaptureMessage = null
                         val captureQueued = bottleEnrichmentQueue.requireLabel(draft.sessionId, draft.id, System.currentTimeMillis()) != null
+                        setPendingBottleLabelDraftId(draft.id)
                         refreshPendingBottleEnrichmentJobs()
                         bottleWebSearchStates = bottleWebSearchStates + (draft.id to BottleWebSearchState(
                             automatedScan = true,
@@ -2279,8 +2338,13 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                             },
                         ))
                         if (captureQueued) {
-                            setPendingBottleLabelDraftId(draft.id)
                             startScannedBottleEnrichment(draft, localMatch = local != null)
+                            val token = beginBottleCaptureOperation(draft.id)
+                            if (persistCameraLaunch(token)) {
+                                launchedBottleCameraToken = token
+                            } else {
+                                bottleLabelCaptureMessage = "The bottle is queued, but the camera session could not be saved. Retry the label photo or skip it."
+                            }
                         }
                         else bottleIntakeCameraMessage = "This bottle is safe as a local draft; the label queue could not be saved."
                     } else {
@@ -2532,6 +2596,8 @@ private fun MakeScreen(
 internal fun BottleIntakeScreen(
     modifier: Modifier,
     session: BottleIntakeSession,
+    route: BottleIntakeRoute,
+    onRouteChange: (BottleIntakeRoute) -> Unit,
     homes: List<HomeLocation>,
     capturePhoto: ByteArray?,
     originalCapturePhoto: ByteArray? = capturePhoto,
@@ -2540,6 +2606,10 @@ internal fun BottleIntakeScreen(
     captureMessage: String?,
     permissionMessage: String?,
     pendingLabelDraftId: String? = null,
+    labelCameraOutputFile: File? = null,
+    labelCaptureProcessing: Boolean = false,
+    onLabelPhotoSaved: () -> Unit = {},
+    onLabelCameraCancel: () -> Unit = {},
     webSearchEnabled: Boolean,
     webSearchStates: Map<String, BottleWebSearchState>,
     onOpenLookupReport: () -> Unit = {},
@@ -2573,142 +2643,261 @@ internal fun BottleIntakeScreen(
     onConfirm: () -> BottleIntakeCommitResult,
     onCancel: () -> Unit,
     onDismiss: () -> Unit,
+    onPauseQueue: () -> Unit,
+    onResumeScanning: () -> Unit,
 ) {
     BackHandler(onBack = onDismiss)
-    val focusManager = LocalFocusManager.current
-    val keyboardController = LocalSoftwareKeyboardController.current
-    var name by remember { mutableStateOf("") }
-    var category by remember { mutableStateOf("Spirit") }
-    var barcode by remember { mutableStateOf("") }
-    var brand by remember { mutableStateOf("") }
-    var productName by remember { mutableStateOf("") }
-    var showHomeMenu by remember { mutableStateOf(false) }
-    var showLevelMenu by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var showBottleLabelCropEditor by remember { mutableStateOf(false) }
-    var invalidDraftIds by remember(session.id) {
-        mutableStateOf(session.drafts.filter { it.ingredientName.isBlank() }.mapTo(mutableSetOf()) { it.id })
-    }
+    BottleIntakeFlowScreen(
+        modifier = modifier,
+        route = route,
+        session = session,
+        homes = homes,
+        capturePhoto = capturePhoto,
+        originalCapturePhoto = originalCapturePhoto,
+        suggestedLabelCrop = suggestedLabelCrop,
+        labelCropBusy = labelCropBusy,
+        captureMessage = captureMessage,
+        permissionMessage = permissionMessage,
+        pendingLabelDraftId = pendingLabelDraftId,
+        labelCameraOutputFile = labelCameraOutputFile,
+        labelCaptureProcessing = labelCaptureProcessing,
+        onLabelPhotoSaved = onLabelPhotoSaved,
+        onLabelCameraCancel = onLabelCameraCancel,
+        webSearchEnabled = webSearchEnabled,
+        webSearchStates = webSearchStates,
+        onOpenLookupReport = onOpenLookupReport,
+        pendingEnrichmentJobs = pendingEnrichmentJobs,
+        activeReviewDraftId = activeReviewDraftId,
+        ollamaCloudEnabled = ollamaCloudEnabled,
+        localAiEnabled = localAiEnabled,
+        onSearchDraft = onSearchDraft,
+        onFetchDraftSource = onFetchDraftSource,
+        onExtractDraftDetails = onExtractDraftDetails,
+        onExtractDraftDetailsOnDevice = onExtractDraftDetailsOnDevice,
+        onResumeEnrichment = onResumeEnrichment,
+        onCancelDraftSearch = onCancelDraftSearch,
+        onCaptureLabel = onCaptureLabel,
+        onUsePendingLabel = onUsePendingLabel,
+        onSkipPendingLabel = onSkipPendingLabel,
+        onUseSuggestedCrop = onUseSuggestedCrop,
+        onApplyManualCrop = onApplyManualCrop,
+        onKeepOriginalLabel = onKeepOriginalLabel,
+        onDiscardCapturedLabel = onDiscardCapturedLabel,
+        onAttachCapturedLabel = onAttachCapturedLabel,
+        onScan = onScan,
+        onReviewBottle = onReviewBottle,
+        onAcceptAndScanNext = onAcceptAndScanNext,
+        onAddManual = onAddManual,
+        onRemove = onRemove,
+        onUpdate = onUpdate,
+        onFieldEdited = onFieldEdited,
+        onHomeChanged = onHomeChanged,
+        onLevelChanged = onLevelChanged,
+        onConfirm = onConfirm,
+        onCancel = onCancel,
+        onDismiss = onDismiss,
+        onPauseQueue = onPauseQueue,
+        onResumeScanning = onResumeScanning,
+        onRouteChange = onRouteChange,
+    )
 
+}
+
+@Composable
+private fun BottleIntakeFlowScreen(
+    modifier: Modifier,
+    route: BottleIntakeRoute,
+    session: BottleIntakeSession,
+    homes: List<HomeLocation>,
+    capturePhoto: ByteArray?,
+    originalCapturePhoto: ByteArray?,
+    suggestedLabelCrop: NormalizedLabelCrop?,
+    labelCropBusy: Boolean,
+    captureMessage: String?,
+    permissionMessage: String?,
+    pendingLabelDraftId: String?,
+    labelCameraOutputFile: File?,
+    labelCaptureProcessing: Boolean,
+    onLabelPhotoSaved: () -> Unit,
+    onLabelCameraCancel: () -> Unit,
+    webSearchEnabled: Boolean,
+    webSearchStates: Map<String, BottleWebSearchState>,
+    onOpenLookupReport: () -> Unit,
+    pendingEnrichmentJobs: Map<String, BottleEnrichmentJob>,
+    activeReviewDraftId: String?,
+    ollamaCloudEnabled: Boolean,
+    localAiEnabled: Boolean,
+    onSearchDraft: (BottleIntakeDraft) -> Unit,
+    onFetchDraftSource: (BottleIntakeDraft, WebSearchHit) -> Unit,
+    onExtractDraftDetails: (String) -> Unit,
+    onExtractDraftDetailsOnDevice: (String) -> Unit,
+    onResumeEnrichment: (BottleIntakeDraft, BottleEnrichmentJob) -> Unit,
+    onCancelDraftSearch: (String) -> Unit,
+    onCaptureLabel: () -> Unit,
+    onUsePendingLabel: (String) -> Boolean,
+    onSkipPendingLabel: (String) -> Boolean,
+    onUseSuggestedCrop: (NormalizedLabelCrop) -> Unit,
+    onApplyManualCrop: (NormalizedLabelCrop, Int) -> Unit,
+    onKeepOriginalLabel: () -> Unit,
+    onDiscardCapturedLabel: () -> Unit,
+    onAttachCapturedLabel: (BottleIntakeDraft) -> Unit,
+    onScan: () -> Unit,
+    onReviewBottle: (String) -> Unit,
+    onAcceptAndScanNext: (String) -> Unit,
+    onAddManual: (String, String, String?, String?, String?, InventoryLevel, ByteArray?) -> Boolean,
+    onRemove: (BottleIntakeDraft) -> Unit,
+    onUpdate: (BottleIntakeDraft) -> Boolean,
+    onFieldEdited: (String, BottleDraftField) -> Unit,
+    onHomeChanged: (String) -> Unit,
+    onLevelChanged: (InventoryLevel) -> Unit,
+    onConfirm: () -> BottleIntakeCommitResult,
+    onCancel: () -> Unit,
+    onDismiss: () -> Unit,
+    onPauseQueue: () -> Unit,
+    onResumeScanning: () -> Unit,
+    onRouteChange: (BottleIntakeRoute) -> Unit,
+) {
+    val drafts = session.drafts
+    val jobs = drafts.mapNotNull { pendingEnrichmentJobs[it.id] }
+    val ready = drafts.filter { pendingEnrichmentJobs[it.id]?.status == BottleEnrichmentStatus.READY_FOR_REVIEW }
+    val needsHelp = drafts.filter { pendingEnrichmentJobs[it.id]?.status == BottleEnrichmentStatus.NEEDS_ATTENTION }
+    val runningCount = drafts.count { pendingEnrichmentJobs[it.id]?.status == BottleEnrichmentStatus.RUNNING }
+    val pendingCount = drafts.count { pendingEnrichmentJobs[it.id]?.status in setOf(BottleEnrichmentStatus.QUEUED, BottleEnrichmentStatus.CAPTURE_REQUIRED) }
+    val reviewedCount = drafts.count { pendingEnrichmentJobs[it.id]?.status == BottleEnrichmentStatus.REVIEWED }
+    var error by remember(session.id) { mutableStateOf<String?>(null) }
+    var cropEditorOpen by remember(session.id, pendingLabelDraftId) { mutableStateOf(false) }
+    var name by remember(session.id) { mutableStateOf("") }
+    var category by remember(session.id) { mutableStateOf("Spirit") }
+    var barcode by remember(session.id) { mutableStateOf("") }
+    var brand by remember(session.id) { mutableStateOf("") }
+    var productName by remember(session.id) { mutableStateOf("") }
     Column(modifier.fillMaxSize().imePadding()) {
-        Text("Add bottles", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp))
-        Column(
-            Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).testTag("bottle-intake-scroll").padding(horizontal = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-                Text("${session.drafts.size} bottle${if (session.drafts.size == 1) "" else "s"} in this batch", style = MaterialTheme.typography.titleMedium)
-                Text("Drafts stay on this phone until you confirm. Repeated bottles are kept separately.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(
-                    "Queued lookups can continue after you leave this screen. On-device AI may show an ongoing Android task notice. Force-stopping the app or system battery limits can interrupt work; resume it yourself, and provider requests are never replayed automatically.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.testTag("background-enrichment-explanation"),
+            Text(
+                when {
+                    labelCameraOutputFile != null -> "Now capture the label"
+                    else -> when (route) {
+                    BottleIntakeRoute.SETUP -> "Build your shelf"
+                    BottleIntakeRoute.CAPTURE_LABEL -> "Now capture the label"
+                    BottleIntakeRoute.SCANNING -> "Scan the next bottle"
+                    BottleIntakeRoute.REVIEW -> "Review your bottle"
+                    BottleIntakeRoute.QUEUE -> "Your bottle queue"
+                    BottleIntakeRoute.PAUSE -> "Pause for now"
+                    BottleIntakeRoute.MANUAL_ENTRY -> "Add a bottle manually"
+                    }
+                },
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier.weight(1f),
+            )
+            if (route !in setOf(BottleIntakeRoute.SETUP, BottleIntakeRoute.MANUAL_ENTRY)) {
+                TextButton(onClick = onPauseQueue, modifier = Modifier.testTag("intake-pause")) { Text("Pause") }
+            }
+        }
+
+        if (labelCameraOutputFile != null && capturePhoto == null) {
+            Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp)) {
+                val draft = drafts.firstOrNull { it.id == pendingLabelDraftId }
+                draft?.let { Text("Bottle #${it.position + 1} · ${it.barcode.orEmpty()}", Modifier.padding(bottom = 8.dp), style = MaterialTheme.typography.titleSmall) }
+                BottleLabelCameraScreen(
+                    outputFile = labelCameraOutputFile,
+                    onPhotoSaved = onLabelPhotoSaved,
+                    onCancel = onLabelCameraCancel,
                 )
-                val readyToReview = session.drafts.filter { draft ->
-                    pendingEnrichmentJobs[draft.id]?.status in setOf(BottleEnrichmentStatus.READY_FOR_REVIEW, BottleEnrichmentStatus.NEEDS_ATTENTION)
-                }
-                if (readyToReview.isNotEmpty()) {
-                    Button(
-                        onClick = { onReviewBottle(readyToReview.first().id) },
-                        modifier = Modifier.fillMaxWidth().testTag("review-ready-bottles"),
-                    ) { Text("Review next ready bottle · ${readyToReview.size}") }
-                }
-                pendingLabelDraftId?.let { draftId ->
-                    val pendingDraft = session.drafts.firstOrNull { it.id == draftId }
-                    if (pendingDraft != null) {
-                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-                            Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("Capture label · bottle ${pendingDraft.position + 1}", style = MaterialTheme.typography.titleSmall)
-                                Text("This photo stays on this phone. It is not sent to search or AI providers.", style = MaterialTheme.typography.bodySmall)
-                                if (capturePhoto != null) {
-                                    val bitmap = remember(capturePhoto) { BitmapFactory.decodeByteArray(capturePhoto, 0, capturePhoto.size)?.asImageBitmap() }
-                                    if (bitmap != null) Image(bitmap, contentDescription = "Preview label for bottle ${pendingDraft.position + 1}", modifier = Modifier.fillMaxWidth().heightIn(max = 180.dp))
-                                    val showingOriginal = originalCapturePhoto == null || capturePhoto.contentEquals(originalCapturePhoto)
-                                    if (suggestedLabelCrop != null && originalCapturePhoto != null && showingOriginal) {
-                                        Text("A possible label edge was found. Review the crop before using it; detection can be uncertain.", style = MaterialTheme.typography.bodySmall)
-                                        OutlinedButton(
-                                            onClick = { onUseSuggestedCrop(suggestedLabelCrop) },
-                                            enabled = !labelCropBusy,
-                                            modifier = Modifier.fillMaxWidth().testTag("use-suggested-label-crop-$draftId"),
-                                        ) { Text("Preview suggested crop") }
-                                    }
-                                    if (originalCapturePhoto != null) {
-                                        OutlinedButton(
-                                            onClick = { showBottleLabelCropEditor = true },
-                                            enabled = !labelCropBusy,
-                                            modifier = Modifier.fillMaxWidth().testTag("adjust-label-crop-$draftId"),
-                                        ) { Text(if (showingOriginal) "Adjust crop" else "Adjust crop / rotate") }
-                                        if (!showingOriginal) {
-                                            TextButton(onClick = onKeepOriginalLabel, modifier = Modifier.fillMaxWidth().testTag("restore-original-label-$draftId")) { Text("Reset to original photo") }
-                                        }
-                                    }
-                                    if (labelCropBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                                }
-                                captureMessage?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-                                if (capturePhoto == null) {
-                                    Button(onClick = onCaptureLabel, modifier = Modifier.fillMaxWidth().testTag("capture-label-$draftId")) { Text("Capture label") }
-                                } else {
-                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Button(onClick = { onUsePendingLabel(draftId) }, enabled = !labelCropBusy, modifier = Modifier.weight(1f).testTag("use-label-$draftId")) { Text("Use label") }
-                                        TextButton(onClick = onCaptureLabel, enabled = !labelCropBusy, modifier = Modifier.weight(1f).testTag("retake-label-$draftId")) { Text("Retake") }
-                                    }
-                                }
-                                TextButton(
-                                    onClick = { onSkipPendingLabel(draftId) },
-                                    enabled = !labelCropBusy,
-                                    modifier = Modifier.fillMaxWidth().testTag("skip-label-$draftId"),
-                ) { Text(if (capturePhoto == null) "Skip photo and scan next bottle" else "Discard photo and scan next bottle") }
-                            }
+            }
+        } else if (labelCaptureProcessing && capturePhoto == null) {
+            Column(Modifier.weight(1f).fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text("Preparing the label photo…", style = MaterialTheme.typography.titleLarge)
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                Text("This stays on your phone. You can skip the photo and continue scanning.", style = MaterialTheme.typography.bodyMedium)
+                pendingLabelDraftId?.let { id -> TextButton(onClick = { onSkipPendingLabel(id) }) { Text("Skip photo & scan next") } }
+            }
+        } else when (route) {
+            BottleIntakeRoute.SETUP -> Column(
+                Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).testTag("bottle-intake-scroll").padding(horizontal = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp),
+            ) {
+                Text("Capture now, confirm later.", style = MaterialTheme.typography.titleLarge)
+                Text("Scan each bottle, then take a quick label photo. Search and AI work in the background while you keep going. Nothing is added to My Bar until you review and save the batch.", style = MaterialTheme.typography.bodyLarge)
+                Text("Label photos stay on this phone and are not sent to search or AI providers.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                permissionMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                Button(onClick = onScan, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("intake-allow-camera")) { Text("Allow camera & continue") }
+                OutlinedButton(onClick = { onRouteChange(BottleIntakeRoute.MANUAL_ENTRY) }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("intake-manual-start")) { Text("Start with manual entry") }
+                TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Keep drafts and exit") }
+            }
+
+            BottleIntakeRoute.CAPTURE_LABEL -> {
+                val draft = drafts.firstOrNull { it.id == pendingLabelDraftId }
+                if (draft == null) {
+                    EmptyIntakeState("This bottle is no longer in the batch.", "Return to scanning", onScan)
+                } else Column(
+                    Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).testTag("bottle-intake-scroll").padding(horizontal = 24.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Text("Barcode captured · Bottle #${draft.position + 1}", style = MaterialTheme.typography.titleMedium)
+                    Text(draft.barcode.orEmpty(), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Take a label photo for your own reference. It stays on this phone and is not sent to lookup providers.", style = MaterialTheme.typography.bodyMedium)
+                    if (capturePhoto == null) {
+                        Button(onClick = onCaptureLabel, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("capture-label-${draft.id}")) { Text("Capture label") }
+                    } else {
+                        val bitmap = remember(capturePhoto) { BitmapFactory.decodeByteArray(capturePhoto, 0, capturePhoto.size)?.asImageBitmap() }
+                        if (bitmap != null) Image(bitmap, contentDescription = "Preview label for bottle ${draft.position + 1}", modifier = Modifier.fillMaxWidth().heightIn(max = 292.dp))
+                        val showingOriginal = originalCapturePhoto == null || capturePhoto.contentEquals(originalCapturePhoto)
+                        if (suggestedLabelCrop != null && originalCapturePhoto != null && showingOriginal) {
+                            Text("Possible label edges found. Check the crop before using it.", style = MaterialTheme.typography.bodySmall)
+                            OutlinedButton(onClick = { onUseSuggestedCrop(suggestedLabelCrop) }, enabled = !labelCropBusy, modifier = Modifier.fillMaxWidth()) { Text("Check suggested crop") }
+                        }
+                        if (originalCapturePhoto != null) OutlinedButton(onClick = { cropEditorOpen = true }, enabled = !labelCropBusy, modifier = Modifier.fillMaxWidth()) { Text("Adjust crop") }
+                        if (labelCropBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Button(onClick = { onUsePendingLabel(draft.id) }, enabled = !labelCropBusy, modifier = Modifier.weight(1f).heightIn(min = 56.dp).testTag("use-label-${draft.id}")) { Text("Use photo & scan next") }
+                            TextButton(onClick = onCaptureLabel, enabled = !labelCropBusy, modifier = Modifier.weight(1f).testTag("retake-label-${draft.id}")) { Text("Retake") }
                         }
                     }
+                    captureMessage?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                    TextButton(onClick = { onSkipPendingLabel(draft.id) }, enabled = !labelCropBusy, modifier = Modifier.fillMaxWidth().testTag("skip-label-${draft.id}")) { Text("Skip photo & scan next") }
                 }
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { showHomeMenu = true }, modifier = Modifier.fillMaxWidth()) { Text("Home: ${homes.firstOrNull { it.id == session.locationId }?.name ?: "Choose"}") }
-                    DropdownMenu(expanded = showHomeMenu, onDismissRequest = { showHomeMenu = false }) {
-                        homes.forEach { home -> DropdownMenuItem(text = { Text(home.name) }, onClick = { onHomeChanged(home.id); showHomeMenu = false }) }
-                    }
-                    OutlinedButton(onClick = { showLevelMenu = true }, modifier = Modifier.fillMaxWidth()) { Text("Stock: ${session.defaultLevel.label}") }
-                    DropdownMenu(expanded = showLevelMenu, onDismissRequest = { showLevelMenu = false }) {
-                        InventoryLevel.entries.forEach { level -> DropdownMenuItem(text = { Text(level.label) }, onClick = { onLevelChanged(level); showLevelMenu = false }) }
-                    }
+                if (cropEditorOpen && originalCapturePhoto != null) BottleLabelCropEditorDialog(
+                    originalJpeg = originalCapturePhoto,
+                    suggestedCrop = suggestedLabelCrop,
+                    onKeepOriginal = onKeepOriginalLabel,
+                    onApply = { crop, rotation -> onApplyManualCrop(crop, rotation); cropEditorOpen = false },
+                    onDismiss = { cropEditorOpen = false },
+                )
+            }
+
+            BottleIntakeRoute.SCANNING -> Column(
+                Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).testTag("bottle-intake-scroll").padding(horizontal = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Text("Point the camera at one bottle barcode. Search starts as soon as it is captured; take its label photo next, then keep scanning.", style = MaterialTheme.typography.bodyLarge)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    IntakeCountPill("${ready.size} ready")
+                    IntakeCountPill("$runningCount running")
+                    IntakeCountPill("$pendingCount pending")
                 }
-                Button(
-                    onClick = onScan,
-                    enabled = pendingLabelDraftId == null,
-                    modifier = Modifier.fillMaxWidth().testTag("batch-scan-bottles"),
-                ) { Text(if (session.drafts.isEmpty()) "Scan a bottle" else "Scan next bottle") }
+                if (ready.isNotEmpty() || needsHelp.isNotEmpty()) {
+                    Button(onClick = { onReviewBottle((ready.firstOrNull() ?: needsHelp.first()).id) }, modifier = Modifier.fillMaxWidth().testTag("review-ready-bottles")) { Text("Review ready") }
+                }
+                Button(onClick = onScan, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("batch-scan-bottles")) { Text(if (drafts.isEmpty()) "Scan a bottle" else "Scan next bottle") }
+                OutlinedButton(onClick = { onRouteChange(BottleIntakeRoute.QUEUE) }, modifier = Modifier.fillMaxWidth().testTag("open-bottle-queue")) { Text("Your bottle queue · ${drafts.size}") }
+                OutlinedButton(onClick = { onRouteChange(BottleIntakeRoute.MANUAL_ENTRY) }, modifier = Modifier.fillMaxWidth().testTag("batch-manual-entry")) { Text("Add a bottle manually") }
                 permissionMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                if (pendingLabelDraftId == null) {
-                    OutlinedButton(onClick = onCaptureLabel, modifier = Modifier.fillMaxWidth().testTag("capture-bottle-label")) { Text("Capture a label photo for manual entry") }
-                }
-                captureMessage?.let { Text(it, color = if (capturePhoto == null && !it.startsWith("Photo capture canceled")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) }
-                if (capturePhoto != null && pendingLabelDraftId == null) {
-                    val bitmap = remember(capturePhoto) { BitmapFactory.decodeByteArray(capturePhoto, 0, capturePhoto.size)?.asImageBitmap() }
-                    if (bitmap != null) Image(bitmap, contentDescription = "Captured bottle label preview", modifier = Modifier.fillMaxWidth().heightIn(max = 160.dp))
-                    Text("Review the label photo before attaching it. It stays on this phone until you confirm the batch.")
-                    val showingOriginal = originalCapturePhoto == null || capturePhoto.contentEquals(originalCapturePhoto)
-                    if (suggestedLabelCrop != null && originalCapturePhoto != null && showingOriginal) {
-                        Text("A possible label edge was found. Check it before use; detection may be uncertain.", style = MaterialTheme.typography.bodySmall)
-                        OutlinedButton(onClick = { onUseSuggestedCrop(suggestedLabelCrop) }, enabled = !labelCropBusy, modifier = Modifier.fillMaxWidth()) { Text("Preview suggested crop") }
-                    }
-                    if (originalCapturePhoto != null) {
-                        OutlinedButton(onClick = { showBottleLabelCropEditor = true }, enabled = !labelCropBusy, modifier = Modifier.fillMaxWidth()) { Text("Adjust crop / rotate") }
-                        if (!showingOriginal) TextButton(onClick = onKeepOriginalLabel, modifier = Modifier.fillMaxWidth()) { Text("Reset to original photo") }
-                    }
-                    if (labelCropBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        session.drafts.lastOrNull()?.let { draft -> OutlinedButton(onClick = { onAttachCapturedLabel(draft) }) { Text("Attach to latest") } }
-                        TextButton(onClick = onCaptureLabel) { Text("Retake") }
-                        TextButton(onClick = onDiscardCapturedLabel) { Text("Discard photo") }
-                    }
-                }
-                session.drafts.forEach { draft ->
+            }
+
+            BottleIntakeRoute.REVIEW -> {
+                val draft = drafts.firstOrNull { it.id == activeReviewDraftId }
+                if (draft == null) EmptyIntakeState("This bottle is no longer in the batch.", "Return to scanning", { onRouteChange(BottleIntakeRoute.SCANNING) })
+                else Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).testTag("bottle-intake-scroll").padding(horizontal = 16.dp)) {
                     BottleDraftCard(
                         draft = draft,
                         homes = homes,
                         onUpdate = onUpdate,
                         onFieldEdited = onFieldEdited,
-                        onValidityChanged = { id, valid -> invalidDraftIds = (if (valid) invalidDraftIds - id else invalidDraftIds + id).toMutableSet() },
+                        onValidityChanged = { _, _ -> },
                         onRemove = onRemove,
                         webSearchEnabled = webSearchEnabled,
                         webSearchState = webSearchStates[draft.id] ?: BottleWebSearchState(),
@@ -2716,71 +2905,108 @@ internal fun BottleIntakeScreen(
                         pendingEnrichmentJob = pendingEnrichmentJobs[draft.id],
                         ollamaCloudEnabled = ollamaCloudEnabled,
                         localAiEnabled = localAiEnabled,
-                        activeReview = draft.id == activeReviewDraftId,
+                        activeReview = true,
                         onReviewBottle = { onReviewBottle(draft.id) },
                         onAcceptAndScanNext = { onAcceptAndScanNext(draft.id) },
                         onSearch = { onSearchDraft(draft) },
-                        onFetchSource = { hit -> onFetchDraftSource(draft, hit) },
+                        onFetchSource = { onFetchDraftSource(draft, it) },
                         onExtractDetails = { onExtractDraftDetails(draft.id) },
                         onExtractDetailsOnDevice = { onExtractDraftDetailsOnDevice(draft.id) },
-                        onResumeEnrichment = { job -> onResumeEnrichment(draft, job) },
+                        onResumeEnrichment = { onResumeEnrichment(draft, it) },
                         onCancelSearch = { onCancelDraftSearch(draft.id) },
                     )
+                    TextButton(onClick = { onRouteChange(BottleIntakeRoute.QUEUE) }, modifier = Modifier.fillMaxWidth()) { Text("Keep draft & return to queue") }
                 }
-                Text("Add one manually", style = MaterialTheme.typography.titleSmall)
-                OutlinedTextField(name, { name = it; error = null }, label = { Text("Ingredient / spirit") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("batch-manual-name"))
+            }
+
+            BottleIntakeRoute.QUEUE -> Column(
+                Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).testTag("bottle-intake-scroll").padding(horizontal = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("${reviewedCount} reviewed · ${drafts.size} draft bottles", style = MaterialTheme.typography.bodyLarge)
+                drafts.forEach { draft ->
+                    val job = pendingEnrichmentJobs[draft.id]
+                    val status = when (job?.status) {
+                        BottleEnrichmentStatus.CAPTURE_REQUIRED -> "Photo needed"
+                        BottleEnrichmentStatus.QUEUED -> "Pending"
+                        BottleEnrichmentStatus.RUNNING -> "Running"
+                        BottleEnrichmentStatus.PAUSED -> "Paused"
+                        BottleEnrichmentStatus.READY_FOR_REVIEW -> "Ready"
+                        BottleEnrichmentStatus.NEEDS_ATTENTION -> "Needs help"
+                        BottleEnrichmentStatus.REVIEWED -> "Reviewed"
+                        BottleEnrichmentStatus.CANCELLED -> "Canceled"
+                        null -> "Manual"
+                    }
+                    OutlinedButton(
+                        onClick = { onReviewBottle(draft.id) },
+                        modifier = Modifier.fillMaxWidth().testTag("queue-bottle-${draft.id}"),
+                    ) { Text("Bottle ${draft.position + 1} · ${draft.productName ?: draft.ingredientName} · $status") }
+                }
+                if (drafts.isNotEmpty()) Button(onClick = {
+                    when (val result = onConfirm()) {
+                        is BottleIntakeCommitResult.Invalid -> error = result.reason
+                        else -> Unit
+                    }
+                }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("batch-confirm")) { Text("Save ${drafts.size} bottles to My Bar") }
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                OutlinedButton(onClick = onResumeScanning, modifier = Modifier.fillMaxWidth()) { Text("Resume scanner") }
+            }
+
+            BottleIntakeRoute.PAUSE -> Column(
+                Modifier.weight(1f).fillMaxWidth().padding(horizontal = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Text("$reviewedCount reviewed · ${drafts.size} draft bottles", style = MaterialTheme.typography.titleLarge)
+                Text("Your drafts and label photos stay on this phone. Queued lookups are paused; already accepted My Bar bottles are unchanged.", style = MaterialTheme.typography.bodyLarge)
+                Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("keep-bottle-drafts-exit")) { Text("Keep drafts & exit") }
+                OutlinedButton(onClick = onResumeScanning, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text("Resume") }
+                TextButton(onClick = onCancel, modifier = Modifier.fillMaxWidth().testTag("discard-bottle-drafts")) { Text("Discard unsaved drafts") }
+            }
+
+            BottleIntakeRoute.MANUAL_ENTRY -> Column(
+                Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).testTag("bottle-intake-scroll").padding(horizontal = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OutlinedTextField(name, { name = it; error = null }, label = { Text("Bottle or ingredient name") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("batch-manual-name"))
                 OutlinedTextField(category, { category = it }, label = { Text("Category") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(barcode, { barcode = it; error = null }, label = { Text("Barcode (optional)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth().testTag("batch-manual-barcode"))
-                OutlinedTextField(brand, { brand = it }, label = { Text("Brand (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(productName, { productName = it }, label = { Text("Product name (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedButton(onClick = {
-                    val cleanedBarcode = barcode.trim().ifEmpty { null }
+                OutlinedTextField(barcode, { barcode = it; error = null }, label = { Text("Barcode · optional") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(brand, { brand = it }, label = { Text("Brand · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(productName, { productName = it }, label = { Text("Product · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedButton(onClick = onCaptureLabel, modifier = Modifier.fillMaxWidth()) { Text(if (capturePhoto == null) "Capture label photo · optional" else "Retake label photo") }
+                capturePhoto?.let { bytes ->
+                    val bitmap = remember(bytes) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap() }
+                    if (bitmap != null) Image(bitmap, "Captured bottle label", Modifier.fillMaxWidth().heightIn(max = 220.dp))
+                    TextButton(onClick = onDiscardCapturedLabel, modifier = Modifier.fillMaxWidth()) { Text("Remove photo") }
+                }
+                captureMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                Button(onClick = {
+                    val cleaned = barcode.trim().ifEmpty { null }
                     when {
-                        name.isBlank() -> error = "Enter an ingredient name, or scan its barcode first."
-                        cleanedBarcode != null && normalizeGtinForLookup(cleanedBarcode) == null -> error = "That barcode is not a valid UPC/EAN. Correct it or clear it; your name and photo are still here."
-                        !onAddManual(name, category, cleanedBarcode, brand.trim().ifEmpty { null }, productName.trim().ifEmpty { null }, session.defaultLevel, capturePhoto) -> error = "The bottle could not be saved. Your fields and label photo are still here; correct the input or try again."
-                        else -> {
-                            focusManager.clearFocus()
-                            keyboardController?.hide()
-                            name = ""; barcode = ""; brand = ""; productName = ""; if (capturePhoto != null) onDiscardCapturedLabel(); error = null
-                        }
+                        name.isBlank() -> error = "Enter a bottle name."
+                        cleaned != null && normalizeGtinForLookup(cleaned) == null -> error = "That barcode is invalid. Correct it or clear it; your details are still here."
+                        !onAddManual(name, category, cleaned, brand.trim().ifEmpty { null }, productName.trim().ifEmpty { null }, session.defaultLevel, capturePhoto) -> error = "This bottle could not be saved. Your fields and photo are still here."
+                        else -> { name = ""; barcode = ""; brand = ""; productName = ""; error = null; onRouteChange(BottleIntakeRoute.SCANNING) }
                     }
-                }, modifier = Modifier.fillMaxWidth().testTag("batch-add-manual-bottle")) { Text("Add bottle to draft") }
-                if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
-                Text(
-                    "Scanning uses the providers enabled in Settings. Lookup runs in the background while intake stays open; you review suggestions before saving.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-        }
-        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Button(
-                        onClick = {
-                            when (val result = onConfirm()) {
-                                is BottleIntakeCommitResult.Invalid -> error = result.reason
-                                else -> Unit
-                            }
-                        },
-                        enabled = session.drafts.isNotEmpty() && invalidDraftIds.isEmpty(),
-                        modifier = Modifier.fillMaxWidth().testTag("batch-confirm"),
-                    ) { Text("Confirm ${session.drafts.size} bottles") }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(onClick = onCancel, modifier = Modifier.weight(1f)) { Text("Discard batch") }
-                        TextButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("Keep for later") }
-                    }
+                }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("batch-add-manual-bottle")) { Text("Add bottle to draft") }
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                TextButton(onClick = { onRouteChange(BottleIntakeRoute.SCANNING) }, modifier = Modifier.fillMaxWidth()) { Text("Return to scanner") }
+            }
         }
     }
-    if (showBottleLabelCropEditor && originalCapturePhoto != null) {
-        BottleLabelCropEditorDialog(
-            originalJpeg = originalCapturePhoto,
-            suggestedCrop = suggestedLabelCrop,
-            onKeepOriginal = onKeepOriginalLabel,
-            onApply = { crop, rotation ->
-                onApplyManualCrop(crop, rotation)
-                showBottleLabelCropEditor = false
-            },
-            onDismiss = { showBottleLabelCropEditor = false },
-        )
+}
+
+@Composable
+private fun IntakeCountPill(label: String) {
+    Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+        Text(label, Modifier.padding(horizontal = 12.dp, vertical = 8.dp), style = MaterialTheme.typography.labelLarge)
+    }
+}
+
+@Composable
+private fun EmptyIntakeState(message: String, action: String, onAction: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(message, style = MaterialTheme.typography.bodyLarge)
+        OutlinedButton(onClick = onAction) { Text(action) }
     }
 }
 
@@ -2932,8 +3158,11 @@ private fun BottleDraftCard(
     onCancelSearch: () -> Unit,
 ) {
     var name by remember(draft.id) { mutableStateOf(draft.ingredientName) }
+    var category by remember(draft.id, draft.category) { mutableStateOf(draft.category) }
     var brand by remember(draft.id) { mutableStateOf(draft.brand.orEmpty()) }
     var productName by remember(draft.id) { mutableStateOf(draft.productName.orEmpty()) }
+    var quantity by remember(draft.id) { mutableStateOf(draft.quantity.orEmpty()) }
+    var abvPercent by remember(draft.id) { mutableStateOf(draft.abvPercent.orEmpty()) }
     var nameValidationMessage by remember(draft.id) {
         mutableStateOf<String?>(if (draft.ingredientName.isBlank()) "Enter a bottle name before confirming this batch." else null)
     }
@@ -2945,24 +3174,30 @@ private fun BottleDraftCard(
             val suggestedName = suggestions.facts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }?.value?.trim().orEmpty()
             val suggestedBrand = suggestions.facts.firstOrNull { it.field == BottleFactField.BRAND }?.value?.trim().orEmpty()
             val merged = mergeBottleSuggestionFields(
-                current = BottleDraftSuggestionFields(name, productName, brand),
+                current = BottleDraftSuggestionFields(name, productName, brand, quantity, abvPercent),
                 suggestedName = suggestedName,
                 suggestedBrand = suggestedBrand,
                 editedFields = webSearchState.userEditedFields,
+                suggestedQuantity = suggestions.facts.firstOrNull { it.field == BottleFactField.QUANTITY }?.value.orEmpty(),
+                suggestedAbvPercent = suggestions.facts.firstOrNull { it.field == BottleFactField.ABV_PERCENT }?.value.orEmpty(),
             )
             val nextName = merged.ingredientName
             val nextProductName = merged.productName
             val nextBrand = merged.brand
-            if (nextName != name || nextProductName != productName || nextBrand != brand) {
+            if (nextName != name || nextProductName != productName || nextBrand != brand || merged.quantity != quantity || merged.abvPercent != abvPercent) {
                 val saved = onUpdate(draft.copy(
                     ingredientName = nextName,
                     productName = nextProductName.ifBlank { null },
                     brand = nextBrand.ifBlank { null },
+                    quantity = merged.quantity.ifBlank { null },
+                    abvPercent = merged.abvPercent.ifBlank { null },
                 ))
                 if (saved) {
                     name = nextName
                     productName = nextProductName
                     brand = nextBrand
+                    quantity = merged.quantity
+                    abvPercent = merged.abvPercent
                     nameValidationMessage = null
                     onValidityChanged(draft.id, nextName.isNotBlank())
                 } else {
@@ -2973,9 +3208,10 @@ private fun BottleDraftCard(
     }
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            OutlinedTextField(
-                name,
-                { value ->
+            val nameField: @Composable () -> Unit = {
+                OutlinedTextField(
+                    name,
+                    { value ->
                     name = value
                     onFieldEdited(draft.id, BottleDraftField.INGREDIENT_NAME)
                     if (value.isBlank()) {
@@ -2995,11 +3231,21 @@ private fun BottleDraftCard(
                         nameValidationMessage = if (saved) null else "This name could not be saved to the local draft. Try again."
                         onValidityChanged(draft.id, saved)
                     }
-                },
-                label = { Text("Bottle ${draft.position + 1}") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth().testTag("bottle-intake-draft-name-${draft.position}"),
-            )
+                    },
+                    label = { Text("Bottle ${draft.position + 1}") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("bottle-intake-draft-name-${draft.position}"),
+                )
+            }
+            val reviewPhoto = remember(draft.photoData) {
+                draft.photoData?.let { bytes -> BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap() }
+            }
+            if (activeReview && reviewPhoto != null) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
+                    Image(reviewPhoto, contentDescription = "${draft.ingredientName} label photo", modifier = Modifier.width(112.dp).height(144.dp).testTag("review-label-photo-${draft.id}"))
+                    Box(Modifier.weight(1f)) { nameField() }
+                }
+            } else nameField()
             nameValidationMessage?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("bottle-intake-draft-error-${draft.position}")) }
             draft.barcode?.let { Text("Barcode: $it", style = MaterialTheme.typography.bodySmall) }
             pendingEnrichmentJob?.let { job ->
@@ -3030,6 +3276,43 @@ private fun BottleDraftCard(
                 val saved = onUpdate(draft.copy(ingredientName = name, brand = brand.trim().ifEmpty { null }, productName = value.trim().ifEmpty { null }))
                 onValidityChanged(draft.id, name.isNotBlank() && saved)
             }, label = { Text("Product · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("bottle-intake-draft-product-${draft.position}"))
+            if (activeReview) OutlinedTextField(
+                category,
+                { value ->
+                    category = value
+                    onUpdate(draft.copy(category = value.trim().ifEmpty { "Spirit" }))
+                },
+                label = { Text("Category") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().testTag("bottle-intake-draft-category-${draft.position}"),
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    quantity,
+                    { value ->
+                        quantity = value
+                        onFieldEdited(draft.id, BottleDraftField.QUANTITY)
+                        val saved = onUpdate(draft.copy(quantity = value.trim().ifEmpty { null }, quantityEdited = true))
+                        onValidityChanged(draft.id, name.isNotBlank() && saved)
+                    },
+                    label = { Text("Bottle size") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f).testTag("bottle-intake-draft-quantity-${draft.position}"),
+                )
+                OutlinedTextField(
+                    abvPercent,
+                    { value ->
+                        abvPercent = value
+                        onFieldEdited(draft.id, BottleDraftField.ABV_PERCENT)
+                        val saved = onUpdate(draft.copy(abvPercent = value.trim().ifEmpty { null }, abvPercentEdited = true))
+                        onValidityChanged(draft.id, name.isNotBlank() && saved)
+                    },
+                    label = { Text("ABV %") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.weight(1f).testTag("bottle-intake-draft-abv-${draft.position}"),
+                )
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { homeMenu = true }) { Text(homes.firstOrNull { it.id == draft.locationId }?.name ?: "Home") }
                 DropdownMenu(expanded = homeMenu, onDismissRequest = { homeMenu = false }) {
@@ -3041,7 +3324,7 @@ private fun BottleDraftCard(
                 }
                 TextButton(onClick = { onValidityChanged(draft.id, true); onRemove(draft) }) { Text("Remove") }
             }
-            draft.photoData?.let { bytes ->
+            if (!activeReview) draft.photoData?.let { bytes ->
                 val photo = remember(bytes) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap() }
                 if (photo != null) Image(photo, contentDescription = "${draft.ingredientName} label photo", modifier = Modifier.fillMaxWidth().heightIn(max = 120.dp))
             }
@@ -3175,7 +3458,7 @@ private fun BottleDraftCard(
                                     onValidityChanged(draft.id, name.isNotBlank())
                                 }
                             }) { Text("Use brand suggestion") }
-                            BottleFactField.QUANTITY, BottleFactField.ABV_PERCENT -> Text("This value is shown for review but is not stored in bottle inventory yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            BottleFactField.QUANTITY, BottleFactField.ABV_PERCENT -> Text("Check this value before accepting. Bottle size and ABV are saved separately from fullness.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }

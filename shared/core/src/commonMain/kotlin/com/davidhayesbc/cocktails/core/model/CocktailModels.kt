@@ -68,6 +68,8 @@ data class LocalProductBarcodeMatch(
     val brand: String?,
     val productName: String,
     val barcode: String,
+    val quantity: String? = null,
+    val abvPercent: String? = null,
 )
 
 enum class BottleIntakeSessionStatus { OPEN, CONFIRMED }
@@ -84,6 +86,10 @@ data class BottleIntakeDraft(
     val productName: String?,
     val photoData: ByteArray?,
     val photoSha256: String?,
+    val quantity: String? = null,
+    val abvPercent: String? = null,
+    val quantityEdited: Boolean = false,
+    val abvPercentEdited: Boolean = false,
     val locationId: String,
     val level: InventoryLevel,
     val createdAt: Long,

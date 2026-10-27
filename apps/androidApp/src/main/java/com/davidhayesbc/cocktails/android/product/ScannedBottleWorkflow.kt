@@ -242,6 +242,8 @@ internal fun acceptedProductSourcesForBottle(
         val valueWasAccepted = when (fact.field) {
             BottleFactField.PRODUCT_NAME -> fact.value == draft.productName || fact.value == draft.ingredientName
             BottleFactField.BRAND -> fact.value == draft.brand
+            BottleFactField.QUANTITY -> fact.value == draft.quantity
+            BottleFactField.ABV_PERCENT -> fact.value == draft.abvPercent
             else -> false
         }
         if (!valueWasAccepted) return@mapNotNull null

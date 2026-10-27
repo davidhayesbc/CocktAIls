@@ -60,6 +60,20 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.put
 import kotlinx.serialization.encodeToString
 
+private fun normalizeBottleQuantity(value: String?): String? = value?.trim()?.takeIf(String::isNotEmpty)
+
+private fun isValidBottleQuantity(value: String?): Boolean = value == null ||
+    (value.trim().isNotEmpty() && value.trim().length <= 80 && value.none { it < ' ' || it == '\u007f' })
+
+private fun normalizeBottleAbv(value: String?): String? = value?.trim()?.takeIf(String::isNotEmpty)
+
+private fun isValidBottleAbv(value: String?): Boolean {
+    if (value == null || value.isBlank()) return true
+    val normalized = value.trim().removeSuffix("%").trim()
+    val percent = normalized.toDoubleOrNull() ?: return false
+    return percent.isFinite() && percent in 0.0..100.0 && value.length <= 16
+}
+
 class LocalCocktailRepository(private val database: CocktailsDatabase) {
     private val queries = database.householdQueries
     private val bundleStore = HouseholdBundleStore(database)
@@ -957,6 +971,8 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             brand = product.brand,
             productName = product.product_name,
             barcode = product.barcode,
+            quantity = product.bottle_quantity,
+            abvPercent = product.abv_percent,
         )
     }
 
@@ -995,6 +1011,10 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         brand: String? = null,
         productName: String? = null,
         photoJpeg: ByteArray? = null,
+        quantity: String? = null,
+        abvPercent: String? = null,
+        quantityEdited: Boolean = false,
+        abvPercentEdited: Boolean = false,
     ): BottleIntakeDraft? {
         val session = queries.selectBottleIntakeSession(sessionId).executeAsOneOrNull() ?: return null
         if (session.status != "OPEN") return null
@@ -1002,24 +1022,29 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         val cleanedBarcode = barcode?.trim()?.takeIf(String::isNotEmpty)
         if (name.isEmpty() || (cleanedBarcode != null && normalizeGtinForLookup(cleanedBarcode) == null)) return null
         if (photoJpeg != null && (photoJpeg.size > MAX_PRODUCT_PHOTO_BYTES || !isProductPhotoJpeg(photoJpeg))) return null
+        if (!isValidBottleQuantity(quantity) || !isValidBottleAbv(abvPercent)) return null
         val position = queries.selectNextBottleIntakePosition(sessionId).executeAsOne()
         val id = newUuidV7(nowMillis)
         queries.insertBottleIntakeDraft(
             id, sessionId, position, cleanedBarcode, null, name, category.trim().ifEmpty { "Other" },
             brand?.trim()?.takeIf(String::isNotEmpty), productName?.trim()?.takeIf(String::isNotEmpty),
-            photoJpeg, photoJpeg?.let(::photoSha256), locationId, level.name, nowMillis,
+            photoJpeg, photoJpeg?.let(::photoSha256), normalizeBottleQuantity(quantity), normalizeBottleAbv(abvPercent),
+            if (quantityEdited) 1L else 0L, if (abvPercentEdited) 1L else 0L, locationId, level.name, nowMillis,
         )
-        return queries.selectBottleIntakeDraft(id, sessionId).executeAsOne().let { mapBottleIntakeDraft(it.id, it.session_id, it.position, it.barcode, it.product_id, it.ingredient_name, it.category, it.brand, it.product_name, it.photo_data, it.photo_sha256, it.location_id, it.level, it.created_at) }
+        return queries.selectBottleIntakeDraft(id, sessionId).executeAsOne().let { mapBottleIntakeDraft(it.id, it.session_id, it.position, it.barcode, it.product_id, it.ingredient_name, it.category, it.brand, it.product_name, it.photo_data, it.photo_sha256, it.bottle_quantity, it.abv_percent, it.bottle_quantity_edited != 0L, it.abv_percent_edited != 0L, it.location_id, it.level, it.created_at) }
     }
 
     fun updateBottleIntakeDraft(draft: BottleIntakeDraft): Boolean {
         val photo = draft.photoData
         if (photo != null && (photo.size > MAX_PRODUCT_PHOTO_BYTES || !isProductPhotoJpeg(photo) ||
                 !photoSha256(photo).equals(draft.photoSha256, ignoreCase = true))) return false
+        if (!isValidBottleQuantity(draft.quantity) || !isValidBottleAbv(draft.abvPercent)) return false
         queries.updateBottleIntakeDraft(
             draft.barcode, draft.productId, draft.ingredientName.trim(), draft.category.trim().ifEmpty { "Other" },
             draft.brand?.trim()?.takeIf(String::isNotEmpty), draft.productName?.trim()?.takeIf(String::isNotEmpty),
-            photo, draft.photoSha256, draft.locationId, draft.level.name, draft.id, draft.sessionId,
+            photo, draft.photoSha256, normalizeBottleQuantity(draft.quantity), normalizeBottleAbv(draft.abvPercent),
+            if (draft.quantityEdited) 1L else 0L, if (draft.abvPercentEdited) 1L else 0L,
+            draft.locationId, draft.level.name, draft.id, draft.sessionId,
         )
         return queries.selectBottleIntakeDraft(draft.id, draft.sessionId).executeAsOneOrNull() != null
     }
@@ -1061,6 +1086,8 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                     when (source.fieldName) {
                         "product_name" -> source.fieldValue != draft.product_name && source.fieldValue != draft.ingredient_name
                         "brand" -> source.fieldValue != draft.brand
+                        "quantity" -> source.fieldValue != draft.bottle_quantity
+                        "abv_percent" -> normalizeBottleAbv(source.fieldValue) != normalizeBottleAbv(draft.abv_percent)
                         else -> true
                     }
                 }
@@ -1118,14 +1145,15 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         id = id, status = BottleIntakeSessionStatus.valueOf(status), locationId = locationId,
         defaultLevel = InventoryLevel.valueOf(defaultLevel), createdAt = createdAt, updatedAt = updatedAt,
         confirmedCount = confirmedCount.toInt(), drafts = queries.selectBottleIntakeDrafts(id).executeAsList().map {
-            mapBottleIntakeDraft(it.id, it.session_id, it.position, it.barcode, it.product_id, it.ingredient_name, it.category, it.brand, it.product_name, it.photo_data, it.photo_sha256, it.location_id, it.level, it.created_at)
+            mapBottleIntakeDraft(it.id, it.session_id, it.position, it.barcode, it.product_id, it.ingredient_name, it.category, it.brand, it.product_name, it.photo_data, it.photo_sha256, it.bottle_quantity, it.abv_percent, it.bottle_quantity_edited != 0L, it.abv_percent_edited != 0L, it.location_id, it.level, it.created_at)
         },
     )
 
-    private fun mapBottleIntakeDraft(id: String, sessionId: String, position: Long, barcode: String?, productId: String?, ingredientName: String, category: String, brand: String?, productName: String?, photoData: ByteArray?, photoSha256: String?, locationId: String, level: String, createdAt: Long): BottleIntakeDraft = BottleIntakeDraft(
+    private fun mapBottleIntakeDraft(id: String, sessionId: String, position: Long, barcode: String?, productId: String?, ingredientName: String, category: String, brand: String?, productName: String?, photoData: ByteArray?, photoSha256: String?, quantity: String?, abvPercent: String?, quantityEdited: Boolean, abvPercentEdited: Boolean, locationId: String, level: String, createdAt: Long): BottleIntakeDraft = BottleIntakeDraft(
         id = id, sessionId = sessionId, position = position, barcode = barcode, productId = productId,
         ingredientName = ingredientName, category = category, brand = brand, productName = productName,
-        photoData = photoData, photoSha256 = photoSha256, locationId = locationId,
+        photoData = photoData, photoSha256 = photoSha256, quantity = quantity, abvPercent = abvPercent,
+        quantityEdited = quantityEdited, abvPercentEdited = abvPercentEdited, locationId = locationId,
         level = InventoryLevel.valueOf(level), createdAt = createdAt,
     )
 
@@ -1147,7 +1175,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             queries.insertIngredientIgnore(it, ingredientName, category, nowMillis)
         }
         writeRevision(ingredientId, "INGREDIENT", memberId, nowMillis, jsonObject("name" to jsonString(ingredientName), "category" to jsonString(category)))
-        val productId = matchedProductId ?: if (draft.barcode != null || draft.photo_data != null || draft.brand != null || draft.product_name != null) {
+        val productId = matchedProductId ?: if (draft.barcode != null || draft.photo_data != null || draft.brand != null || draft.product_name != null || draft.bottle_quantity != null || draft.abv_percent != null) {
             val barcode = draft.barcode
             val id = newUuidV7(nowMillis + draft.position + 2)
             queries.insertProductIgnore(id, ingredientId, draft.brand, draft.product_name ?: ingredientName, barcode, nowMillis)
@@ -1157,13 +1185,22 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             val product = queries.selectProductById(productId).executeAsOneOrNull()
             if (product != null) {
                 queries.updateProduct(ingredientId, draft.brand ?: product.brand, draft.product_name ?: product.product_name, draft.barcode ?: product.barcode, productId)
+                queries.updateProductPackageFacts(draft.bottle_quantity, draft.abv_percent, productId)
                 if (draft.photo_data != null) queries.updateProductPhoto("image/jpeg", draft.photo_data, draft.photo_sha256, productId)
-                writeRevision(productId, "PRODUCT", memberId, nowMillis, jsonObject("id" to jsonString(productId), "ingredientId" to jsonString(ingredientId), "brand" to nullableJsonString(draft.brand), "productName" to jsonString(draft.product_name ?: ingredientName), "barcode" to (draft.barcode?.let(::jsonString) ?: "null"), "photoSha256" to (draft.photo_sha256?.let(::jsonString) ?: "null"), "createdAt" to nowMillis.toString()))
+                writeRevision(productId, "PRODUCT", memberId, nowMillis, jsonObject("id" to jsonString(productId), "ingredientId" to jsonString(ingredientId), "brand" to nullableJsonString(draft.brand), "productName" to jsonString(draft.product_name ?: ingredientName), "barcode" to (draft.barcode?.let(::jsonString) ?: "null"), "photoSha256" to (draft.photo_sha256?.let(::jsonString) ?: "null"), "bottleQuantity" to nullableJsonString(draft.bottle_quantity), "abvPercent" to nullableJsonString(draft.abv_percent), "createdAt" to nowMillis.toString()))
             }
-        } else if (productId != null && draft.photo_data != null) {
-            queries.updateProductPhoto("image/jpeg", draft.photo_data, draft.photo_sha256, productId)
+        } else if (productId != null && (draft.photo_data != null || draft.bottle_quantity_edited != 0L || draft.abv_percent_edited != 0L)) {
+            val existing = queries.selectProductById(productId).executeAsOne()
+            if (draft.bottle_quantity_edited != 0L || draft.abv_percent_edited != 0L) {
+                queries.updateProductPackageFacts(
+                    if (draft.bottle_quantity_edited != 0L) draft.bottle_quantity else existing.bottle_quantity,
+                    if (draft.abv_percent_edited != 0L) draft.abv_percent else existing.abv_percent,
+                    productId,
+                )
+            }
+            if (draft.photo_data != null) queries.updateProductPhoto("image/jpeg", draft.photo_data, draft.photo_sha256, productId)
             val product = queries.selectProductById(productId).executeAsOne()
-            writeRevision(productId, "PRODUCT", memberId, nowMillis, jsonObject("id" to jsonString(productId), "ingredientId" to jsonString(product.ingredient_id), "brand" to nullableJsonString(product.brand), "productName" to jsonString(product.product_name), "barcode" to (product.barcode?.let(::jsonString) ?: "null"), "photoSha256" to (draft.photo_sha256?.let(::jsonString) ?: "null"), "createdAt" to product.created_at.toString()))
+            writeRevision(productId, "PRODUCT", memberId, nowMillis, jsonObject("id" to jsonString(productId), "ingredientId" to jsonString(product.ingredient_id), "brand" to nullableJsonString(product.brand), "productName" to jsonString(product.product_name), "barcode" to (product.barcode?.let(::jsonString) ?: "null"), "photoSha256" to (product.photo_sha256?.let(::jsonString) ?: "null"), "bottleQuantity" to nullableJsonString(product.bottle_quantity), "abvPercent" to nullableJsonString(product.abv_percent), "createdAt" to product.created_at.toString()))
         }
         if (sourceFacts.isNotEmpty()) {
             if (productId == null) return false
@@ -1182,6 +1219,8 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                 "productName" to jsonString(product.product_name),
                 "barcode" to (product.barcode?.let(::jsonString) ?: "null"),
                 "photoSha256" to (product.photo_sha256?.let(::jsonString) ?: "null"),
+                "bottleQuantity" to nullableJsonString(product.bottle_quantity),
+                "abvPercent" to nullableJsonString(product.abv_percent),
                 "createdAt" to product.created_at.toString(),
                 "sourceEvidence" to productSourceEvidenceJson(productId),
             )

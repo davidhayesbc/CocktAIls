@@ -17,6 +17,8 @@ internal enum class BottleDraftField(val storedValue: String) {
     INGREDIENT_NAME("ingredient_name"),
     BRAND("brand"),
     PRODUCT_NAME("product_name"),
+    QUANTITY("quantity"),
+    ABV_PERCENT("abv_percent"),
 }
 
 internal fun preserveEditedBottleFields(

@@ -271,6 +271,21 @@ object BundleValidator {
                         if (normalizedBarcode == null) errors += "PRODUCT ${record.id} has an invalid UPC/EAN barcode."
                         else if (!barcodeKeys.add(normalizedBarcode)) errors += "Bundle contains duplicate product barcodes."
                     }
+                    val quantity = record.data["bottleQuantity"]
+                    if (quantity != null && quantity != JsonNull) {
+                        val value = (quantity as? JsonPrimitive)?.takeIf { it.isString }?.content
+                        if (value.isNullOrBlank() || value.length > 80 || value.any { it < ' ' || it == '\u007f' }) {
+                            errors += "PRODUCT ${record.id} has an invalid bottle quantity."
+                        }
+                    }
+                    val abv = record.data["abvPercent"]
+                    if (abv != null && abv != JsonNull) {
+                        val value = (abv as? JsonPrimitive)?.takeIf { it.isString }?.content
+                        val number = value?.trim()?.removeSuffix("%")?.trim()?.toDoubleOrNull()
+                        if (value == null || number == null || !number.isFinite() || number !in 0.0..100.0 || value.length > 16) {
+                            errors += "PRODUCT ${record.id} has an invalid alcohol percentage."
+                        }
+                    }
                     val mimeType = record.data.optionalString("photoMimeType")
                     val base64 = record.data.optionalString("photoBase64")
                     val checksum = record.data.optionalString("photoSha256")
