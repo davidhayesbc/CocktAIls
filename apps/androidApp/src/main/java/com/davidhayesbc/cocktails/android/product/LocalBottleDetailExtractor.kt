@@ -2,7 +2,10 @@ package com.davidhayesbc.cocktails.android.product
 
 import android.content.Context
 import com.arm.aichat.InferenceEngine
+import com.arm.aichat.NativeModelAllocationException
 import com.arm.aichat.internal.InferenceEngineImpl
+import com.arm.aichat.NativeCpuBackendUnavailableException
+import com.arm.aichat.UnsupportedModelArchitectureException
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
@@ -185,6 +188,9 @@ private fun recordLocalFailure(
 }
 
 private fun classifyLocalFailure(stage: BottleLookupDebugStage, failure: Throwable): LocalInferenceFailureCode = when {
+    failure is NativeCpuBackendUnavailableException -> LocalInferenceFailureCode.CPU_BACKEND_UNAVAILABLE
+    failure is UnsupportedModelArchitectureException -> LocalInferenceFailureCode.MODEL_ARCHITECTURE_UNSUPPORTED
+    failure is NativeModelAllocationException -> LocalInferenceFailureCode.MODEL_ALLOCATION_FAILED
     (failure is IOException || failure is SecurityException) && stage == BottleLookupDebugStage.LOCAL_INPUT_VALIDATION -> LocalInferenceFailureCode.MODEL_FILE_UNREADABLE
     failure is IOException && stage == BottleLookupDebugStage.LOCAL_MODEL_LOADING -> LocalInferenceFailureCode.MODEL_PREPARATION_FAILED
     failure is SecurityException -> LocalInferenceFailureCode.MODEL_FILE_UNREADABLE
@@ -200,7 +206,8 @@ private fun classifyLocalFailure(stage: BottleLookupDebugStage, failure: Throwab
 
 private fun safeFailureType(type: String): String = when (type) {
     "IllegalStateException", "IllegalArgumentException", "IOException", "FileNotFoundException",
-    "SecurityException", "ModelLoadException", "UnsatisfiedLinkError", "NoSuchMethodError",
+    "SecurityException", "ModelLoadException", "NativeCpuBackendUnavailableException",
+    "UnsupportedModelArchitectureException", "NativeModelAllocationException", "UnsatisfiedLinkError", "NoSuchMethodError",
     "ExceptionInInitializerError", "OutOfMemoryError", "TimeoutCancellationException",
     "CancellationException", "RuntimeException", "LinkageError" -> type
     else -> "OtherException"
@@ -326,10 +333,12 @@ internal class LlamaCppLocalInferenceRunner internal constructor(private val eng
                 throw LocalInferenceFailureException(LocalInferenceFailureCode.RUNTIME_INITIALIZATION_FAILED)
             }
             if (initial is InferenceEngine.State.Error) {
-                val code = if (initial.diagnosticType in NATIVE_LINKAGE_FAILURE_TYPES) {
-                    LocalInferenceFailureCode.NATIVE_RUNTIME_UNAVAILABLE
-                } else {
-                    LocalInferenceFailureCode.RUNTIME_INITIALIZATION_FAILED
+                val code = when {
+                    initial.diagnosticType == NativeCpuBackendUnavailableException::class.java.simpleName ->
+                        LocalInferenceFailureCode.CPU_BACKEND_UNAVAILABLE
+                    initial.diagnosticType in NATIVE_LINKAGE_FAILURE_TYPES ->
+                        LocalInferenceFailureCode.NATIVE_RUNTIME_UNAVAILABLE
+                    else -> LocalInferenceFailureCode.RUNTIME_INITIALIZATION_FAILED
                 }
                 recordLocalFailure(
                     activeStage,
@@ -341,7 +350,7 @@ internal class LlamaCppLocalInferenceRunner internal constructor(private val eng
                 )
                 throw LocalInferenceFailureException(code)
             }
-            emit(activeStage, "READY")
+            emit(activeStage, "READY", "LOCAL_CPU_BACKEND_REGISTERED")
 
             activeStage = BottleLookupDebugStage.LOCAL_MODEL_LOADING
             emit(activeStage, "RUNNING")

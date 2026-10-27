@@ -224,8 +224,9 @@ internal class BottleLookupDebugReport(
             "PRODUCT_NAME_UNRESOLVED", "QUANTITY_UNRESOLVED", "ABV_PERCENT_UNRESOLVED",
             "PRODUCT_NAME_MISSING", "INVALID_TARGET_BARCODE", "BARCODE_IN_STRUCTURED_PRODUCT",
             "LOCAL_MODEL_FILE_UNREADABLE", "LOCAL_RUNTIME_INITIALIZATION_FAILED", "LOCAL_NATIVE_RUNTIME_UNAVAILABLE",
-            "LOCAL_MODEL_FILE_INVALID",
-            "LOCAL_MODEL_LOAD_FAILED", "LOCAL_MODEL_PREPARATION_FAILED", "LOCAL_UNSUPPORTED_ARCHITECTURE",
+            "LOCAL_MODEL_FILE_INVALID", "LOCAL_CPU_BACKEND_UNAVAILABLE", "LOCAL_CPU_BACKEND_REGISTERED",
+            "LOCAL_MODEL_LOAD_FAILED", "LOCAL_MODEL_ALLOCATION_FAILED", "LOCAL_MODEL_ARCHITECTURE_UNSUPPORTED",
+            "LOCAL_MODEL_PREPARATION_FAILED", "LOCAL_UNSUPPORTED_ARCHITECTURE",
             "LOCAL_PROMPT_SETUP_FAILED", "LOCAL_GENERATION_FAILED", "LOCAL_GENERATION_TIMEOUT",
             "LOCAL_RUNTIME_CLEANUP_FAILED",
             "LOCAL_MODEL_OUTPUT_INVALID", "LOCAL_IDENTITY_BINDING_FAILED", "LOCAL_INFERENCE_FAILED",
@@ -237,7 +238,9 @@ internal class BottleLookupDebugReport(
         )
         private val FAILURE_TYPES = setOf(
             "IllegalStateException", "IllegalArgumentException", "IOException", "FileNotFoundException",
-            "SecurityException", "UnsupportedArchitectureException", "UnsatisfiedLinkError", "NoSuchMethodError",
+            "SecurityException", "UnsupportedArchitectureException", "UnsupportedModelArchitectureException",
+            "NativeCpuBackendUnavailableException", "NativeModelAllocationException", "ModelLoadException",
+            "UnsatisfiedLinkError", "NoSuchMethodError",
             "ExceptionInInitializerError", "OutOfMemoryError", "TimeoutCancellationException",
             "CancellationException", "RuntimeException", "LinkageError", "NativeFailure", "OtherException",
         )

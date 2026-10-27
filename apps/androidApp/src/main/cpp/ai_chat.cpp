@@ -2,6 +2,7 @@
 #include <iomanip>
 #include <cmath>
 #include <string>
+#include <atomic>
 #include <unistd.h>
 #include <sampling.h>
 
@@ -10,6 +11,8 @@
 #include "chat.h"
 #include "common.h"
 #include "llama.h"
+#include "ggml-backend.h"
+#include "model_load_diagnostics.h"
 
 template<class T>
 static std::string join(const std::vector<T> &values, const std::string &delim) {
@@ -38,9 +41,22 @@ static llama_context                    * g_context;
 static common_batch                       g_batch;
 static common_chat_templates_ptr          g_chat_templates;
 static common_sampler                   * g_sampler;
+static std::atomic<bool> g_capture_model_load_log{false};
+static std::atomic<int> g_model_load_failure_status{NATIVE_MODEL_LOAD_FAILED};
+
+static void aichat_android_log_callback(enum ggml_log_level level, const char * message, void *) {
+    if (!g_capture_model_load_log.load(std::memory_order_relaxed) ||
+        level != GGML_LOG_LEVEL_ERROR || message == nullptr) {
+        return;
+    }
+    const int status = classify_native_model_load_log(message);
+    if (status != NATIVE_MODEL_LOAD_OK) {
+        g_model_load_failure_status.store(status, std::memory_order_relaxed);
+    }
+}
 
 extern "C"
-JNIEXPORT void JNICALL
+JNIEXPORT jboolean JNICALL
 Java_com_arm_aichat_internal_InferenceEngineImpl_init(JNIEnv *env, jobject /*unused*/, jstring nativeLibDir) {
     // Set llama log handler to Android
     llama_log_set(aichat_android_log_callback, nullptr);
@@ -52,6 +68,7 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_init(JNIEnv *env, jobject /*unu
 
     // Initialize backends
     llama_backend_init();
+    return ggml_backend_reg_by_name("CPU") != nullptr ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C"
@@ -61,10 +78,20 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_load(JNIEnv *env, jobject, jstr
 
     const auto *model_path = env->GetStringUTFChars(jmodel_path, 0);
 
+    struct ScopedModelLoadLogCapture {
+        ScopedModelLoadLogCapture() {
+            g_model_load_failure_status.store(NATIVE_MODEL_LOAD_FAILED, std::memory_order_relaxed);
+            g_capture_model_load_log.store(true, std::memory_order_relaxed);
+        }
+        ~ScopedModelLoadLogCapture() {
+            g_capture_model_load_log.store(false, std::memory_order_relaxed);
+        }
+    } log_capture;
     auto *model = llama_model_load_from_file(model_path, model_params);
+    const int load_status = g_model_load_failure_status.load(std::memory_order_relaxed);
     env->ReleaseStringUTFChars(jmodel_path, model_path);
     if (!model) {
-        return 1;
+        return load_status;
     }
     g_model = model;
     return 0;

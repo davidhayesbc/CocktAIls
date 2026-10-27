@@ -93,3 +93,12 @@ val State.isModelLoaded: Boolean
 
 /** A native load failure whose underlying cause is not exposed by the JNI loader. */
 class ModelLoadException : Exception("The native model loader could not load the selected model.")
+
+/** The native runtime initialized but could not register its required CPU backend. */
+class NativeCpuBackendUnavailableException : Exception("The native CPU backend could not be loaded.")
+
+/** The native loader explicitly identified the GGUF architecture as unsupported. */
+class UnsupportedModelArchitectureException : Exception("The selected GGUF architecture is unsupported by this runtime.")
+
+/** The native loader reported a resource allocation failure while loading the model. */
+class NativeModelAllocationException : Exception("The native model loader could not allocate required resources.")

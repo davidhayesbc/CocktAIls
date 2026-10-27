@@ -2,6 +2,9 @@ package com.arm.aichat.internal
 
 import com.arm.aichat.InferenceEngine
 import com.arm.aichat.ModelLoadException
+import com.arm.aichat.NativeModelAllocationException
+import com.arm.aichat.NativeCpuBackendUnavailableException
+import com.arm.aichat.UnsupportedModelArchitectureException
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -31,8 +34,47 @@ class InferenceEngineInitializationTest {
     }
 
     @Test
+    fun nativeModelLoadStatusDistinguishesOnlyExplicitSafeCategories() {
+        try {
+            requireNativeModelLoadSucceeded(2)
+            throw AssertionError("An explicit unsupported GGUF architecture must fail")
+        } catch (failure: UnsupportedModelArchitectureException) {
+            assertEquals("UnsupportedModelArchitectureException", failure.javaClass.simpleName)
+        }
+
+        try {
+            requireNativeModelLoadSucceeded(3)
+            throw AssertionError("A native allocation failure must fail")
+        } catch (failure: NativeModelAllocationException) {
+            assertEquals("NativeModelAllocationException", failure.javaClass.simpleName)
+        }
+
+        try {
+            requireNativeModelLoadSucceeded(99)
+            throw AssertionError("Unknown native load status must remain generic")
+        } catch (failure: ModelLoadException) {
+            assertEquals("ModelLoadException", failure.javaClass.simpleName)
+        }
+    }
+
+    @Test
     fun nativeModelLoadSuccessResultIsAccepted() {
         requireNativeModelLoadSucceeded(0)
+    }
+
+    @Test
+    fun missingCpuBackendDoesNotReportRuntimeInitializationAsReady() {
+        try {
+            requireCpuBackendRegistered(false)
+            throw AssertionError("A missing CPU backend must fail initialization")
+        } catch (failure: NativeCpuBackendUnavailableException) {
+            assertEquals("NativeCpuBackendUnavailableException", failure.javaClass.simpleName)
+        }
+    }
+
+    @Test
+    fun registeredCpuBackendAllowsInitializationToContinue() {
+        requireCpuBackendRegistered(true)
     }
 
     @Test

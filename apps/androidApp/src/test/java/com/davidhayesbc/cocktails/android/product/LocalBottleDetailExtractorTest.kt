@@ -2,6 +2,7 @@ package com.davidhayesbc.cocktails.android.product
 
 import com.arm.aichat.InferenceEngine
 import com.arm.aichat.ModelLoadException
+import com.arm.aichat.NativeCpuBackendUnavailableException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
@@ -184,6 +185,10 @@ class LocalBottleDetailExtractorTest {
         val stages = events.map(BottleLookupDebugEvent::stage)
         assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_INPUT_VALIDATION))
         assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_RUNTIME_INITIALIZATION))
+        assertTrue(events.any {
+            it.stage == BottleLookupDebugStage.LOCAL_RUNTIME_INITIALIZATION &&
+                it.result == "READY" && it.reasonCodes == listOf("LOCAL_CPU_BACKEND_REGISTERED")
+        })
         assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_MODEL_LOADING))
         assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_PROMPT_SETUP))
         assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_GENERATION))
@@ -212,6 +217,68 @@ class LocalBottleDetailExtractorTest {
             assertEquals(BottleDetailExtractionResult.LocalFailure(LocalInferenceFailureCode.GENERATION_FAILED), generationResult)
             assertTrue(generationEvents.any { it.stage == BottleLookupDebugStage.LOCAL_GENERATION && it.result == "FAILED" })
             assertFalse(generationEvents.any { "NETWORK_ERROR" == it.result })
+        } finally {
+            modelFile.delete()
+        }
+    }
+
+    @Test
+    fun nativeModelLoadCategoriesArePreservedInLookupDiagnostics() = runBlocking {
+        val modelFile = validHeaderModelFile()
+        val page = WebPageText("Test Whisky", "https://shop.example/whisky", "Test Whisky", "Firecrawl")
+        try {
+            val cases = listOf(
+                "architecture" to LocalInferenceFailureCode.MODEL_ARCHITECTURE_UNSUPPORTED,
+                "allocation" to LocalInferenceFailureCode.MODEL_ALLOCATION_FAILED,
+            )
+            for ((failureKind, expectedCode) in cases) {
+                val events = mutableListOf<BottleLookupDebugEvent>()
+                val result = LocalBottleDetailExtractor(
+                    { modelFile.absolutePath },
+                    LlamaCppLocalInferenceRunner(FakeInferenceEngine(throwOn = failureKind)),
+                ).extractWithDiagnostics(page, LOCAL_MODEL_LABEL, null, events::add)
+                assertEquals(BottleDetailExtractionResult.LocalFailure(expectedCode), result)
+                assertTrue(events.any {
+                    it.stage == BottleLookupDebugStage.LOCAL_MODEL_LOADING &&
+                        it.result == "FAILED" && it.reasonCodes == listOf(expectedCode.wireValue)
+                })
+            }
+        } finally {
+            modelFile.delete()
+        }
+    }
+
+    @Test
+    fun missingNativeCpuBackendHasItsOwnSafeDiagnostic() = runBlocking {
+        val modelFile = validHeaderModelFile()
+        val failure = NativeCpuBackendUnavailableException()
+        val engine = FakeInferenceEngine(
+            initialState = InferenceEngine.State.Error(
+                exception = failure,
+                diagnosticType = failure.javaClass.simpleName,
+            ),
+        )
+        val events = mutableListOf<BottleLookupDebugEvent>()
+        try {
+            val result = LocalBottleDetailExtractor(
+                { modelFile.absolutePath },
+                LlamaCppLocalInferenceRunner(engine),
+            ).extractWithDiagnostics(
+                WebPageText("Test Whisky", "https://shop.example/whisky", "Test Whisky", "Firecrawl"),
+                LOCAL_MODEL_LABEL,
+                null,
+                events::add,
+            )
+
+            assertEquals(
+                BottleDetailExtractionResult.LocalFailure(LocalInferenceFailureCode.CPU_BACKEND_UNAVAILABLE),
+                result,
+            )
+            val error = events.single {
+                it.stage == BottleLookupDebugStage.LOCAL_RUNTIME_INITIALIZATION && it.result == "FAILED"
+            }
+            assertEquals(listOf("LOCAL_CPU_BACKEND_UNAVAILABLE"), error.reasonCodes)
+            assertEquals("NativeCpuBackendUnavailableException", error.failureType)
         } finally {
             modelFile.delete()
         }
@@ -322,7 +389,11 @@ class LocalBottleDetailExtractorTest {
         var cleanedUp = false
 
         override suspend fun loadModel(pathToModel: String) {
-            if (throwOn == "load") throw ModelLoadException()
+            when (throwOn) {
+                "load" -> throw ModelLoadException()
+                "architecture" -> throw com.arm.aichat.UnsupportedModelArchitectureException()
+                "allocation" -> throw com.arm.aichat.NativeModelAllocationException()
+            }
         }
 
         override suspend fun setSystemPrompt(systemPrompt: String) {

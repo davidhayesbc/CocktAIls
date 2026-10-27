@@ -3,6 +3,9 @@ package com.arm.aichat.internal
 import android.content.Context
 import com.arm.aichat.InferenceEngine
 import com.arm.aichat.ModelLoadException
+import com.arm.aichat.NativeModelAllocationException
+import com.arm.aichat.NativeCpuBackendUnavailableException
+import com.arm.aichat.UnsupportedModelArchitectureException
 import com.arm.aichat.internal.InferenceEngineImpl.Companion.getInstance
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -71,7 +74,7 @@ internal class InferenceEngineImpl private constructor(
      * JNI methods
      * @see ai_chat.cpp
      */
-    private external fun init(nativeLibDir: String)
+    private external fun init(nativeLibDir: String): Boolean
 
     private external fun load(modelPath: String): Int
 
@@ -114,7 +117,7 @@ internal class InferenceEngineImpl private constructor(
                 state = _state,
                 initialize = {
                     System.loadLibrary("ai-chat")
-                    init(nativeLibDir)
+                    requireCpuBackendRegistered(init(nativeLibDir))
                 },
                 onInitialized = { _nativeInitialized = true },
             )
@@ -285,9 +288,23 @@ internal class InferenceEngineImpl private constructor(
     }
 }
 
-/** JNI currently reports only success (0) or a null model result (nonzero). */
+/** JNI reports success, explicit allowlisted loader categories, or generic failure. */
 internal fun requireNativeModelLoadSucceeded(result: Int) {
-    if (result != 0) throw ModelLoadException()
+    when (result) {
+        NATIVE_MODEL_LOAD_OK -> Unit
+        NATIVE_MODEL_ARCHITECTURE_UNSUPPORTED -> throw UnsupportedModelArchitectureException()
+        NATIVE_MODEL_ALLOCATION_FAILED -> throw NativeModelAllocationException()
+        else -> throw ModelLoadException()
+    }
+}
+
+private const val NATIVE_MODEL_LOAD_OK = 0
+private const val NATIVE_MODEL_ARCHITECTURE_UNSUPPORTED = 2
+private const val NATIVE_MODEL_ALLOCATION_FAILED = 3
+
+/** Backend discovery is separate from loading the llama runtime library itself. */
+internal fun requireCpuBackendRegistered(registered: Boolean) {
+    if (!registered) throw NativeCpuBackendUnavailableException()
 }
 
 /** Publishes ordinary initialization failures to the awaited state instead of leaking them from launch. */

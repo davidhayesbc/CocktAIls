@@ -8,4 +8,4 @@
 #define LOGw(...) ((void)0)
 #define LOGe(...) ((void)0)
 
-static inline void aichat_android_log_callback(enum ggml_log_level, const char *, void *) {}
+static void aichat_android_log_callback(enum ggml_log_level, const char *, void *);

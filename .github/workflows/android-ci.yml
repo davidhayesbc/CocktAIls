@@ -25,7 +25,7 @@ jobs:
       - name: Test preview workflow gate helpers
         run: python3 -m unittest discover -s .github/scripts -p 'test_preview_*.py'
 
-      - name: Test native generation token budget
+      - name: Test native generation budget and safe model-load diagnostics
         shell: bash
         run: |
           set -euo pipefail
@@ -33,6 +33,10 @@ jobs:
             apps/androidApp/src/test/cpp/generation_budget_test.cpp \
             -o "$RUNNER_TEMP/generation-budget-test"
           "$RUNNER_TEMP/generation-budget-test"
+          g++ -std=c++17 -Wall -Wextra -Werror \
+            apps/androidApp/src/test/cpp/model_load_diagnostics_test.cpp \
+            -o "$RUNNER_TEMP/model-load-diagnostics-test"
+          "$RUNNER_TEMP/model-load-diagnostics-test"
 
       - name: Set up JDK 17
         uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
