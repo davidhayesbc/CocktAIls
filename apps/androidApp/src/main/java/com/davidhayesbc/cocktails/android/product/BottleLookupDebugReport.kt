@@ -12,6 +12,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 internal enum class BottleLookupDebugStage {
+    QUEUE_WAIT,
     LOCAL_MATCH,
     OPEN_FOOD_FACTS,
     FIRECRAWL_SEARCH,
@@ -44,7 +45,7 @@ internal data class BottleLookupDebugEvent(
     val stage: BottleLookupDebugStage,
     val provider: String,
     val result: String,
-    val durationMillis: Long = 0,
+    val durationMillis: Long? = null,
     val httpStatus: Int? = null,
     val resultCount: Int? = null,
     val sourceUrls: List<String> = emptyList(),
@@ -97,6 +98,16 @@ internal class BottleLookupDebugReport(
     private val lock = Any()
     private val events = mutableListOf<BottleLookupDebugEvent>()
     private var outcome: String = "RUNNING"
+    private var queueWaitMillis: Long? = null
+    private var workerElapsedMillis: Long? = null
+
+    fun setQueueWaitMillis(value: Long?) = synchronized(lock) {
+        queueWaitMillis = value?.coerceIn(0, MAX_DURATION_MS)
+    }
+
+    fun setWorkerElapsedMillis(value: Long?) = synchronized(lock) {
+        workerElapsedMillis = value?.coerceIn(0, MAX_DURATION_MS)
+    }
 
     fun record(event: BottleLookupDebugEvent) = synchronized(lock) {
         events += sanitizeEvent(event)
@@ -143,6 +154,7 @@ internal class BottleLookupDebugReport(
             })
             put("searchQuery", query ?: "not constructed")
             put("outcome", outcome)
+            put("timing", timingSummary())
             put("events", buildJsonArray { events.forEach { add(it.toJson()) } })
             put("privacy", "No keys, headers, response bodies, page text, prompts, photos, notes, or household records are included. Local failures may include allowlisted exception types and first-party stack locations, never exception messages or file paths.")
         }
@@ -157,7 +169,7 @@ internal class BottleLookupDebugReport(
     private fun sanitizeEvent(event: BottleLookupDebugEvent) = event.copy(
         provider = event.provider.safeProvider(),
         result = event.result.safeCode(RESULTS, "UNKNOWN"),
-        durationMillis = event.durationMillis.coerceIn(0, MAX_DURATION_MS),
+        durationMillis = event.durationMillis?.coerceIn(0, MAX_DURATION_MS),
         httpStatus = event.httpStatus?.takeIf { it in 100..599 },
         resultCount = event.resultCount?.coerceIn(0, MAX_RESULTS),
         sourceUrls = event.sourceUrls.mapNotNull(::safeDiagnosticUrl).take(MAX_RESULTS),
@@ -175,7 +187,7 @@ internal class BottleLookupDebugReport(
         put("stage", stage.name)
         put("provider", provider)
         put("result", result)
-        put("durationMillis", durationMillis)
+        durationMillis?.let { put("durationMillis", it) }
         httpStatus?.let { put("httpStatus", it) }
         resultCount?.let { put("resultCount", it) }
         put("sourceUrls", buildJsonArray { sourceUrls.forEach { add(JsonPrimitive(it)) } })
@@ -187,6 +199,45 @@ internal class BottleLookupDebugReport(
         outputChunks?.let { put("outputChunks", it) }
         generatedTokens?.let { put("generatedTokens", it) }
         finishReason?.let { put("finishReason", it) }
+    }
+
+    private fun timingSummary() = buildJsonObject {
+        val measured = events.filter { it.durationMillis != null }
+        val searchMillis = measured.filter { it.stage == BottleLookupDebugStage.FIRECRAWL_SEARCH }.sumOf { it.durationMillis!! }
+        val fetchMillis = measured.filter { it.stage == BottleLookupDebugStage.FIRECRAWL_FETCH }.sumOf { it.durationMillis!! }
+        val offMillis = measured.filter { it.stage == BottleLookupDebugStage.OPEN_FOOD_FACTS }.sumOf { it.durationMillis!! }
+        // DETAIL_EXTRACTION is the outer provider call; local load/prefill/generation events are nested
+        // diagnostics and are deliberately excluded from this aggregate to avoid double counting.
+        val aiMillis = measured.filter {
+            it.stage == BottleLookupDebugStage.DETAIL_EXTRACTION && it.provider in setOf("ON_DEVICE", "OLLAMA_CLOUD")
+        }.sumOf { it.durationMillis!! }
+        val networkMillis = searchMillis + fetchMillis + offMillis
+        val providerMillis = networkMillis + aiMillis
+        timingValue("queueWaitMillis", queueWaitMillis)
+        timingValue("workerElapsedMillis", workerElapsedMillis)
+        timingValue("openFoodFactsMillis", offMillis.takeIf { measured.any { event -> event.stage == BottleLookupDebugStage.OPEN_FOOD_FACTS && event.durationMillis != null } })
+        timingValue("firecrawlSearchMillis", searchMillis.takeIf { measured.any { event -> event.stage == BottleLookupDebugStage.FIRECRAWL_SEARCH && event.durationMillis != null } })
+        timingValue("firecrawlFetchMillis", fetchMillis.takeIf { measured.any { event -> event.stage == BottleLookupDebugStage.FIRECRAWL_FETCH && event.durationMillis != null } })
+        timingValue("networkProviderMillis", networkMillis.takeIf { measured.any { event -> event.stage in setOf(BottleLookupDebugStage.OPEN_FOOD_FACTS, BottleLookupDebugStage.FIRECRAWL_SEARCH, BottleLookupDebugStage.FIRECRAWL_FETCH) && event.durationMillis != null } })
+        timingValue("aiProviderMillis", aiMillis.takeIf { measured.any { event -> event.stage == BottleLookupDebugStage.DETAIL_EXTRACTION && event.provider in setOf("ON_DEVICE", "OLLAMA_CLOUD") && event.durationMillis != null } })
+        timingValue("providerActiveMillis", providerMillis.takeIf {
+            measured.any { event ->
+                event.stage in setOf(
+                    BottleLookupDebugStage.OPEN_FOOD_FACTS,
+                    BottleLookupDebugStage.FIRECRAWL_SEARCH,
+                    BottleLookupDebugStage.FIRECRAWL_FETCH,
+                ) || (event.stage == BottleLookupDebugStage.DETAIL_EXTRACTION && event.provider in setOf("ON_DEVICE", "OLLAMA_CLOUD"))
+            }
+        })
+        timingValue("endToEndMillis", if (queueWaitMillis != null && workerElapsedMillis != null) queueWaitMillis!! + workerElapsedMillis!! else null)
+        put("aggregateNote", "Provider totals sum measured network and AI request spans. Local-model substage events are nested in AI time and are not added again. Unmeasured or cross-reboot queue timing is unavailable.")
+    }
+
+    private fun kotlinx.serialization.json.JsonObjectBuilder.timingValue(name: String, value: Long?) {
+        put(name, buildJsonObject {
+            put("status", if (value == null) "UNAVAILABLE" else "MEASURED")
+            value?.let { put("durationMillis", it.coerceIn(0, MAX_DURATION_MS)) }
+        })
     }
 
     private fun String.safeVersion() = filter { it.isLetterOrDigit() || it in ".-_+" }.take(80).ifBlank { "unknown" }

@@ -365,7 +365,7 @@ class ScannedBottleWorkflowTest {
 
         assertEquals(404, events.last { it.stage == BottleLookupDebugStage.OPEN_FOOD_FACTS }.httpStatus)
         assertEquals(200, events.last { it.stage == BottleLookupDebugStage.FIRECRAWL_SEARCH }.httpStatus)
-        assertTrue(events.last { it.stage == BottleLookupDebugStage.FIRECRAWL_SEARCH }.durationMillis >= 0)
+        assertTrue((events.last { it.stage == BottleLookupDebugStage.FIRECRAWL_SEARCH }.durationMillis ?: -1L) >= 0)
         assertEquals("BARCODE_MISSING", events.last { it.stage == BottleLookupDebugStage.BARCODE_MATCH }.result)
         assertEquals(listOf("NO_EXACT_CODE_IN_PAGE", "CANDIDATE_1_REJECTED"), events.last { it.stage == BottleLookupDebugStage.BARCODE_MATCH }.reasonCodes)
         assertTrue(events.none { it.stage == BottleLookupDebugStage.DETAIL_EXTRACTION && it.result == "CANDIDATES_READY" })

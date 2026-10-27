@@ -320,15 +320,15 @@ class LocalBottleDetailExtractorTest {
         assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_MODEL_LOADING))
         assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_PROMPT_SETUP))
         val prefill = events.single { it.stage == BottleLookupDebugStage.LOCAL_PROMPT_PREFILL && it.result == "COMPLETE" }
-        assertTrue(prefill.durationMillis > 0)
+        assertTrue((prefill.durationMillis ?: 0) > 0)
         assertTrue((prefill.promptCharacters ?: 0) > 0)
         val firstToken = events.single { it.stage == BottleLookupDebugStage.LOCAL_FIRST_TOKEN }
-        assertTrue(firstToken.durationMillis > 0)
+        assertTrue((firstToken.durationMillis ?: 0) > 0)
         val generation = events.single { it.stage == BottleLookupDebugStage.LOCAL_GENERATION && it.result == "COMPLETE" }
         assertEquals(1, generation.outputChunks)
         assertEquals(49, generation.generatedTokens)
         assertEquals("END_OF_SEQUENCE", generation.finishReason)
-        assertTrue(generation.durationMillis > 0)
+        assertTrue((generation.durationMillis ?: 0) > 0)
         assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_GENERATION))
         assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_RESPONSE_PARSING))
         assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_IDENTITY_BINDING))
@@ -395,7 +395,7 @@ class LocalBottleDetailExtractorTest {
                 it.stage == BottleLookupDebugStage.LOCAL_GENERATION && it.result == "FAILED"
             }
             assertEquals(listOf("LOCAL_GENERATION_TIMEOUT"), timeout.reasonCodes)
-            assertTrue(timeout.durationMillis in 400..750)
+            assertTrue((timeout.durationMillis ?: -1L) in 400..750)
             assertTrue((timeout.promptCharacters ?: 0) > 0)
             assertTrue(events.any { it.stage == BottleLookupDebugStage.LOCAL_PROMPT_PREFILL && it.result == "COMPLETE" })
         } finally {

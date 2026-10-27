@@ -122,17 +122,62 @@ class BottleEnrichmentQueueTest {
     }
 
     @Test
-    fun queuedJobsPauseOnRestartAndFinishedStatesAreNotRetriedAutomatically() {
+    fun untouchedQueuedJobsRemainSchedulableWhileInterruptedWorkPauses() {
         val storage = MemoryStorage()
         val queue = BottleEnrichmentQueue(storage)
         queue.enqueue("session", "draft-queued", nowMillis = 1)
+        queue.enqueue("session", "draft-running", nowMillis = 2)
+        queue.begin("session", "draft-running", BottleEnrichmentOperation.FIRECRAWL_SEARCH, nowMillis = 3)
         queue.enqueue("session", "draft-ready", nowMillis = 2)
-        queue.finish("draft-ready", BottleEnrichmentStatus.NEEDS_ATTENTION, "NO_MATCH", 3)
+        queue.finish("draft-ready", BottleEnrichmentStatus.NEEDS_ATTENTION, "NO_MATCH", 4)
 
         val recovered = BottleEnrichmentQueue(storage).recoverInterrupted().associateBy { it.draftId }
 
-        assertEquals(BottleEnrichmentStatus.PAUSED, recovered.getValue("draft-queued").status)
+        assertEquals(BottleEnrichmentStatus.QUEUED, recovered.getValue("draft-queued").status)
+        assertEquals(BottleEnrichmentStatus.PAUSED, recovered.getValue("draft-running").status)
         assertEquals(BottleEnrichmentStatus.NEEDS_ATTENTION, recovered.getValue("draft-ready").status)
+    }
+
+    @Test
+    fun activeDurableWorkRemainsRunningDuringUiReconciliation() {
+        val queue = BottleEnrichmentQueue(MemoryStorage())
+        queue.enqueue("session", "draft-active", nowMillis = 1)
+        queue.begin("session", "draft-active", BottleEnrichmentOperation.FIRECRAWL_SEARCH, nowMillis = 2)
+
+        val recovered = queue.recoverInterrupted(activeWorkDraftIds = setOf("draft-active"))
+
+        assertEquals(BottleEnrichmentStatus.RUNNING, recovered.single().status)
+    }
+
+    @Test
+    fun cancelledQueuedWorkCannotBeClaimedOrAdvancedByALateWorker() {
+        val queue = BottleEnrichmentQueue(MemoryStorage())
+        val queued = queue.enqueue("session", "draft", nowMillis = 1)!!
+        assertTrue(queue.finish("draft", BottleEnrichmentStatus.CANCELLED, "CANCELLED_BY_USER", 2))
+        var finalizeCalled = false
+
+        assertNull(queue.beginQueued("session", "draft", BottleEnrichmentOperation.FIRECRAWL_SEARCH, nowMillis = 3))
+        assertEquals(BottleEnrichmentStatus.CANCELLED, queue.status("draft")!!.status)
+        assertNull(queue.updateRunning(
+            "session", "draft", BottleEnrichmentOperation.FIRECRAWL_FETCH,
+            sourceUrl = "https://example.com/product", nowMillis = 4,
+        ))
+        assertFalse(queue.completeIfRunning("draft", 5) {
+            finalizeCalled = true
+            BottleEnrichmentStatus.READY_FOR_REVIEW to "CANDIDATES_READY"
+        })
+        assertFalse(finalizeCalled)
+        assertFalse(queue.pause(queued.id, 6))
+        assertEquals(queued.id, queue.status("draft")!!.id)
+        assertEquals("CANCELLED_BY_USER", queue.status("draft")!!.resultCode)
+    }
+
+    @Test
+    fun cancelledOrStoppedWorkerCannotPersistLateSuggestions() {
+        assertFalse(mayPersistBottleEnrichmentResult(true, BottleEnrichmentStatus.RUNNING))
+        assertFalse(mayPersistBottleEnrichmentResult(false, BottleEnrichmentStatus.CANCELLED))
+        assertFalse(mayPersistBottleEnrichmentResult(false, BottleEnrichmentStatus.REVIEWED))
+        assertTrue(mayPersistBottleEnrichmentResult(false, BottleEnrichmentStatus.RUNNING))
     }
 
     @Test
@@ -187,6 +232,16 @@ class BottleEnrichmentQueueTest {
         assertEquals(queued.id, retried.id)
         assertEquals(BottleEnrichmentStatus.QUEUED, retried.status)
         assertNull(retried.resultCode)
+    }
+
+    @Test
+    fun retryKeepsPersistedExplicitlyEditedFieldsIncludingClearedValues() {
+        val edited = setOf(BottleDraftField.BRAND, BottleDraftField.PRODUCT_NAME)
+
+        val retried = preserveEditedBottleFields(emptySet(), edited)
+
+        assertEquals(edited, retried)
+        assertTrue(BottleDraftField.BRAND in retried)
     }
 
     @Test

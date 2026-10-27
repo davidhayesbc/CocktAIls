@@ -180,6 +180,13 @@ internal object LocalDiagnostics {
         recordEvent("APP_STARTED")
     }
 
+    fun initializeIfNeeded(directory: File, versionName: String, versionCode: Long) {
+        if (store != null) return
+        synchronized(this) {
+            if (store == null) initialize(directory, versionName, versionCode)
+        }
+    }
+
     internal fun createUncaughtExceptionHandler(
         prior: UncaughtExceptionHandler?,
         recorder: (Thread, Throwable) -> Unit,

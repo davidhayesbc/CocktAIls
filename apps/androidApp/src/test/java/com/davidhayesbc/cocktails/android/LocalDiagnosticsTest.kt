@@ -212,5 +212,39 @@ class LocalDiagnosticsTest {
         dir.deleteRecursively()
     }
 
+    @Test fun lookupTimingSeparatesQueueNetworkAndAiWithoutDoubleCountingModelSubstages() {
+        val report = BottleLookupDebugReport(1, "preview", 9, "5011333150725", "5011333150725", true, true, true, true, "On-device Qwen3", "Qwen3-0.6B-Q8_0", null)
+        report.setQueueWaitMillis(5)
+        report.setWorkerElapsedMillis(200)
+        report.record(BottleLookupDebugEvent(BottleLookupDebugStage.FIRECRAWL_SEARCH, "Firecrawl", "FOUND", durationMillis = 20))
+        report.record(BottleLookupDebugEvent(BottleLookupDebugStage.FIRECRAWL_FETCH, "Firecrawl", "FETCHED", durationMillis = 30))
+        report.record(BottleLookupDebugEvent(BottleLookupDebugStage.OPEN_FOOD_FACTS, "Open Food Facts", "NOT_FOUND", durationMillis = 10))
+        report.record(BottleLookupDebugEvent(BottleLookupDebugStage.DETAIL_EXTRACTION, "ON_DEVICE", "COMPLETE", durationMillis = 100))
+        report.record(BottleLookupDebugEvent(BottleLookupDebugStage.LOCAL_PROMPT_PREFILL, "On-device Qwen3", "COMPLETE", durationMillis = 60))
+        report.record(BottleLookupDebugEvent(BottleLookupDebugStage.LOCAL_GENERATION, "On-device Qwen3", "COMPLETE", durationMillis = 40))
+        report.record(BottleLookupDebugEvent(BottleLookupDebugStage.LOCAL_PROMPT_SETUP, "On-device Qwen3", "RUNNING"))
+        report.finish("SUCCESS")
+
+        val json = Json.parseToJsonElement(report.toJson()).jsonObject
+        val timing = json["timing"]!!.jsonObject
+        assertEquals("60", timing["networkProviderMillis"]!!.jsonObject["durationMillis"]!!.jsonPrimitive.content)
+        assertEquals("100", timing["aiProviderMillis"]!!.jsonObject["durationMillis"]!!.jsonPrimitive.content)
+        assertEquals("160", timing["providerActiveMillis"]!!.jsonObject["durationMillis"]!!.jsonPrimitive.content)
+        assertEquals("205", timing["endToEndMillis"]!!.jsonObject["durationMillis"]!!.jsonPrimitive.content)
+        val runningEvent = json["events"]!!.jsonArray.map { it.jsonObject }.first { it["stage"]!!.jsonPrimitive.content == "LOCAL_PROMPT_SETUP" }
+        assertFalse(runningEvent.containsKey("durationMillis"))
+
+        val queueOnly = BottleLookupDebugReport(3, "preview", 9, "5011333150725", "5011333150725", false, true, false, false, null, null, null)
+        queueOnly.record(BottleLookupDebugEvent(BottleLookupDebugStage.QUEUE_WAIT, "APP", "COMPLETE", durationMillis = 18))
+        val queueTiming = Json.parseToJsonElement(queueOnly.toJson()).jsonObject["timing"]!!.jsonObject
+        assertEquals("UNAVAILABLE", queueTiming["providerActiveMillis"]!!.jsonObject["status"]!!.jsonPrimitive.content)
+
+        val afterReboot = BottleLookupDebugReport(2, "preview", 9, "5011333150725", "5011333150725", false, true, false, false, null, null, null)
+        afterReboot.setWorkerElapsedMillis(8)
+        val unavailable = Json.parseToJsonElement(afterReboot.toJson()).jsonObject["timing"]!!.jsonObject
+        assertEquals("UNAVAILABLE", unavailable["queueWaitMillis"]!!.jsonObject["status"]!!.jsonPrimitive.content)
+        assertEquals("UNAVAILABLE", unavailable["endToEndMillis"]!!.jsonObject["status"]!!.jsonPrimitive.content)
+    }
+
     private fun String.countOccurrences(value: String): Int = windowed(value.length).count { it == value }
 }

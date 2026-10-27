@@ -13,6 +13,8 @@ import android.graphics.Matrix
 import android.media.ExifInterface
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
+import android.provider.Settings
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
@@ -63,6 +65,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -177,7 +180,13 @@ import com.davidhayesbc.cocktails.android.product.BottleEnrichmentOperation
 import com.davidhayesbc.cocktails.android.product.BottleEnrichmentQueue
 import com.davidhayesbc.cocktails.android.product.BottleEnrichmentSerialGate
 import com.davidhayesbc.cocktails.android.product.BottleEnrichmentStatus
+import com.davidhayesbc.cocktails.android.product.BottleEnrichmentWorkScheduler
+import com.davidhayesbc.cocktails.android.product.BottleScanEnrichmentRuntime
+import com.davidhayesbc.cocktails.android.product.BottleCaptureToken
+import com.davidhayesbc.cocktails.android.product.bottleCaptureTempFileName
+import com.davidhayesbc.cocktails.android.product.isCurrentBottleCapture
 import com.davidhayesbc.cocktails.android.product.BottleLabelCropper
+import com.davidhayesbc.cocktails.android.product.BottleLabelCropEditorState
 import com.davidhayesbc.cocktails.android.product.NormalizedLabelCrop
 import com.davidhayesbc.cocktails.android.product.SharedPreferencesBottleEnrichmentQueueStorage
 import com.davidhayesbc.cocktails.android.product.FirecrawlSearchProvider
@@ -190,6 +199,9 @@ import com.davidhayesbc.cocktails.android.product.unresolvedBottleSourceFields
 import com.davidhayesbc.cocktails.android.product.PendingBottleEvidenceStore
 import com.davidhayesbc.cocktails.android.product.SharedPreferencesPendingBottleEvidenceStorage
 import com.davidhayesbc.cocktails.android.product.BottleDraftField
+import com.davidhayesbc.cocktails.android.product.BottleDraftSuggestionFields
+import com.davidhayesbc.cocktails.android.product.mergeBottleSuggestionFields
+import com.davidhayesbc.cocktails.android.product.preserveEditedBottleFields
 import com.davidhayesbc.cocktails.android.product.isValidOllamaModelIdentifier
 import com.davidhayesbc.cocktails.android.product.LocalModelFileStore
 import com.davidhayesbc.cocktails.android.product.LocalModelInstallResult
@@ -330,9 +342,8 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     }
     val localModelFileStore = remember(context) { LocalModelFileStore(File(context.filesDir, "local-models")) }
     val bottleEnrichmentQueue = remember(context) {
-        BottleEnrichmentQueue(SharedPreferencesBottleEnrichmentQueueStorage(context)).also { it.recoverInterrupted() }
+        BottleEnrichmentQueue(SharedPreferencesBottleEnrichmentQueueStorage(context))
     }
-    val bottleScanPipeline = remember { BottleEnrichmentSerialGate() }
     val pendingBottleEvidenceStore = remember(context) {
         PendingBottleEvidenceStore(SharedPreferencesPendingBottleEvidenceStorage(context))
     }
@@ -393,6 +404,16 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         pendingBottleEnrichmentJobs = bottleEnrichmentQueue.jobs().associateBy { it.draftId }
     }
 
+    LaunchedEffect(bottleEnrichmentQueue, context) {
+        val plan = BottleScanEnrichmentRuntime(context).plan()
+        BottleEnrichmentWorkScheduler.reconcile(
+            context = context,
+            queue = bottleEnrichmentQueue,
+            requiresNetwork = plan.openFoodFactsEnabled || plan.firecrawlEnabled,
+        )
+        refreshPendingBottleEnrichmentJobs()
+    }
+
     fun persistBottleLookupDebug(report: BottleLookupDebugReport) {
         LocalDiagnostics.recordBottleLookup(report)
     }
@@ -408,12 +429,13 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         bottleExtractionJobs.values.forEach(Job::cancel)
         bottleExtractionJobs.clear()
         if (keepPaused && sessionId != null) {
-            bottleEnrichmentQueue.jobs().filter { it.sessionId == sessionId }.forEach { job ->
+            bottleEnrichmentQueue.jobs().filter { it.sessionId == sessionId && it.draftId in ids }.forEach { job ->
                 if (job.status == BottleEnrichmentStatus.RUNNING || job.status == BottleEnrichmentStatus.QUEUED) {
                     bottleEnrichmentQueue.pause(job.id, System.currentTimeMillis())
                 }
             }
         } else if (sessionId != null) {
+            BottleEnrichmentWorkScheduler.cancelSession(context, sessionId)
             bottleEnrichmentQueue.removeSession(sessionId)
         }
         refreshPendingBottleEnrichmentJobs()
@@ -467,47 +489,61 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     }
     var bottleIntakeCameraMessage by remember { mutableStateOf<String?>(null) }
     var bottleIntakeSession by remember(repository) { mutableStateOf(repository.openBottleIntakeSession()) }
-    LaunchedEffect(showBottleIntake, bottleIntakeSession?.id, bottleIntakeSession?.drafts?.size) {
+    LaunchedEffect(showBottleIntake, bottleIntakeSession?.id, bottleIntakeSession?.drafts?.size, pendingBottleEnrichmentJobs) {
         val session = bottleIntakeSession
         if (showBottleIntake && session != null) {
             val restored = bottleWebSearchStates.toMutableMap()
             session.drafts.forEach { draft ->
                 val draftBarcode = draft.barcode ?: return@forEach
-                if (restored[draft.id]?.automatedScan != true) {
-                    val job = pendingBottleEnrichmentJobs[draft.id]
-                    val savedSuggestions = pendingBottleEvidenceStore.read(draft.id)?.takeIf { saved ->
-                        saved.targetBarcode?.let { normalizeGtinForLookup(it) } == normalizeGtinForLookup(draftBarcode) &&
-                            saved.identityEvidence?.let { sourceMentionsScannedBarcode(draftBarcode, it) } == true
-                    }
-                    if (job != null || savedSuggestions != null) {
-                        restored[draft.id] = BottleWebSearchState(
-                            automatedScan = true,
-                            userEditedFields = pendingBottleEvidenceStore.editedFields(draft.id),
-                            localMatch = repository.localProductForBarcode(draftBarcode) != null,
-                            barcodeVerifiedInPage = savedSuggestions?.targetBarcode != null,
-                            barcodeVerifiedByStructuredProduct = savedSuggestions?.identityEvidence?.startsWith("Structured product fields:") == true,
-                            page = savedSuggestions?.let { WebPageText("Verified source", it.sourceUrl, "", it.provider) },
-                            extractedSuggestions = savedSuggestions,
-                            message = when {
-                                savedSuggestions != null -> "Suggestions restored for review. No provider request restarted."
-                                job?.labelCaptureRequired == true -> "Capture this bottle's label or skip the photo. Lookup runs separately while you do that."
-                                job?.status == BottleEnrichmentStatus.CAPTURE_REQUIRED -> "Capture this bottle's label or skip the photo before lookup is queued."
-                                job?.status == BottleEnrichmentStatus.PAUSED -> "This scan was interrupted. Resume only when you choose; no provider request restarted automatically."
-                                job?.status == BottleEnrichmentStatus.READY_FOR_REVIEW -> "Suggestions are ready. Select this bottle to review them."
-                                job?.status == BottleEnrichmentStatus.NEEDS_ATTENTION -> "Lookup needs attention. Review the bottle or retry when ready."
-                                else -> "This bottle draft was kept locally. No provider request restarted automatically."
-                            },
-                        )
-                    }
+                val prior = restored[draft.id]
+                val job = pendingBottleEnrichmentJobs[draft.id]
+                val savedSuggestions = pendingBottleEvidenceStore.read(draft.id)?.takeIf { saved ->
+                    saved.targetBarcode?.let { normalizeGtinForLookup(it) } == normalizeGtinForLookup(draftBarcode) &&
+                        saved.identityEvidence?.let { sourceMentionsScannedBarcode(draftBarcode, it) } == true
+                }
+                if (job != null || savedSuggestions != null || prior?.automatedScan == true) {
+                    restored[draft.id] = (prior ?: BottleWebSearchState()).copy(
+                        automatedScan = true,
+                        userEditedFields = preserveEditedBottleFields(
+                            prior?.userEditedFields.orEmpty(),
+                            pendingBottleEvidenceStore.editedFields(draft.id),
+                        ),
+                        localMatch = repository.localProductForBarcode(draftBarcode) != null,
+                        barcodeVerifiedInPage = savedSuggestions?.targetBarcode != null || prior?.barcodeVerifiedInPage == true,
+                        barcodeVerifiedByStructuredProduct = savedSuggestions?.identityEvidence?.startsWith("Structured product fields:") == true || prior?.barcodeVerifiedByStructuredProduct == true,
+                        page = savedSuggestions?.let { WebPageText("Verified source", it.sourceUrl, "", it.provider) } ?: prior?.page,
+                        extractedSuggestions = savedSuggestions ?: prior?.extractedSuggestions,
+                        message = when {
+                            savedSuggestions != null -> "Restored the verified source and suggestions for this unaccepted bottle. Review them; no provider request restarted."
+                            job?.labelCaptureRequired == true -> "Capture this bottle's label or skip the photo. Lookup runs separately while you do that."
+                            job?.status == BottleEnrichmentStatus.CAPTURE_REQUIRED -> "Capture this bottle's label or skip the photo before lookup is queued."
+                            job?.status == BottleEnrichmentStatus.QUEUED -> "Queued for background processing. You can keep scanning; results will wait for review."
+                            job?.status == BottleEnrichmentStatus.RUNNING -> "Processing in the background. You can leave intake; results will wait for review."
+                            job?.status == BottleEnrichmentStatus.PAUSED -> "This scan was interrupted. Resume only when you choose; no provider request restarted automatically."
+                            job?.status == BottleEnrichmentStatus.READY_FOR_REVIEW -> "Suggestions are ready. Select this bottle to review them."
+                            job?.status == BottleEnrichmentStatus.NEEDS_ATTENTION -> "Lookup needs attention. Review the bottle or retry when ready."
+                            else -> prior?.message ?: "This bottle draft was kept locally. No provider request restarted automatically."
+                        },
+                    )
                 }
             }
             if (restored != bottleWebSearchStates) bottleWebSearchStates = restored
+        }
+    }
+
+    LaunchedEffect(showBottleIntake, bottleIntakeSession?.id) {
+        while (showBottleIntake && bottleIntakeSession != null) {
+            delay(750)
+            refreshPendingBottleEnrichmentJobs()
         }
     }
     var pendingBottleLabelPhoto by remember { mutableStateOf<ByteArray?>(null) }
     var pendingBottleLabelOriginalPhoto by remember { mutableStateOf<ByteArray?>(null) }
     var pendingBottleLabelCropSuggestion by remember { mutableStateOf<NormalizedLabelCrop?>(null) }
     var bottleLabelCropBusy by remember { mutableStateOf(false) }
+    var bottleCaptureGeneration by remember { mutableStateOf(0L) }
+    var activeBottleCaptureToken by remember { mutableStateOf<BottleCaptureToken?>(null) }
+    var launchedBottleCameraToken by remember { mutableStateOf<BottleCaptureToken?>(null) }
     val pendingLabelPreferences = remember(context) { context.getSharedPreferences("cocktails_pending_label_capture", Context.MODE_PRIVATE) }
     var pendingBottleLabelDraftId by remember(context, repository) {
         val captureRequiredIds = bottleEnrichmentQueue.jobs()
@@ -522,7 +558,29 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     }
     var finishScannedBottleLabel: ((String, ByteArray?) -> Boolean)? = null
 
+    fun beginBottleCaptureOperation(draftId: String?): BottleCaptureToken {
+        bottleCaptureGeneration += 1
+        return BottleCaptureToken(bottleCaptureGeneration, draftId).also { activeBottleCaptureToken = it }
+    }
+
+    fun invalidateBottleCaptureOperation() {
+        launchedBottleCameraToken?.let { token ->
+            File(File(context.cacheDir, "intake-labels"), bottleCaptureTempFileName(token)).delete()
+        }
+        bottleCaptureGeneration += 1
+        activeBottleCaptureToken = null
+        launchedBottleCameraToken = null
+        bottleLabelCropBusy = false
+    }
+
+    fun isCurrentBottleCaptureOperation(token: BottleCaptureToken): Boolean = isCurrentBottleCapture(
+        token,
+        bottleCaptureGeneration,
+        pendingBottleLabelDraftId,
+    ) && activeBottleCaptureToken == token
+
     fun setPendingBottleLabelDraftId(draftId: String?): Boolean {
+        if (pendingBottleLabelDraftId != draftId) invalidateBottleCaptureOperation()
         pendingBottleLabelDraftId = draftId
         return pendingLabelPreferences.edit().apply {
             if (draftId == null) remove("draft_id") else putString("draft_id", draftId)
@@ -732,6 +790,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         bottleExtractionRequestTokens[draftId] = (bottleExtractionRequestTokens[draftId] ?: 0) + 1
         bottleExtractionJobs.remove(draftId)?.cancel()
         bottleEnrichmentQueue.finish(draftId, BottleEnrichmentStatus.CANCELLED, "CANCELLED_BY_USER", System.currentTimeMillis())
+        BottleEnrichmentWorkScheduler.cancelDraft(context, draftId)
         refreshPendingBottleEnrichmentJobs()
         bottleWebSearchStates = bottleWebSearchStates + (draftId to (bottleWebSearchStates[draftId] ?: BottleWebSearchState()).copy(
             searching = false,
@@ -862,8 +921,10 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             val extracted = try {
                 val runner = LazyLlamaCppLocalInferenceRunner(context)
                 val requiredBarcode = bottleWebSearchStates[draftId]?.takeIf { it.automatedScan }?.let { currentDraft.barcode }
-                LocalBottleDetailExtractor({ modelFile.absolutePath }, runner)
-                    .extract(page, LOCAL_MODEL_LABEL, requiredBarcode)
+                BottleEnrichmentSerialGate.processWide.withSlot {
+                    LocalBottleDetailExtractor({ modelFile.absolutePath }, runner)
+                        .extract(page, LOCAL_MODEL_LABEL, requiredBarcode)
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
@@ -903,9 +964,16 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
 
     fun startScannedBottleEnrichment(draft: BottleIntakeDraft, localMatch: Boolean) {
         val existingJob = bottleEnrichmentQueue.status(draft.id)
-        if (existingJob?.status in setOf(BottleEnrichmentStatus.READY_FOR_REVIEW, BottleEnrichmentStatus.REVIEWED)) return
-        if (bottleWebSearchJobs[draft.id]?.isActive == true) return
-        val queued = bottleEnrichmentQueue.enqueue(draft.sessionId, draft.id, System.currentTimeMillis())
+        if (existingJob?.status in setOf(BottleEnrichmentStatus.READY_FOR_REVIEW, BottleEnrichmentStatus.REVIEWED, BottleEnrichmentStatus.RUNNING)) return
+        val runtime = BottleScanEnrichmentRuntime(context)
+        val plan = runtime.plan()
+        val queued = bottleEnrichmentQueue.enqueue(
+            sessionId = draft.sessionId,
+            draftId = draft.id,
+            nowMillis = System.currentTimeMillis(),
+            enqueuedElapsedRealtimeMillis = SystemClock.elapsedRealtime(),
+            enqueuedBootCount = runCatching { Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT) }.getOrNull(),
+        )
         if (queued == null) {
             bottleWebSearchStates = bottleWebSearchStates + (draft.id to (bottleWebSearchStates[draft.id] ?: BottleWebSearchState(automatedScan = true)).copy(
                 automatedScan = true,
@@ -914,244 +982,34 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             refreshPendingBottleEnrichmentJobs()
             return
         }
-        bottleWebSearchJobs.remove(draft.id)?.cancel()
-        bottleExtractionJobs.remove(draft.id)?.cancel()
-        val requestToken = (bottleWebSearchRequestTokens[draft.id] ?: 0) + 1
-        bottleWebSearchRequestTokens[draft.id] = requestToken
-        bottleWebSearchStates = bottleWebSearchStates + (draft.id to BottleWebSearchState(
+        val previous = bottleWebSearchStates[draft.id] ?: BottleWebSearchState(automatedScan = true)
+        val scheduled = BottleEnrichmentWorkScheduler.enqueue(
+            context = context,
+            sessionId = draft.sessionId,
+            draftId = draft.id,
+            requiresNetwork = plan.openFoodFactsEnabled || plan.firecrawlEnabled,
+        )
+        bottleWebSearchStates = bottleWebSearchStates + (draft.id to previous.copy(
             automatedScan = true,
             localMatch = localMatch,
-            automaticStage = "Waiting in the bottle queue",
-            openFoodFactsResult = null,
-            message = "You can keep scanning. Suggestions will wait here for review.",
+            searching = false,
+            fetchingUrl = null,
+            extracting = false,
+            automaticStage = null,
+            userEditedFields = preserveEditedBottleFields(
+                previous.userEditedFields,
+                pendingBottleEvidenceStore.editedFields(draft.id),
+            ),
+            message = if (scheduled) {
+                "Queued for background processing. Results will wait here for your review; interrupted requests are not restarted automatically."
+            } else {
+                "The bottle draft is safe, but background work could not be scheduled. Try the lookup again while intake is open."
+            },
         ))
-        refreshPendingBottleEnrichmentJobs()
-        bottleWebSearchJobs[draft.id] = coroutineScope.launch {
-            val scanExtractor = automaticBottleExtractor(
-                onDeviceEnabled = localAiEnabled && localModelFile != null,
-                ollamaCloudEnabled = ollamaCloudEnabled && ollamaCloudKeySaved && !ollamaCloudKeyNeedsReplacement && isValidOllamaModelIdentifier(ollamaCloudModel),
-            )
-            val scanPlan = ScannedBottlePlan(
-                openFoodFactsEnabled = openFoodFactsEnabled,
-                firecrawlEnabled = firecrawlSearchEnabled && firecrawlKeySaved && !firecrawlKeyNeedsReplacement,
-                extractor = scanExtractor,
-            )
-            val scanQuery = draft.barcode?.let(::scannedBottleSearchQuery)
-            val debugReport = BottleLookupDebugReport(
-                createdAtMillis = System.currentTimeMillis(),
-                versionName = installedAppVersion.name,
-                versionCode = installedAppVersion.code,
-                originalBarcode = draft.barcode.orEmpty(),
-                normalizedBarcode = draft.barcode?.let(::normalizeGtinForLookup),
-                openFoodFactsEnabled = openFoodFactsEnabled,
-                openFoodFactsConfigured = true,
-                firecrawlEnabled = firecrawlSearchEnabled,
-                firecrawlConfigured = firecrawlKeySaved && !firecrawlKeyNeedsReplacement,
-                extractorProvider = when (scanExtractor) {
-                    AutomaticBottleExtractor.ON_DEVICE -> "On-device Qwen3"
-                    AutomaticBottleExtractor.OLLAMA_CLOUD -> "Ollama Cloud"
-                    null -> null
-                },
-                modelIdentifier = when (scanExtractor) {
-                    AutomaticBottleExtractor.ON_DEVICE -> LOCAL_MODEL_LABEL
-                    AutomaticBottleExtractor.OLLAMA_CLOUD -> ollamaCloudModel
-                    null -> null
-                },
-                query = scanQuery,
-                onDeviceAiEnabled = localAiEnabled,
-                onDeviceModelInstalled = localModelFile != null,
-                ollamaCloudEnabled = ollamaCloudEnabled,
-                ollamaCloudConfigured = ollamaCloudKeySaved && !ollamaCloudKeyNeedsReplacement,
-                ollamaCloudModelIdentifier = ollamaCloudModel,
-                localModelIdentifier = LOCAL_MODEL_LABEL.takeIf { localModelFile != null },
-            )
-            debugReport.record(BottleLookupDebugEvent(
-                stage = BottleLookupDebugStage.LOCAL_MATCH,
-                provider = "Local database",
-                result = if (localMatch) "MATCH" else "NO_MATCH",
-            ))
-            persistBottleLookupDebug(debugReport)
-            fun recordDebugEvent(event: BottleLookupDebugEvent) {
-                debugReport.record(event)
-                persistBottleLookupDebug(debugReport)
-            }
-
-            val result: com.davidhayesbc.cocktails.android.product.ScannedBottleOutcome? = try {
-                bottleScanPipeline.withSlot {
-                if (bottleEnrichmentQueue.begin(
-                        sessionId = draft.sessionId,
-                        draftId = draft.id,
-                        operation = BottleEnrichmentOperation.FIRECRAWL_SEARCH,
-                        nowMillis = System.currentTimeMillis(),
-                    ) == null
-                ) error("Queue state could not be updated")
-                refreshPendingBottleEnrichmentJobs()
-                val coordinator = ScannedBottleEnrichmentCoordinator(
-                    lookup = { code ->
-                        var status: Int? = null
-                        val value = openFoodFactsClient.lookup(code, installedAppVersion.name) { status = it }
-                        BottleProviderCall(value, status)
-                    },
-                    search = { query -> firecrawlSearchProvider.searchDetailed(query, 5) },
-                    fetch = firecrawlSearchProvider::fetchDetailed,
-                    extract = { page, provider, requiredBarcode ->
-                        when (provider) {
-                            AutomaticBottleExtractor.OLLAMA_CLOUD -> ollamaCloudExtractor.extractDetailed(page, ollamaCloudModel, requiredBarcode)
-                            AutomaticBottleExtractor.ON_DEVICE -> {
-                                val modelFile = localModelFileStore.installedModel()
-                                if (modelFile == null) BottleProviderCall(BottleDetailExtractionResult.SetupRequired) else {
-                                    val runner = LazyLlamaCppLocalInferenceRunner(context)
-                                    BottleProviderCall(
-                                        LocalBottleDetailExtractor({ modelFile.absolutePath }, runner)
-                                            .extractWithDiagnostics(page, LOCAL_MODEL_LABEL, requiredBarcode, ::recordDebugEvent),
-                                    )
-                                }
-                            }
-                        }
-                    },
-                )
-                coordinator.processScannedBarcode(
-                    barcode = draft.barcode.orEmpty(),
-                    plan = scanPlan,
-                    onDebugEvent = ::recordDebugEvent,
-                    onStage = { stage, sourceUrl, progressLabel ->
-                        val stageLabel = when (stage) {
-                            ScannedBottleStage.BARCODE_LOOKUP -> "Checking Open Food Facts"
-                            ScannedBottleStage.WEB_SEARCH -> "Searching Firecrawl by exact barcode"
-                            ScannedBottleStage.SOURCE_FETCH -> progressLabel ?: "Checking a source page for the barcode"
-                            ScannedBottleStage.DETAIL_EXTRACTION -> if (scanExtractor == AutomaticBottleExtractor.ON_DEVICE) "Extracting details on this phone" else "Extracting details with Ollama Cloud"
-                        }
-                        val queueOperation = when (stage) {
-                            ScannedBottleStage.BARCODE_LOOKUP -> null
-                            ScannedBottleStage.WEB_SEARCH -> BottleEnrichmentOperation.FIRECRAWL_SEARCH
-                            ScannedBottleStage.SOURCE_FETCH -> BottleEnrichmentOperation.FIRECRAWL_FETCH
-                            ScannedBottleStage.DETAIL_EXTRACTION -> if (scanExtractor == AutomaticBottleExtractor.ON_DEVICE) BottleEnrichmentOperation.LOCAL_EXTRACTION else BottleEnrichmentOperation.OLLAMA_EXTRACTION
-                        }
-                        queueOperation?.let { operation ->
-                            bottleEnrichmentQueue.begin(
-                                sessionId = draft.sessionId,
-                                draftId = draft.id,
-                                operation = operation,
-                                sourceUrl = if (operation == BottleEnrichmentOperation.FIRECRAWL_SEARCH) null else sourceUrl,
-                                model = when (operation) {
-                                    BottleEnrichmentOperation.LOCAL_EXTRACTION -> LOCAL_MODEL_LABEL
-                                    BottleEnrichmentOperation.OLLAMA_EXTRACTION -> ollamaCloudModel
-                                    else -> null
-                                },
-                                nowMillis = System.currentTimeMillis(),
-                            )
-                            refreshPendingBottleEnrichmentJobs()
-                        }
-                        val prior = bottleWebSearchStates[draft.id] ?: BottleWebSearchState(automatedScan = true)
-                        bottleWebSearchStates = bottleWebSearchStates + (draft.id to prior.copy(
-                            searching = stage == ScannedBottleStage.WEB_SEARCH,
-                            fetchingUrl = if (stage == ScannedBottleStage.SOURCE_FETCH) "Checking a selected search result…" else prior.fetchingUrl,
-                            extracting = stage == ScannedBottleStage.DETAIL_EXTRACTION,
-                            automaticStage = stageLabel,
-                        ))
-                    },
-                )
-                }
-            } catch (cancelled: CancellationException) {
-                recordDebugEvent(BottleLookupDebugEvent(BottleLookupDebugStage.COMPLETE, "APP", "CANCELLED", reasonCodes = listOf("REQUEST_CANCELLED")))
-                debugReport.finish("CANCELLED")
-                persistBottleLookupDebug(debugReport)
-                throw cancelled
-            } catch (_: Exception) {
-                recordDebugEvent(BottleLookupDebugEvent(BottleLookupDebugStage.COMPLETE, "APP", "UNEXPECTED_ERROR", reasonCodes = listOf("UNEXPECTED_EXCEPTION")))
-                debugReport.finish("FAILED")
-                persistBottleLookupDebug(debugReport)
-                null
-            }
-            if (bottleWebSearchRequestTokens[draft.id] != requestToken) {
-                debugReport.record(BottleLookupDebugEvent(
-                    BottleLookupDebugStage.REVIEW_PERSISTENCE,
-                    "APP",
-                    "CANCELLED",
-                    reasonCodes = listOf("REQUEST_CANCELLED"),
-                ))
-                debugReport.finish("CANCELLED")
-                persistBottleLookupDebug(debugReport)
-                return@launch
-            }
-            val previous = bottleWebSearchStates[draft.id] ?: BottleWebSearchState(automatedScan = true)
-            val searchResult = result?.search
-            val page = (result?.page as? WebPageResult.Found)?.page
-            val candidateExtraction = (result?.extraction as? BottleDetailExtractionResult.Found)?.suggestions
-            val extraction = candidateExtraction?.takeIf { pendingBottleEvidenceStore.save(draft.id, it) }
-            if (result != null) {
-                debugReport.record(BottleLookupDebugEvent(
-                    stage = BottleLookupDebugStage.REVIEW_PERSISTENCE,
-                    provider = "APP",
-                    result = when {
-                        candidateExtraction == null -> "SKIPPED"
-                        extraction != null -> "PERSISTED"
-                        else -> "PERSISTENCE_FAILED"
-                    },
-                    reasonCodes = if (candidateExtraction != null && extraction == null) listOf("OTHER") else emptyList(),
-                ))
-                val finalOutcome = when {
-                    extraction != null -> "SUCCESS"
-                    result.search is WebSearchResult.Found && result.selectedHit == null -> "NOT_FOUND"
-                    !scanPlan.openFoodFactsEnabled && !scanPlan.firecrawlEnabled -> "DISABLED"
-                    else -> "PARTIAL"
-                }
-                debugReport.finish(finalOutcome)
-                persistBottleLookupDebug(debugReport)
-            }
-            val finalOutcome = when {
-                extraction != null -> "SUCCESS"
-                result == null -> "FAILED"
-                result.search is WebSearchResult.Found && result.selectedHit == null -> "NOT_FOUND"
-                !scanPlan.openFoodFactsEnabled && !scanPlan.firecrawlEnabled -> "DISABLED"
-                else -> "PARTIAL"
-            }
-            val message = when {
-                result == null -> "Automatic lookup could not finish. Your bottle draft is still here; continue manually or retry."
-                result.page is WebPageResult.Found && !result.barcodeVerifiedInPage -> "We checked up to three search results, but none tied a page to this barcode. You can inspect a source or continue manually."
-                candidateExtraction != null && extraction == null -> "Suggestions could not be saved with their source evidence. They were not applied; enter details manually."
-                result.extraction is BottleDetailExtractionResult.Found -> "Suggestions are ready in the review fields. Check the source and each value before accepting."
-                result.extraction is BottleDetailExtractionResult.LocalFailure -> "On-device extraction failed (${result.extraction.code.wireValue}). Your draft is unchanged; copy the lookup report for stage details."
-                result.extraction != null -> "The enabled model could not produce verified details. Your draft is unchanged; continue manually."
-                result.search is WebSearchResult.Found && result.selectedHit == null -> "No source result was found for this barcode. Continue manually or search again later."
-                result.search == WebSearchResult.QuotaExceeded -> "Firecrawl's plan quota is exhausted. No retry was made; continue manually."
-                result.search == WebSearchResult.RateLimited -> "Firecrawl is rate limiting requests. Wait before trying again."
-                result.search == WebSearchResult.AuthenticationRequired -> "Firecrawl did not accept this key. Replace it in More or continue manually."
-                result.search == WebSearchResult.SetupRequired -> "Add a Firecrawl key and enable automatic search in More to search this barcode."
-                result.search == WebSearchResult.Unavailable -> "Firecrawl could not be reached. Your bottle draft is unchanged."
-                result.search == WebSearchResult.InvalidResponse -> "Firecrawl returned a result this version could not read."
-                result.page == WebPageResult.QuotaExceeded -> "Firecrawl's plan quota is exhausted before page fetch. No retry was made."
-                result.page == WebPageResult.RateLimited -> "Firecrawl is rate limiting page fetches. Wait before trying again."
-                result.page == WebPageResult.AuthenticationRequired -> "Firecrawl did not accept this key. Replace it in More or continue manually."
-                result.page == WebPageResult.Unavailable -> "Firecrawl could not fetch the result page. The local draft is unchanged."
-                result.page == WebPageResult.InvalidResponse -> "Firecrawl returned page data this version could not read."
-                !previous.automatedScan -> previous.message
-                !firecrawlSearchEnabled -> "Barcode lookup finished. Firecrawl search is off or needs a saved key; you can continue manually."
-                result.openFoodFacts is OpenFoodFactsLookupResult.Found -> "Barcode lookup finished. Open Food Facts details remain separate from your editable bottle fields."
-                else -> "Automatic lookup finished. Review the source and enter any missing details manually."
-            }
-            bottleWebSearchStates = bottleWebSearchStates + (draft.id to previous.copy(
-                searching = false,
-                fetchingUrl = null,
-                extracting = false,
-                automaticStage = null,
-                openFoodFactsResult = result?.openFoodFacts,
-                hits = (searchResult as? WebSearchResult.Found)?.hits.orEmpty(),
-                page = page,
-                barcodeVerifiedInPage = result?.barcodeVerifiedInPage == true,
-                barcodeVerifiedByStructuredProduct = result?.barcodeVerifiedByStructuredProduct == true,
-                extractedSuggestions = extraction,
-                message = message,
-            ))
-            bottleEnrichmentQueue.finish(
-                draft.id,
-                if (extraction != null) BottleEnrichmentStatus.READY_FOR_REVIEW else BottleEnrichmentStatus.NEEDS_ATTENTION,
-                finalOutcome,
-                System.currentTimeMillis(),
-            )
-            refreshPendingBottleEnrichmentJobs()
-            bottleWebSearchJobs.remove(draft.id)
+        if (!scheduled) {
+            bottleEnrichmentQueue.finish(draft.id, BottleEnrichmentStatus.NEEDS_ATTENTION, "WORK_SCHEDULE_FAILED", System.currentTimeMillis())
         }
+        refreshPendingBottleEnrichmentJobs()
     }
 
     fun completeBottleLabelStep(draftId: String, photo: ByteArray?): Boolean {
@@ -1179,7 +1037,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         bottleLabelCaptureMessage = null
         val directory = File(context.cacheDir, "intake-labels")
         if (draftId.matches(Regex("[A-Za-z0-9-]{1,100}"))) {
-            File(directory, "capture-$draftId.jpg").delete()
+            directory.listFiles()?.filter { it.name.startsWith("capture-") && it.name.endsWith("-$draftId.jpg") }?.forEach(File::delete)
             File(directory, "pending-$draftId.jpg").delete()
             File(directory, "original-$draftId.jpg").delete()
         }
@@ -1209,6 +1067,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     fun applyBottleLabelCrop(crop: NormalizedLabelCrop, rotationDegrees: Int = 0) {
         val original = pendingBottleLabelOriginalPhoto ?: return
         val targetDraftId = pendingBottleLabelDraftId
+        val token = beginBottleCaptureOperation(targetDraftId)
         bottleLabelCropBusy = true
         coroutineScope.launch {
             val cropped = try {
@@ -1218,16 +1077,23 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             } catch (_: Exception) {
                 null
             }
+            if (!isCurrentBottleCaptureOperation(token)) return@launch
             if (cropped == null) {
                 bottleLabelCaptureMessage = "This crop could not be prepared. The original label is still available; adjust it or keep the full photo."
             } else {
                 val previewSaved = if (targetDraftId != null && targetDraftId.matches(Regex("[A-Za-z0-9-]{1,100}"))) {
-                    runCatching {
+                    val staged = File(File(context.cacheDir, "intake-labels"), "pending-$targetDraftId-${token.generation}.tmp")
+                    val written = runCatching {
                         withContext(Dispatchers.IO) {
-                            File(File(context.cacheDir, "intake-labels"), "pending-$targetDraftId.jpg").writeBytes(cropped)
+                            staged.writeBytes(cropped)
                         }
                     }.isSuccess
+                    val promoted = written && isCurrentBottleCaptureOperation(token) &&
+                        staged.renameTo(File(File(context.cacheDir, "intake-labels"), "pending-$targetDraftId.jpg"))
+                    if (!promoted) staged.delete()
+                    promoted
                 } else true
+                if (!isCurrentBottleCaptureOperation(token)) return@launch
                 if (previewSaved) {
                     pendingBottleLabelPhoto = cropped
                     bottleLabelCaptureMessage = "Crop ready. The original remains available until you use this label."
@@ -1235,24 +1101,30 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     bottleLabelCaptureMessage = "The crop preview could not be saved. The original label is still available; retake or keep the full photo."
                 }
             }
-            bottleLabelCropBusy = false
+            if (isCurrentBottleCaptureOperation(token)) bottleLabelCropBusy = false
         }
     }
 
     fun restoreOriginalBottleLabel() {
         val original = pendingBottleLabelOriginalPhoto ?: return
-        pendingBottleLabelPhoto = original
         val targetDraftId = pendingBottleLabelDraftId
+        val token = beginBottleCaptureOperation(targetDraftId)
+        pendingBottleLabelPhoto = original
         if (targetDraftId == null || !targetDraftId.matches(Regex("[A-Za-z0-9-]{1,100}"))) {
             bottleLabelCaptureMessage = "Showing the original photo."
             return
         }
         coroutineScope.launch {
-            val stored = runCatching {
+            val staged = File(File(context.cacheDir, "intake-labels"), "pending-$targetDraftId-${token.generation}.tmp")
+            val written = runCatching {
                 withContext(Dispatchers.IO) {
-                    File(File(context.cacheDir, "intake-labels"), "pending-$targetDraftId.jpg").writeBytes(original)
+                    staged.writeBytes(original)
                 }
             }.isSuccess
+            val stored = written && isCurrentBottleCaptureOperation(token) &&
+                staged.renameTo(File(File(context.cacheDir, "intake-labels"), "pending-$targetDraftId.jpg"))
+            if (!stored) staged.delete()
+            if (!isCurrentBottleCaptureOperation(token)) return@launch
             bottleLabelCaptureMessage = if (stored) "Showing the original photo. You can adjust the crop or use the full label."
             else "The original is showing now, but its resume preview could not be updated. Keep this screen open until you use or retake it."
         }
@@ -1440,57 +1312,75 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     }
 
     val bottleLabelCaptureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { captured ->
-        val targetDraftId = pendingLabelPreferences.getString("draft_id", null)
-            ?.takeIf { it.matches(Regex("[A-Za-z0-9-]{1,100}")) }
-            ?: pendingBottleLabelDraftId?.takeIf { it.matches(Regex("[A-Za-z0-9-]{1,100}")) }
+        val token = launchedBottleCameraToken
+        launchedBottleCameraToken = null
+        if (token == null || !isCurrentBottleCaptureOperation(token)) return@rememberLauncherForActivityResult
+        val targetDraftId = token.draftId
         val directory = File(context.cacheDir, "intake-labels")
-        val file = File(directory, targetDraftId?.let { "capture-$it.jpg" } ?: "intake-label-capture.jpg")
+        val file = File(directory, bottleCaptureTempFileName(token))
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         if (captured) {
             coroutineScope.launch {
                 val result = runCatching { withContext(Dispatchers.IO) { readAndCompressProductPhoto(context, uri) } }
                 val originalPhoto = result.getOrNull()
-                pendingBottleLabelOriginalPhoto = originalPhoto
-                pendingBottleLabelPhoto = originalPhoto
-                pendingBottleLabelCropSuggestion = originalPhoto?.let { bytes ->
+                val suggestion = originalPhoto?.let { bytes ->
                     withContext(Dispatchers.Default) { runCatching { BottleLabelCropper.suggest(bytes) }.getOrNull() }
                 }
-                if (targetDraftId != null && originalPhoto != null) {
-                    val preview = File(directory, "pending-$targetDraftId.jpg")
-                    val original = File(directory, "original-$targetDraftId.jpg")
-                    val stored = runCatching {
+                if (!isCurrentBottleCaptureOperation(token)) {
+                    file.delete()
+                    return@launch
+                }
+                val stagedPreview = targetDraftId?.let { File(directory, "pending-$it-${token.generation}.tmp") }
+                val stagedOriginal = targetDraftId?.let { File(directory, "original-$it-${token.generation}.tmp") }
+                val staged = if (targetDraftId != null && originalPhoto != null && stagedPreview != null && stagedOriginal != null) {
+                    runCatching {
                         withContext(Dispatchers.IO) {
-                            original.writeBytes(originalPhoto)
-                            preview.writeBytes(originalPhoto)
+                            stagedOriginal.writeBytes(originalPhoto)
+                            stagedPreview.writeBytes(originalPhoto)
                         }
                     }.isSuccess
-                    bottleLabelCaptureMessage = if (stored) null else "The label is captured, but its preview could not be saved. Retake it or skip; the bottle draft is safe."
-                } else {
-                    bottleLabelCaptureMessage = if (result.isSuccess) null else "The camera photo could not be prepared. The draft was not changed; try again or skip the photo."
+                } else true
+                if (!isCurrentBottleCaptureOperation(token)) {
+                    stagedPreview?.delete()
+                    stagedOriginal?.delete()
+                    file.delete()
+                    return@launch
+                }
+                val stored = if (staged && targetDraftId != null && stagedPreview != null && stagedOriginal != null) {
+                    stagedOriginal.renameTo(File(directory, "original-$targetDraftId.jpg")) &&
+                        stagedPreview.renameTo(File(directory, "pending-$targetDraftId.jpg"))
+                } else staged
+                if (!stored) {
+                    stagedPreview?.delete()
+                    stagedOriginal?.delete()
+                }
+                if (!isCurrentBottleCaptureOperation(token)) {
+                    file.delete()
+                    return@launch
+                }
+                pendingBottleLabelOriginalPhoto = originalPhoto
+                pendingBottleLabelPhoto = originalPhoto
+                pendingBottleLabelCropSuggestion = suggestion
+                bottleLabelCaptureMessage = when {
+                    targetDraftId != null && originalPhoto != null && !stored -> "The label is captured, but its preview could not be saved. Retake it or skip; the bottle draft is safe."
+                    result.isSuccess -> null
+                    else -> "The camera photo could not be prepared. The draft was not changed; try again or skip the photo."
                 }
                 file.delete()
             }
         } else {
             file.delete()
-            if (targetDraftId == null) {
-                pendingBottleLabelPhoto = null
-                pendingBottleLabelOriginalPhoto = null
-                pendingBottleLabelCropSuggestion = null
-            }
-            bottleLabelCaptureMessage = if (targetDraftId == null) {
-                "Photo capture canceled. Your bottle drafts are unchanged."
-            } else {
-                "Photo capture canceled. Retry the label photo or skip it; this bottle stays in the queue."
-            }
+            if (isCurrentBottleCaptureOperation(token)) bottleLabelCaptureMessage = "Photo capture canceled. Retry the label photo or skip it; this bottle stays in the queue."
         }
     }
 
     fun clearPendingBottleCapture() {
+        invalidateBottleCaptureOperation()
         val directory = File(context.cacheDir, "intake-labels")
         File(directory, "intake-label-capture.jpg").delete()
         pendingBottleLabelDraftId?.let { draftId ->
             if (draftId.matches(Regex("[A-Za-z0-9-]{1,100}"))) {
-                File(directory, "capture-$draftId.jpg").delete()
+                directory.listFiles()?.filter { it.name.startsWith("capture-") && it.name.endsWith("-$draftId.jpg") }?.forEach(File::delete)
                 File(directory, "pending-$draftId.jpg").delete()
                 File(directory, "original-$draftId.jpg").delete()
             }
@@ -1705,7 +1595,9 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     val directory = File(context.cacheDir, "intake-labels")
                     directory.mkdirs()
                     val targetId = pendingBottleLabelDraftId?.takeIf { it.matches(Regex("[A-Za-z0-9-]{1,100}")) }
-                    val file = File(directory, targetId?.let { "capture-$it.jpg" } ?: "intake-label-capture.jpg")
+                    val token = beginBottleCaptureOperation(targetId)
+                    launchedBottleCameraToken = token
+                    val file = File(directory, bottleCaptureTempFileName(token))
                     file.delete()
                     val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
                     bottleLabelCaptureLauncher.launch(uri)
@@ -1716,6 +1608,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 onApplyManualCrop = { crop, rotation -> applyBottleLabelCrop(crop, rotation) },
                 onKeepOriginalLabel = ::restoreOriginalBottleLabel,
                 onDiscardCapturedLabel = {
+                    invalidateBottleCaptureOperation()
                     pendingBottleLabelPhoto = null
                     pendingBottleLabelOriginalPhoto = null
                     pendingBottleLabelCropSuggestion = null
@@ -1726,6 +1619,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     val photo = pendingBottleLabelPhoto
                     if (photo != null) {
                         if (repository.updateBottleIntakeDraft(draft.copy(photoData = photo, photoSha256 = photoSha256(photo)))) {
+                            invalidateBottleCaptureOperation()
                             pendingBottleLabelPhoto = null
                             pendingBottleLabelOriginalPhoto = null
                             pendingBottleLabelCropSuggestion = null
@@ -1859,6 +1753,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     showBottleIntake = false
                 },
                 onDismiss = {
+                    invalidateBottleCaptureOperation()
                     cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = true)
                     bottleWebSearchStates = emptyMap()
                     showBottleIntake = false
@@ -2584,6 +2479,12 @@ internal fun BottleIntakeScreen(
         ) {
                 Text("${session.drafts.size} bottle${if (session.drafts.size == 1) "" else "s"} in this batch", style = MaterialTheme.typography.titleMedium)
                 Text("Drafts stay on this phone until you confirm. Repeated bottles are kept separately.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "Queued lookups can continue after you leave this screen. On-device AI may show an ongoing Android task notice. Force-stopping the app or system battery limits can interrupt work; resume it yourself, and provider requests are never replayed automatically.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("background-enrichment-explanation"),
+                )
                 val readyToReview = session.drafts.filter { draft ->
                     pendingEnrichmentJobs[draft.id]?.status in setOf(BottleEnrichmentStatus.READY_FOR_REVIEW, BottleEnrichmentStatus.NEEDS_ATTENTION)
                 }
@@ -2629,12 +2530,13 @@ internal fun BottleIntakeScreen(
                                     Button(onClick = onCaptureLabel, modifier = Modifier.fillMaxWidth().testTag("capture-label-$draftId")) { Text("Capture label") }
                                 } else {
                                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Button(onClick = { onUsePendingLabel(draftId) }, modifier = Modifier.weight(1f).testTag("use-label-$draftId")) { Text("Use label") }
-                                        TextButton(onClick = onCaptureLabel, modifier = Modifier.weight(1f).testTag("retake-label-$draftId")) { Text("Retake") }
+                                        Button(onClick = { onUsePendingLabel(draftId) }, enabled = !labelCropBusy, modifier = Modifier.weight(1f).testTag("use-label-$draftId")) { Text("Use label") }
+                                        TextButton(onClick = onCaptureLabel, enabled = !labelCropBusy, modifier = Modifier.weight(1f).testTag("retake-label-$draftId")) { Text("Retake") }
                                     }
                                 }
                                 TextButton(
                                     onClick = { onSkipPendingLabel(draftId) },
+                                    enabled = !labelCropBusy,
                                     modifier = Modifier.fillMaxWidth().testTag("skip-label-$draftId"),
                 ) { Text(if (capturePhoto == null) "Skip photo and scan next bottle" else "Discard photo and scan next bottle") }
                             }
@@ -2772,36 +2674,6 @@ private fun fitPhotoBounds(imageWidth: Int, imageHeight: Int, canvasWidth: Float
     return PhotoImageBounds((canvasWidth - width) / 2f, (canvasHeight - height) / 2f, width, height)
 }
 
-private fun rotateCropClockwise(crop: NormalizedLabelCrop): NormalizedLabelCrop = NormalizedLabelCrop(
-    left = 1f - crop.bottom,
-    top = crop.left,
-    right = 1f - crop.top,
-    bottom = crop.right,
-)
-
-private fun moveCropHandle(crop: NormalizedLabelCrop, handle: Int, dx: Float, dy: Float): NormalizedLabelCrop {
-    val minimum = NormalizedLabelCrop.MIN_CROP_SIDE
-    var left = crop.left
-    var top = crop.top
-    var right = crop.right
-    var bottom = crop.bottom
-    when (handle) {
-        0 -> { left = (left + dx).coerceIn(0f, right - minimum); top = (top + dy).coerceIn(0f, bottom - minimum) }
-        1 -> { right = (right + dx).coerceIn(left + minimum, 1f); top = (top + dy).coerceIn(0f, bottom - minimum) }
-        2 -> { right = (right + dx).coerceIn(left + minimum, 1f); bottom = (bottom + dy).coerceIn(top + minimum, 1f) }
-        3 -> { left = (left + dx).coerceIn(0f, right - minimum); bottom = (bottom + dy).coerceIn(top + minimum, 1f) }
-        4 -> {
-            val width = right - left
-            val height = bottom - top
-            left = (left + dx).coerceIn(0f, 1f - width)
-            right = left + width
-            top = (top + dy).coerceIn(0f, 1f - height)
-            bottom = top + height
-        }
-    }
-    return NormalizedLabelCrop(left, top, right, bottom)
-}
-
 @Composable
 private fun BottleLabelCropEditorDialog(
     originalJpeg: ByteArray,
@@ -2811,8 +2683,12 @@ private fun BottleLabelCropEditorDialog(
     onDismiss: () -> Unit,
 ) {
     val source = remember(originalJpeg) { BitmapFactory.decodeByteArray(originalJpeg, 0, originalJpeg.size) }
-    var rotation by remember(originalJpeg) { mutableStateOf(0) }
-    var crop by remember(originalJpeg, suggestedCrop) { mutableStateOf(suggestedCrop ?: NormalizedLabelCrop.FULL_IMAGE) }
+    var editorState by remember(originalJpeg, suggestedCrop) {
+        mutableStateOf(BottleLabelCropEditorState(suggestedCrop ?: NormalizedLabelCrop.FULL_IMAGE))
+    }
+    val latestEditorState = rememberUpdatedState(editorState)
+    val crop = editorState.crop
+    val rotation = editorState.rotationDegrees
     val display = remember(source, rotation) {
         if (source == null || rotation == 0) source
         else Bitmap.createBitmap(source, 0, 0, source.width, source.height, Matrix().apply { setRotate(rotation.toFloat()) }, true)
@@ -2837,16 +2713,19 @@ private fun BottleLabelCropEditorDialog(
                     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
                     Canvas(
                         Modifier.fillMaxWidth().height(300.dp).onSizeChanged { canvasSize = it }
-                            .pointerInput(display, crop, canvasSize) {
+                            .pointerInput(display, canvasSize) {
                                 var dragHandle = -1
+                                var currentEditorState = latestEditorState.value
                                 detectDragGestures(
                                     onDragStart = { point ->
+                                        currentEditorState = latestEditorState.value
                                         val bounds = fitPhotoBounds(display.width, display.height, canvasSize.width.toFloat(), canvasSize.height.toFloat())
+                                        val currentCrop = currentEditorState.crop
                                         val corners = listOf(
-                                            Offset(bounds.left + crop.left * bounds.width, bounds.top + crop.top * bounds.height),
-                                            Offset(bounds.left + crop.right * bounds.width, bounds.top + crop.top * bounds.height),
-                                            Offset(bounds.left + crop.right * bounds.width, bounds.top + crop.bottom * bounds.height),
-                                            Offset(bounds.left + crop.left * bounds.width, bounds.top + crop.bottom * bounds.height),
+                                            Offset(bounds.left + currentCrop.left * bounds.width, bounds.top + currentCrop.top * bounds.height),
+                                            Offset(bounds.left + currentCrop.right * bounds.width, bounds.top + currentCrop.top * bounds.height),
+                                            Offset(bounds.left + currentCrop.right * bounds.width, bounds.top + currentCrop.bottom * bounds.height),
+                                            Offset(bounds.left + currentCrop.left * bounds.width, bounds.top + currentCrop.bottom * bounds.height),
                                         )
                                         val nearest = corners.mapIndexed { index, corner -> index to (corner - point).getDistance() }.minByOrNull { it.second }
                                         dragHandle = when {
@@ -2860,7 +2739,8 @@ private fun BottleLabelCropEditorDialog(
                                 ) { change, amount ->
                                     if (dragHandle >= 0) {
                                         val bounds = fitPhotoBounds(display.width, display.height, canvasSize.width.toFloat(), canvasSize.height.toFloat())
-                                        crop = moveCropHandle(crop, dragHandle, amount.x / bounds.width, amount.y / bounds.height)
+                                        currentEditorState = currentEditorState.move(dragHandle, amount.x / bounds.width, amount.y / bounds.height)
+                                        editorState = currentEditorState
                                         change.consume()
                                     }
                                 }
@@ -2891,8 +2771,8 @@ private fun BottleLabelCropEditorDialog(
                     Text("The original photo could not be opened. Retake the photo or keep the unedited file.", color = MaterialTheme.colorScheme.error)
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { rotation = (rotation + 90) % 360; crop = rotateCropClockwise(crop) }, modifier = Modifier.weight(1f)) { Text("Rotate 90°") }
-                    TextButton(onClick = { crop = suggestedCrop ?: NormalizedLabelCrop.FULL_IMAGE }, modifier = Modifier.weight(1f)) { Text("Reset crop") }
+                    OutlinedButton(onClick = { editorState = editorState.rotateClockwise() }, modifier = Modifier.weight(1f)) { Text("Rotate 90°") }
+                    TextButton(onClick = { editorState = editorState.reset(suggestedCrop) }, modifier = Modifier.weight(1f)) { Text("Reset crop and rotation") }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = { onKeepOriginal(); onDismiss() }, modifier = Modifier.weight(1f)) { Text("Keep original") }
@@ -2940,17 +2820,20 @@ private fun BottleDraftCard(
     }
     var homeMenu by remember(draft.id) { mutableStateOf(false) }
     var levelMenu by remember(draft.id) { mutableStateOf(false) }
-    LaunchedEffect(draft.id, webSearchState.extractedSuggestions, webSearchState.automatedScan, webSearchState.barcodeVerifiedInPage, webSearchState.userEditedFields) {
+    LaunchedEffect(draft.id, activeReview, webSearchState.extractedSuggestions, webSearchState.automatedScan, webSearchState.barcodeVerifiedInPage, webSearchState.userEditedFields) {
         val suggestions = webSearchState.extractedSuggestions
         if (activeReview && webSearchState.automatedScan && webSearchState.barcodeVerifiedInPage && suggestions != null) {
             val suggestedName = suggestions.facts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }?.value?.trim().orEmpty()
             val suggestedBrand = suggestions.facts.firstOrNull { it.field == BottleFactField.BRAND }?.value?.trim().orEmpty()
-            val ingredientNameEdited = BottleDraftField.INGREDIENT_NAME in webSearchState.userEditedFields
-            val productNameEdited = BottleDraftField.PRODUCT_NAME in webSearchState.userEditedFields
-            val brandEdited = BottleDraftField.BRAND in webSearchState.userEditedFields
-            val nextName = if (!ingredientNameEdited && (name.isBlank() || name == "Unidentified bottle") && suggestedName.isNotEmpty()) suggestedName else name
-            val nextProductName = if (!productNameEdited) productName.ifBlank { suggestedName } else productName
-            val nextBrand = if (!brandEdited) brand.ifBlank { suggestedBrand } else brand
+            val merged = mergeBottleSuggestionFields(
+                current = BottleDraftSuggestionFields(name, productName, brand),
+                suggestedName = suggestedName,
+                suggestedBrand = suggestedBrand,
+                editedFields = webSearchState.userEditedFields,
+            )
+            val nextName = merged.ingredientName
+            val nextProductName = merged.productName
+            val nextBrand = merged.brand
             if (nextName != name || nextProductName != productName || nextBrand != brand) {
                 val saved = onUpdate(draft.copy(
                     ingredientName = nextName,
@@ -3004,7 +2887,7 @@ private fun BottleDraftCard(
                 val queueStatus = when (job.status) {
                     BottleEnrichmentStatus.CAPTURE_REQUIRED -> "Waiting for label capture"
                     BottleEnrichmentStatus.QUEUED -> "Waiting in lookup queue"
-                    BottleEnrichmentStatus.RUNNING -> "Processing while you scan · keep intake open"
+                    BottleEnrichmentStatus.RUNNING -> "Processing in the background · you can leave intake"
                     BottleEnrichmentStatus.PAUSED -> "Paused · resume explicitly"
                     BottleEnrichmentStatus.READY_FOR_REVIEW -> "Suggestions ready · review when convenient"
                     BottleEnrichmentStatus.NEEDS_ATTENTION -> "Lookup finished · manual review needed"
@@ -3061,11 +2944,12 @@ private fun BottleDraftCard(
                 }
             }
             Text("An enabled Firecrawl search sends this barcode and normal network metadata. The app checks up to three result pages for a matching barcode; each page fetch uses your plan quota. No home, pantry, member details, label photo, or tasting note is sent.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val durableWorkActive = pendingEnrichmentJob?.status in setOf(BottleEnrichmentStatus.QUEUED, BottleEnrichmentStatus.RUNNING)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onSearch, enabled = webSearchEnabled && !webSearchState.searching && webSearchState.fetchingUrl == null && webSearchState.automaticStage == null, modifier = Modifier.testTag("search-bottle-${draft.id}")) {
+                OutlinedButton(onClick = onSearch, enabled = webSearchEnabled && !durableWorkActive && !webSearchState.searching && webSearchState.fetchingUrl == null && webSearchState.automaticStage == null, modifier = Modifier.testTag("search-bottle-${draft.id}")) {
                     Text(if (webSearchState.searching) "Searching…" else "Search web")
                 }
-                if (webSearchState.searching || webSearchState.fetchingUrl != null || webSearchState.extracting || webSearchState.automaticStage != null) TextButton(onClick = onCancelSearch) { Text("Cancel") }
+                if (durableWorkActive || webSearchState.searching || webSearchState.fetchingUrl != null || webSearchState.extracting || webSearchState.automaticStage != null) TextButton(onClick = onCancelSearch, modifier = Modifier.testTag("cancel-bottle-enrichment-${draft.id}")) { Text("Cancel") }
             }
             pendingEnrichmentJob?.takeIf { it.status in setOf(BottleEnrichmentStatus.PAUSED, BottleEnrichmentStatus.NEEDS_ATTENTION, BottleEnrichmentStatus.CANCELLED) }?.let { job ->
                 Text(

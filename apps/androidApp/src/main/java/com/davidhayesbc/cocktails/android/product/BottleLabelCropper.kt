@@ -33,6 +33,51 @@ internal data class NormalizedLabelCrop(
     }
 }
 
+internal data class BottleLabelCropEditorState(
+    val crop: NormalizedLabelCrop,
+    val rotationDegrees: Int = 0,
+) {
+    init { require(rotationDegrees in setOf(0, 90, 180, 270)) }
+
+    fun rotateClockwise(): BottleLabelCropEditorState = copy(
+        crop = NormalizedLabelCrop(
+            left = 1f - crop.bottom,
+            top = crop.left,
+            right = 1f - crop.top,
+            bottom = crop.right,
+        ),
+        rotationDegrees = (rotationDegrees + 90) % 360,
+    )
+
+    fun reset(suggestion: NormalizedLabelCrop?): BottleLabelCropEditorState = BottleLabelCropEditorState(
+        crop = suggestion ?: NormalizedLabelCrop.FULL_IMAGE,
+        rotationDegrees = 0,
+    )
+
+    fun move(handle: Int, dx: Float, dy: Float): BottleLabelCropEditorState {
+        val minimum = NormalizedLabelCrop.MIN_CROP_SIDE
+        var left = crop.left
+        var top = crop.top
+        var right = crop.right
+        var bottom = crop.bottom
+        when (handle) {
+            0 -> { left = (left + dx).coerceIn(0f, right - minimum); top = (top + dy).coerceIn(0f, bottom - minimum) }
+            1 -> { right = (right + dx).coerceIn(left + minimum, 1f); top = (top + dy).coerceIn(0f, bottom - minimum) }
+            2 -> { right = (right + dx).coerceIn(left + minimum, 1f); bottom = (bottom + dy).coerceIn(top + minimum, 1f) }
+            3 -> { left = (left + dx).coerceIn(0f, right - minimum); bottom = (bottom + dy).coerceIn(top + minimum, 1f) }
+            4 -> {
+                val width = right - left
+                val height = bottom - top
+                left = (left + dx).coerceIn(0f, 1f - width)
+                right = left + width
+                top = (top + dy).coerceIn(0f, 1f - height)
+                bottom = top + height
+            }
+        }
+        return copy(crop = NormalizedLabelCrop(left, top, right, bottom))
+    }
+}
+
 /** Conservative on-device edge suggestion. It never changes a photo without user confirmation. */
 internal object BottleLabelCropper {
     fun suggest(jpeg: ByteArray): NormalizedLabelCrop? {
@@ -96,7 +141,12 @@ internal object BottleLabelCropper {
             for (quality in listOf(84, 76, 68, 60, 52)) {
                 val output = ByteArrayOutputStream()
                 finalBitmap.compress(Bitmap.CompressFormat.JPEG, quality, output)
-                val bytes = output.toByteArray()
+                // Bitmap.compress may preserve or synthesize APP/COM marker
+                // segments (for example a color profile). Product photos are
+                // intentionally metadata-free, so remove those segments from
+                // the newly encoded pixels before running the strict shared
+                // JPEG validator. This never touches entropy-coded image data.
+                val bytes = stripJpegMetadata(output.toByteArray()) ?: continue
                 if (bytes.size <= MAX_BYTES && isProductPhotoJpeg(bytes)) {
                     return bytes
                 }
@@ -166,4 +216,39 @@ internal object BottleLabelCropper {
     private const val MAX_DIMENSION = 1600
     private const val MAX_ANALYSIS_DIMENSION = 960
     private const val MAX_BYTES = 1024 * 1024
+}
+
+/** Removes JPEG APP1..APP15 and COM segments before the first scan. */
+internal fun stripJpegMetadata(jpeg: ByteArray): ByteArray? {
+    if (jpeg.size < 4 || jpeg[0] != 0xff.toByte() || jpeg[1] != 0xd8.toByte()) return null
+    val clean = ByteArrayOutputStream(jpeg.size)
+    clean.write(jpeg, 0, 2)
+    var offset = 2
+    while (offset < jpeg.size) {
+        val markerStart = offset
+        if (jpeg[offset] != 0xff.toByte()) return null
+        while (offset < jpeg.size && jpeg[offset] == 0xff.toByte()) offset++
+        if (offset >= jpeg.size) return null
+        val marker = jpeg[offset++].toInt() and 0xff
+        if (marker == 0xda) {
+            // SOS starts entropy-coded image data; copy it intact.
+            clean.write(jpeg, markerStart, jpeg.size - markerStart)
+            return clean.toByteArray()
+        }
+        if (marker == 0xd8 || marker == 0xd9 || marker == 0x00) return null
+        if (marker == 0x01 || marker in 0xd0..0xd7) {
+            clean.write(jpeg, markerStart, offset - markerStart)
+            continue
+        }
+        if (offset + 2 > jpeg.size) return null
+        val segmentLength = ((jpeg[offset].toInt() and 0xff) shl 8) or
+            (jpeg[offset + 1].toInt() and 0xff)
+        if (segmentLength < 2 || offset + segmentLength > jpeg.size) return null
+        val end = offset + segmentLength
+        if (marker !in 0xe1..0xef && marker != 0xfe) {
+            clean.write(jpeg, markerStart, end - markerStart)
+        }
+        offset = end
+    }
+    return null
 }

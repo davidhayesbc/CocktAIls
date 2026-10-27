@@ -244,7 +244,7 @@ private fun recordLocalFailure(
     record: (BottleLookupDebugEvent) -> Unit,
     overrideType: String? = null,
     overrideFrames: List<StackTraceElement>? = null,
-    durationMillis: Long = 0,
+    durationMillis: Long? = null,
     promptCharacters: Int? = null,
     outputChunks: Int? = null,
     generatedTokens: Int? = null,
@@ -254,7 +254,7 @@ private fun recordLocalFailure(
         stage = stage,
         provider = "On-device Qwen3",
         result = "FAILED",
-        durationMillis = durationMillis.coerceAtLeast(0),
+        durationMillis = durationMillis?.coerceAtLeast(0),
         reasonCodes = listOf(code.wireValue),
         failureType = safeFailureType(overrideType ?: failure.javaClass.simpleName),
         failureLocations = safeFailureLocations(overrideFrames ?: failure.stackTrace.toList()),
@@ -382,7 +382,7 @@ internal class LlamaCppLocalInferenceRunner internal constructor(
         ) {
             val duration = if (result == "RUNNING") {
                 stageStartedAt[stage] = System.nanoTime()
-                0L
+                null
             } else elapsed(stage).also { stageStartedAt.remove(stage) }
             try {
                 onEvent(BottleLookupDebugEvent(

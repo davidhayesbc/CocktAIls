@@ -19,6 +19,11 @@ internal enum class BottleDraftField(val storedValue: String) {
     PRODUCT_NAME("product_name"),
 }
 
+internal fun preserveEditedBottleFields(
+    current: Set<BottleDraftField>,
+    persisted: Set<BottleDraftField>,
+): Set<BottleDraftField> = current + persisted
+
 /** Stores only bounded review evidence, never fetched page text, credentials or household export data. */
 internal interface PendingBottleEvidenceStorage {
     fun read(draftId: String): String?

@@ -175,6 +175,8 @@ class OfflineRecipeSmokeTest {
         val bottleName = "Batch Test Gin ${System.currentTimeMillis()}"
         composeRule.onNodeWithText("My Bar").performClick()
         composeRule.onNodeWithTag("start-bottle-intake").performClick()
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("background-enrichment-explanation"))
+        composeRule.onNodeWithTag("background-enrichment-explanation").assertIsDisplayed()
         composeRule.onNodeWithTag("batch-manual-name").performTextInput(bottleName)
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-add-manual-bottle"))
         composeRule.onNodeWithTag("batch-add-manual-bottle").performClick()
@@ -551,7 +553,9 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithText(suggestions).assertExists()
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText(suggestions))
         composeRule.onNodeWithText(suggestions).assertIsDisplayed()
-        composeRule.onNodeWithTag("batch-scan-bottles").assertIsNotEnabled()
+        // Restoring the source does not require a label capture; lookup and
+        // capture are independent, so another bottle remains scannable.
+        composeRule.onNodeWithTag("batch-scan-bottles").assertIsEnabled()
     }
 
     @Test

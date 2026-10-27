@@ -326,7 +326,7 @@ internal class ScannedBottleEnrichmentCoordinator(
     suspend fun processScannedBarcode(
         barcode: String,
         plan: ScannedBottlePlan,
-        onStage: (ScannedBottleStage, sourceUrl: String?, progressLabel: String?) -> Unit = { _, _, _ -> },
+        onStage: suspend (ScannedBottleStage, sourceUrl: String?, progressLabel: String?) -> Unit = { _, _, _ -> },
         onDebugEvent: (BottleLookupDebugEvent) -> Unit = {},
     ): ScannedBottleOutcome {
         val query = scannedBottleSearchQuery(barcode) ?: run {
