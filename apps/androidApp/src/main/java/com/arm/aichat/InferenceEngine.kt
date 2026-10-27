@@ -30,6 +30,9 @@ interface InferenceEngine {
      */
     fun sendUserPrompt(message: String, predictLength: Int = DEFAULT_PREDICT_LENGTH): Flow<String>
 
+    /** Requests interruption of an in-flight native prompt/generation operation when supported. */
+    fun requestGenerationCancellation() = Unit
+
     /**
      * Runs a benchmark with the specified parameters.
      */

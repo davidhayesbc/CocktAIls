@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 
 inline int bounded_prompt_token_count(
     const int requested_tokens,
@@ -36,4 +37,15 @@ public:
 private:
     int max_output_tokens_ = 0;
     int generated_tokens_ = 0;
+};
+
+/** Cross-thread cancellation flag; native inference polls it between bounded decode batches. */
+class generation_cancellation {
+public:
+    void reset() { requested_.store(false, std::memory_order_release); }
+    void request() { requested_.store(true, std::memory_order_release); }
+    bool requested() const { return requested_.load(std::memory_order_acquire); }
+
+private:
+    std::atomic<bool> requested_{false};
 };

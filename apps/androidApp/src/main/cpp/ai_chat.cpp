@@ -43,6 +43,7 @@ static common_chat_templates_ptr          g_chat_templates;
 static common_sampler                   * g_sampler;
 static std::atomic<bool> g_capture_model_load_log{false};
 static std::atomic<int> g_model_load_failure_status{NATIVE_MODEL_LOAD_FAILED};
+static generation_cancellation g_generation_cancellation;
 
 static void aichat_android_log_callback(enum ggml_log_level level, const char * message, void *) {
     if (!g_capture_model_load_log.load(std::memory_order_relaxed) ||
@@ -137,6 +138,7 @@ static common_sampler *new_sampler(float temp) {
 extern "C"
 JNIEXPORT jint JNICALL
 Java_com_arm_aichat_internal_InferenceEngineImpl_prepare(JNIEnv * /*env*/, jobject /*unused*/) {
+    g_generation_cancellation.reset();
     auto *context = init_context(g_model);
     if (!context) { return 1; }
     g_context = context;
@@ -345,6 +347,7 @@ static int decode_tokens_in_batches(
     // Process tokens in batches using the global batch
     LOGd("%s: Decode %d tokens starting at position %d", __func__, (int) tokens.size(), start_pos);
     for (int i = 0; i < (int) tokens.size(); i += BATCH_SIZE) {
+        if (g_generation_cancellation.requested()) return 3;
         const int cur_batch_size = std::min((int) tokens.size() - i, BATCH_SIZE);
         batch.clear();
         LOGv("%s: Preparing a batch size of %d starting at: %d", __func__, cur_batch_size, i);
@@ -369,6 +372,7 @@ static int decode_tokens_in_batches(
             LOGe("%s: llama_decode failed w/ %d", __func__, decode_result);
             return 1;
         }
+        if (g_generation_cancellation.requested()) return 3;
     }
     return 0;
 }
@@ -457,7 +461,9 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_processUserPrompt(
     }
 
     // Decode user tokens in batches
-    if (decode_tokens_in_batches(g_context, g_batch, user_tokens, current_position, true)) {
+    const int decode_status = decode_tokens_in_batches(g_context, g_batch, user_tokens, current_position, true);
+    if (decode_status == 3) return 3; // The flow maps this status to cooperative cancellation.
+    if (decode_status != 0) {
         LOGe("%s: llama_decode() failed!", __func__);
         return 2;
     }
@@ -508,6 +514,7 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_generateNextToken(
         JNIEnv *env,
         jobject /*unused*/
 ) {
+    if (g_generation_cancellation.requested()) return nullptr;
     if (!g_generation_budget.has_remaining_tokens()) {
         return nullptr;
     }
@@ -563,6 +570,16 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_generateNextToken(
         result = env->NewStringUTF("");
     }
     return result;
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_arm_aichat_internal_InferenceEngineImpl_requestNativeGenerationCancellation(
+        JNIEnv * /*env*/, jobject /*unused*/
+) {
+    // This entry point touches only an atomic flag, so the caller may safely invoke it while the
+    // inference dispatcher is inside a native decode operation.
+    g_generation_cancellation.request();
 }
 
 

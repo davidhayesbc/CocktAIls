@@ -92,6 +92,8 @@ internal class InferenceEngineImpl private constructor(
 
     private external fun generateNextToken(): String?
 
+    private external fun requestNativeGenerationCancellation()
+
     private external fun unload()
 
     private external fun shutdown()
@@ -105,6 +107,11 @@ internal class InferenceEngineImpl private constructor(
     private var _nativeInitialized = false
     @Volatile
     private var _cancelGeneration = false
+
+    override fun requestGenerationCancellation() {
+        _cancelGeneration = true
+        if (_nativeInitialized) requestNativeGenerationCancellation()
+    }
 
     /**
      * Single-threaded coroutine dispatcher & scope for LLama asynchronous operations
@@ -205,6 +212,10 @@ internal class InferenceEngineImpl private constructor(
             _state.value = InferenceEngine.State.ProcessingUserPrompt
 
             processUserPrompt(message, predictLength).let { result ->
+                if (result == NATIVE_GENERATION_CANCELLED) {
+                    _state.value = InferenceEngine.State.ModelReady
+                    return@flow
+                }
                 if (result != 0) {
                     return@flow
                 }
@@ -289,6 +300,8 @@ internal class InferenceEngineImpl private constructor(
         llamaScope.cancel()
     }
 }
+
+private const val NATIVE_GENERATION_CANCELLED = 3
 
 /** JNI reports success, explicit allowlisted loader categories, or generic failure. */
 internal fun requireNativeModelLoadSucceeded(result: Int) {

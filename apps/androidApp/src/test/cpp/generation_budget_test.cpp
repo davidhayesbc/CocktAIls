@@ -1,4 +1,5 @@
 #include <cassert>
+#include <thread>
 
 #include "../../main/cpp/generation_budget.h"
 
@@ -42,10 +43,16 @@ int main() {
     budget.record_generated_token();
     assert(budget.generated_tokens() == 2);
 
-    // Cancellation is checked by the Kotlin generation loop before the next JNI call.
-    const bool cancelled = true;
-    const bool may_generate = !cancelled && budget.has_remaining_tokens();
+    // Cancellation can be requested from the timeout thread while JNI runs on its own dispatcher.
+    generation_cancellation cancellation;
+    assert(!cancellation.requested());
+    std::thread timeout_thread([&cancellation] { cancellation.request(); });
+    timeout_thread.join();
+    assert(cancellation.requested());
+    const bool may_generate = !cancellation.requested() && budget.has_remaining_tokens();
     assert(!may_generate);
+    cancellation.reset();
+    assert(!cancellation.requested());
 
     budget.begin_request(0);
     assert(!budget.has_remaining_tokens());

@@ -23,7 +23,9 @@ internal enum class BottleLookupDebugStage {
     LOCAL_RUNTIME_INITIALIZATION,
     LOCAL_MODEL_LOADING,
     LOCAL_PROMPT_SETUP,
+    LOCAL_PROMPT_PREFILL,
     LOCAL_GENERATION,
+    LOCAL_FIRST_TOKEN,
     LOCAL_RESPONSE_PARSING,
     LOCAL_IDENTITY_BINDING,
     LOCAL_RUNTIME_CLEANUP,
@@ -50,6 +52,8 @@ internal data class BottleLookupDebugEvent(
     val factFields: List<String> = emptyList(),
     val failureType: String? = null,
     val failureLocations: List<String> = emptyList(),
+    val promptCharacters: Int? = null,
+    val outputChunks: Int? = null,
 )
 
 /**
@@ -159,6 +163,8 @@ internal class BottleLookupDebugReport(
         factFields = event.factFields.map { it.safeCode(FACT_FIELDS, "OTHER") }.distinct().take(MAX_FACT_FIELDS),
         failureType = event.failureType?.safeFailureType(),
         failureLocations = event.failureLocations.mapNotNull(::safeFailureLocation).distinct().take(MAX_FAILURE_LOCATIONS),
+        promptCharacters = event.promptCharacters?.coerceIn(0, MAX_PROMPT_CHARACTERS),
+        outputChunks = event.outputChunks?.coerceIn(0, MAX_OUTPUT_CHUNKS),
     )
 
     private fun BottleLookupDebugEvent.toJson() = buildJsonObject {
@@ -173,6 +179,8 @@ internal class BottleLookupDebugReport(
         put("factFields", buildJsonArray { factFields.forEach { add(JsonPrimitive(it)) } })
         failureType?.let { put("failureType", it) }
         put("failureLocations", buildJsonArray { failureLocations.forEach { add(JsonPrimitive(it)) } })
+        promptCharacters?.let { put("promptCharacters", it) }
+        outputChunks?.let { put("outputChunks", it) }
     }
 
     private fun String.safeVersion() = filter { it.isLetterOrDigit() || it in ".-_+" }.take(80).ifBlank { "unknown" }
@@ -201,6 +209,8 @@ internal class BottleLookupDebugReport(
         const val MAX_REASONS = 12
         const val MAX_FACT_FIELDS = 4
         const val MAX_FAILURE_LOCATIONS = 4
+        const val MAX_PROMPT_CHARACTERS = 20_000
+        const val MAX_OUTPUT_CHUNKS = 1_024
 
         private val OUTCOMES = setOf("RUNNING", "SUCCESS", "PARTIAL", "NOT_FOUND", "FAILED", "CANCELLED", "DISABLED")
         private val RESULTS = setOf(
@@ -229,6 +239,7 @@ internal class BottleLookupDebugReport(
             "LOCAL_MODEL_PREPARATION_FAILED", "LOCAL_UNSUPPORTED_ARCHITECTURE",
             "LOCAL_PROMPT_SETUP_FAILED", "LOCAL_GENERATION_FAILED", "LOCAL_GENERATION_TIMEOUT",
             "LOCAL_RUNTIME_CLEANUP_FAILED",
+            "STRUCTURED_FACTS_FALLBACK_AFTER_TIMEOUT",
             "LOCAL_MODEL_OUTPUT_INVALID", "LOCAL_IDENTITY_BINDING_FAILED", "LOCAL_INFERENCE_FAILED",
         )
         private val FACT_FIELDS = setOf("PRODUCT_NAME", "BRAND", "QUANTITY", "ABV_PERCENT", "OTHER")

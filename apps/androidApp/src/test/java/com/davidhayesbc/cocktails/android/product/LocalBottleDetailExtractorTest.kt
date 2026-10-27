@@ -24,7 +24,7 @@ class LocalBottleDetailExtractorTest {
         var receivedPrompt = ""
         val extractor = LocalBottleDetailExtractor({ "/private/model.gguf" }, LocalInferenceRunner { _, system, prompt, tokens ->
             assertTrue(system.contains("untrusted data"))
-            assertEquals(256, tokens)
+            assertEquals(160, tokens)
             receivedPrompt = prompt
             """{"facts":[{"field":"product_name","value":"North Star Gin","evidence":"North Star Gin 40% ABV"},{"field":"abv_percent","value":"40%","evidence":"North Star Gin 40% ABV"}]}"""
         })
@@ -37,6 +37,27 @@ class LocalBottleDetailExtractorTest {
         assertEquals(2, result.suggestions.facts.size)
         assertFalse(receivedPrompt.contains("tracker.example"))
         assertFalse(receivedPrompt.contains("user=secret"))
+    }
+
+    @Test
+    fun localInferencePromptAndOutputBudgetStayBoundedForLongPages() = runBlocking {
+        val page = WebPageText(
+            "North Star Gin",
+            "https://example.org/gin",
+            "North Star Gin 40% ABV. " + "Unrelated page text. ".repeat(1_000),
+            "Firecrawl",
+        )
+        var promptLength = 0
+        var outputBudget = 0
+        val result = LocalBottleDetailExtractor({ "/model.gguf" }, LocalInferenceRunner { _, _, prompt, maxTokens ->
+            promptLength = prompt.length
+            outputBudget = maxTokens
+            """{"facts":[{"field":"product_name","value":"North Star Gin","evidence":"North Star Gin 40% ABV"}]}"""
+        }).extract(page, LOCAL_MODEL_LABEL)
+
+        assertTrue(result is BottleDetailExtractionResult.Found)
+        assertTrue("Prompt should not forward an entire long page", promptLength <= 3_200)
+        assertEquals(160, outputBudget)
     }
 
     @Test
@@ -191,6 +212,14 @@ class LocalBottleDetailExtractorTest {
         })
         assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_MODEL_LOADING))
         assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_PROMPT_SETUP))
+        val prefill = events.single { it.stage == BottleLookupDebugStage.LOCAL_PROMPT_PREFILL && it.result == "COMPLETE" }
+        assertTrue(prefill.durationMillis > 0)
+        assertTrue((prefill.promptCharacters ?: 0) > 0)
+        val firstToken = events.single { it.stage == BottleLookupDebugStage.LOCAL_FIRST_TOKEN }
+        assertTrue(firstToken.durationMillis > 0)
+        val generation = events.single { it.stage == BottleLookupDebugStage.LOCAL_GENERATION && it.result == "COMPLETE" }
+        assertEquals(1, generation.outputChunks)
+        assertTrue(generation.durationMillis > 0)
         assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_GENERATION))
         assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_RESPONSE_PARSING))
         assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_IDENTITY_BINDING))
@@ -217,6 +246,49 @@ class LocalBottleDetailExtractorTest {
             assertEquals(BottleDetailExtractionResult.LocalFailure(LocalInferenceFailureCode.GENERATION_FAILED), generationResult)
             assertTrue(generationEvents.any { it.stage == BottleLookupDebugStage.LOCAL_GENERATION && it.result == "FAILED" })
             assertFalse(generationEvents.any { "NETWORK_ERROR" == it.result })
+        } finally {
+            modelFile.delete()
+        }
+    }
+
+    @Test
+    fun nativeGenerationTimeoutRequestsInterruptionAndKeepsVerifiedStructuredName() = runBlocking {
+        val modelFile = validHeaderModelFile()
+        val identity = StructuredBottleIdentity(
+            "5011333150725",
+            "Auchentoshan Three Wood",
+            "Structured product fields: barcode 5011333150725; product Auchentoshan Three Wood",
+        )
+        val page = WebPageText(
+            "Auchentoshan Three Wood Single Malt Scotch Whisky | Canadian Liquor Store",
+            "https://shop.example/auchentoshan-three-wood",
+            "Auchentoshan Three Wood Single Malt Scotch Whisky",
+            "Firecrawl",
+            listOf(identity),
+        )
+        val engine = FakeInferenceEngine(waitForNativeCancel = true)
+        val events = mutableListOf<BottleLookupDebugEvent>()
+        try {
+            val result = LocalBottleDetailExtractor(
+                { modelFile.absolutePath },
+                LlamaCppLocalInferenceRunner(engine, generationTimeoutMs = 500),
+            ).extractWithDiagnostics(page, LOCAL_MODEL_LABEL, "5011333150725", events::add)
+
+            assertTrue(result is BottleDetailExtractionResult.Found)
+            val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
+            assertEquals("Structured product data", suggestions.provider)
+            assertEquals("Auchentoshan Three Wood", suggestions.facts.single().value)
+            assertEquals(setOf(BottleFactField.BRAND, BottleFactField.QUANTITY, BottleFactField.ABV_PERCENT), suggestions.unresolvedFields)
+            assertEquals("5011333150725", suggestions.targetBarcode)
+            assertTrue(engine.nativeCancellationRequested)
+            assertTrue(engine.cleanedUp)
+            val timeout = events.single {
+                it.stage == BottleLookupDebugStage.LOCAL_GENERATION && it.result == "FAILED"
+            }
+            assertEquals(listOf("LOCAL_GENERATION_TIMEOUT"), timeout.reasonCodes)
+            assertTrue(timeout.durationMillis in 400..750)
+            assertTrue((timeout.promptCharacters ?: 0) > 0)
+            assertTrue(events.any { it.stage == BottleLookupDebugStage.LOCAL_PROMPT_PREFILL && it.result == "COMPLETE" })
         } finally {
             modelFile.delete()
         }
@@ -384,9 +456,11 @@ class LocalBottleDetailExtractorTest {
         initialState: InferenceEngine.State = InferenceEngine.State.Initialized,
         private val output: String = "{}",
         private val throwOn: String? = null,
+        private val waitForNativeCancel: Boolean = false,
     ) : InferenceEngine {
         override val state = MutableStateFlow(initialState)
         var cleanedUp = false
+        @Volatile var nativeCancellationRequested = false
 
         override suspend fun loadModel(pathToModel: String) {
             when (throwOn) {
@@ -402,8 +476,19 @@ class LocalBottleDetailExtractorTest {
 
         override fun sendUserPrompt(message: String, predictLength: Int): Flow<String> = flow {
             if (throwOn == "generation") throw testFailure()
-            emit(output)
+            state.value = InferenceEngine.State.ProcessingUserPrompt
+            delay(20)
+            state.value = InferenceEngine.State.Generating
+            delay(20)
+            if (waitForNativeCancel) {
+                while (!nativeCancellationRequested) delay(5)
+            } else {
+                emit(output)
+            }
+            state.value = InferenceEngine.State.ModelReady
         }
+
+        override fun requestGenerationCancellation() { nativeCancellationRequested = true }
 
         override suspend fun bench(pp: Int, tg: Int, pl: Int, nr: Int): String = ""
 
