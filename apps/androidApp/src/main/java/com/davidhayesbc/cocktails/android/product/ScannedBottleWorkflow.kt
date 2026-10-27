@@ -503,6 +503,7 @@ internal class ScannedBottleEnrichmentCoordinator(
                 (extraction as? BottleDetailExtractionResult.Found)?.rejectedCandidates?.forEach { add(it.debugCode) }
                 suggestions?.unresolvedFields?.forEach { add("${it.wireValue.uppercase()}_UNRESOLVED") }
                 (extraction as? BottleDetailExtractionResult.Rejected)?.let { add(it.reason.debugCode) }
+                (extraction as? BottleDetailExtractionResult.LocalFailure)?.let { add(it.code.wireValue) }
             },
         ))
         return outcome.copy(extraction = extraction)
@@ -522,7 +523,20 @@ internal class ScannedBottleEnrichmentCoordinator(
             onDebugEvent(BottleLookupDebugEvent(stage, provider, "CANCELLED", elapsedMillis(started), reasonCodes = listOf("REQUEST_CANCELLED")))
             throw cancelled
         } catch (failure: Exception) {
-            onDebugEvent(BottleLookupDebugEvent(stage, provider, "NETWORK_ERROR", elapsedMillis(started), reasonCodes = listOf("UNEXPECTED_EXCEPTION")))
+            val localInference = stage == BottleLookupDebugStage.DETAIL_EXTRACTION && provider == "On-device Qwen3"
+            onDebugEvent(BottleLookupDebugEvent(
+                stage = stage,
+                provider = provider,
+                result = if (localInference) "LOCAL_RUNTIME_ERROR" else "NETWORK_ERROR",
+                durationMillis = elapsedMillis(started),
+                reasonCodes = listOf(if (localInference) LocalInferenceFailureCode.INFERENCE_FAILED.wireValue else "UNEXPECTED_EXCEPTION"),
+                failureType = failure.javaClass.simpleName,
+                failureLocations = failure.stackTrace.asSequence()
+                    .filter { it.className.startsWith("com.arm.aichat.") || it.className.startsWith("com.davidhayesbc.cocktails.android.product.") }
+                    .map { "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" }
+                    .take(BottleLookupDebugReport.MAX_FAILURE_LOCATIONS)
+                    .toList(),
+            ))
             throw failure
         }
     }
@@ -580,6 +594,11 @@ private fun BottleDetailExtractionResult.toDebugCode(httpStatus: Int?): String =
     BottleDetailExtractionResult.Unavailable -> "NETWORK_ERROR"
     is BottleDetailExtractionResult.Rejected -> "CANDIDATES_REJECTED"
     BottleDetailExtractionResult.InvalidResponse -> "CANDIDATES_REJECTED"
+    is BottleDetailExtractionResult.LocalFailure -> when ((this as BottleDetailExtractionResult.LocalFailure).code) {
+        LocalInferenceFailureCode.MODEL_OUTPUT_INVALID,
+        LocalInferenceFailureCode.IDENTITY_BINDING_FAILED -> "CANDIDATES_REJECTED"
+        else -> "LOCAL_RUNTIME_ERROR"
+    }
 }
 
 private fun ScannedBarcodePageDecision.toDebugCode() = when (this) {

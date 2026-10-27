@@ -63,7 +63,12 @@ interface InferenceEngine {
 
         object Generating : State()
 
-        data class Error(val exception: Exception) : State()
+        data class Error(
+            val exception: Exception,
+            /** Original native/runtime type and first stack frames, without the exception message. */
+            val diagnosticType: String = exception.javaClass.simpleName,
+            val diagnosticFrames: List<StackTraceElement> = exception.stackTrace.toList(),
+        ) : State()
     }
 
     companion object {

@@ -179,7 +179,8 @@ import com.davidhayesbc.cocktails.android.product.isValidOllamaModelIdentifier
 import com.davidhayesbc.cocktails.android.product.LocalModelFileStore
 import com.davidhayesbc.cocktails.android.product.LocalModelInstallResult
 import com.davidhayesbc.cocktails.android.product.LocalBottleDetailExtractor
-import com.davidhayesbc.cocktails.android.product.LlamaCppLocalInferenceRunner
+import com.davidhayesbc.cocktails.android.product.LazyLlamaCppLocalInferenceRunner
+import com.davidhayesbc.cocktails.android.product.LocalInferenceFailureCode
 import com.davidhayesbc.cocktails.android.product.LOCAL_MODEL_LABEL
 import com.davidhayesbc.cocktails.android.product.QWEN3_06B_MODEL_PAGE
 import com.davidhayesbc.cocktails.android.product.WebSearchHit
@@ -743,6 +744,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     BottleDetailExtractionResult.Unavailable -> previous.copy(extracting = false, message = "Ollama Cloud could not be reached. Your draft is unchanged.")
                     is BottleDetailExtractionResult.Rejected -> previous.copy(extracting = false, message = "The source did not support usable suggestions. Check it manually or continue without them.")
                     BottleDetailExtractionResult.InvalidResponse -> previous.copy(extracting = false, message = "Ollama Cloud returned suggestions without usable source evidence.")
+                    is BottleDetailExtractionResult.LocalFailure -> previous.copy(extracting = false, message = "The local model failed (${result.code.wireValue}). Your draft is unchanged.")
                 })
             }
             if (bottleExtractionRequestTokens[draftId] == requestToken) bottleExtractionJobs.remove(draftId)
@@ -783,14 +785,14 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         ))
         bottleExtractionJobs[draftId] = coroutineScope.launch {
             val extracted = try {
-                val runner = LlamaCppLocalInferenceRunner(context)
+                val runner = LazyLlamaCppLocalInferenceRunner(context)
                 val requiredBarcode = bottleWebSearchStates[draftId]?.takeIf { it.automatedScan }?.let { currentDraft.barcode }
                 LocalBottleDetailExtractor({ modelFile.absolutePath }, runner)
                     .extract(page, LOCAL_MODEL_LABEL, requiredBarcode)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
-                BottleDetailExtractionResult.Unavailable
+                BottleDetailExtractionResult.LocalFailure(LocalInferenceFailureCode.INFERENCE_FAILED)
             }
             val result = when (extracted) {
                 is BottleDetailExtractionResult.Found -> if (pendingBottleEvidenceStore.save(draftId, extracted.suggestions)) extracted else BottleDetailExtractionResult.InvalidResponse
@@ -810,6 +812,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     BottleDetailExtractionResult.Unavailable -> previous.copy(extracting = false, message = "On-device extraction did not finish. Your draft is unchanged; check free memory and try again.")
                     is BottleDetailExtractionResult.Rejected -> previous.copy(extracting = false, message = "The source did not support usable suggestions. Check it manually or continue without them.")
                     BottleDetailExtractionResult.InvalidResponse -> previous.copy(extracting = false, message = "The model returned no suggestions with usable source evidence.")
+                    is BottleDetailExtractionResult.LocalFailure -> previous.copy(extracting = false, message = "On-device extraction failed (${result.code.wireValue}). Your draft is unchanged; check the lookup report for stage details.")
                 })
             }
             if (bottleExtractionRequestTokens[draftId] == requestToken) bottleExtractionJobs.remove(draftId)
@@ -900,8 +903,11 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                             AutomaticBottleExtractor.ON_DEVICE -> {
                                 val modelFile = localModelFileStore.installedModel()
                                 if (modelFile == null) BottleProviderCall(BottleDetailExtractionResult.SetupRequired) else {
-                                    val runner = LlamaCppLocalInferenceRunner(context)
-                                    BottleProviderCall(LocalBottleDetailExtractor({ modelFile.absolutePath }, runner).extract(page, LOCAL_MODEL_LABEL, requiredBarcode))
+                                    val runner = LazyLlamaCppLocalInferenceRunner(context)
+                                    BottleProviderCall(
+                                        LocalBottleDetailExtractor({ modelFile.absolutePath }, runner)
+                                            .extractWithDiagnostics(page, LOCAL_MODEL_LABEL, requiredBarcode, ::recordDebugEvent),
+                                    )
                                 }
                             }
                         }
@@ -1000,6 +1006,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 result.page is WebPageResult.Found && !result.barcodeVerifiedInPage -> "We checked up to three search results, but none tied a page to this barcode. You can inspect a source or continue manually."
                 candidateExtraction != null && extraction == null -> "Suggestions could not be saved with their source evidence. They were not applied; enter details manually."
                 result.extraction is BottleDetailExtractionResult.Found -> "Suggestions are ready in the review fields. Check the source and each value before accepting."
+                result.extraction is BottleDetailExtractionResult.LocalFailure -> "On-device extraction failed (${result.extraction.code.wireValue}). Your draft is unchanged; copy the lookup report for stage details."
                 result.extraction != null -> "The enabled model could not produce verified details. Your draft is unchanged; continue manually."
                 result.search is WebSearchResult.Found && result.selectedHit == null -> "No source result was found for this barcode. Continue manually or search again later."
                 result.search == WebSearchResult.QuotaExceeded -> "Firecrawl's plan quota is exhausted. No retry was made; continue manually."

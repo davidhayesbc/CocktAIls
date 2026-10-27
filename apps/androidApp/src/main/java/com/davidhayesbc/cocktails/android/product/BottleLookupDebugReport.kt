@@ -19,6 +19,13 @@ internal enum class BottleLookupDebugStage {
     FIRECRAWL_FETCH,
     BARCODE_MATCH,
     DETAIL_EXTRACTION,
+    LOCAL_INPUT_VALIDATION,
+    LOCAL_RUNTIME_INITIALIZATION,
+    LOCAL_MODEL_LOADING,
+    LOCAL_PROMPT_SETUP,
+    LOCAL_GENERATION,
+    LOCAL_RESPONSE_PARSING,
+    LOCAL_IDENTITY_BINDING,
     REVIEW_PERSISTENCE,
     COMPLETE,
 }
@@ -40,6 +47,8 @@ internal data class BottleLookupDebugEvent(
     val sourceUrls: List<String> = emptyList(),
     val reasonCodes: List<String> = emptyList(),
     val factFields: List<String> = emptyList(),
+    val failureType: String? = null,
+    val failureLocations: List<String> = emptyList(),
 )
 
 /**
@@ -128,7 +137,7 @@ internal class BottleLookupDebugReport(
             put("searchQuery", query ?: "not constructed")
             put("outcome", outcome)
             put("events", buildJsonArray { events.forEach { add(it.toJson()) } })
-            put("privacy", "No keys, headers, response bodies, page text, prompts, photos, notes, or household records are included.")
+            put("privacy", "No keys, headers, response bodies, page text, prompts, photos, notes, or household records are included. Local failures may include allowlisted exception types and first-party stack locations, never exception messages or file paths.")
         }
         Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), root)
     }
@@ -147,6 +156,8 @@ internal class BottleLookupDebugReport(
         sourceUrls = event.sourceUrls.mapNotNull(::safeDiagnosticUrl).take(MAX_RESULTS),
         reasonCodes = event.reasonCodes.map { it.safeReasonCode() }.distinct().take(MAX_REASONS),
         factFields = event.factFields.map { it.safeCode(FACT_FIELDS, "OTHER") }.distinct().take(MAX_FACT_FIELDS),
+        failureType = event.failureType?.safeFailureType(),
+        failureLocations = event.failureLocations.mapNotNull(::safeFailureLocation).distinct().take(MAX_FAILURE_LOCATIONS),
     )
 
     private fun BottleLookupDebugEvent.toJson() = buildJsonObject {
@@ -159,6 +170,8 @@ internal class BottleLookupDebugReport(
         put("sourceUrls", buildJsonArray { sourceUrls.forEach { add(JsonPrimitive(it)) } })
         put("reasonCodes", buildJsonArray { reasonCodes.forEach { add(JsonPrimitive(it)) } })
         put("factFields", buildJsonArray { factFields.forEach { add(JsonPrimitive(it)) } })
+        failureType?.let { put("failureType", it) }
+        put("failureLocations", buildJsonArray { failureLocations.forEach { add(JsonPrimitive(it)) } })
     }
 
     private fun String.safeVersion() = filter { it.isLetterOrDigit() || it in ".-_+" }.take(80).ifBlank { "unknown" }
@@ -168,6 +181,8 @@ internal class BottleLookupDebugReport(
         .ifBlank { "not constructed" }
     private fun String.safeCode(allowed: Set<String>, fallback: String) = uppercase()
         .filter { it.isLetterOrDigit() || it == '_' }.take(48).takeIf(allowed::contains) ?: fallback
+
+    private fun String.safeFailureType() = takeIf(FAILURE_TYPES::contains) ?: "OtherException"
 
     private fun String.safeReasonCode(): String {
         val normalized = uppercase().filter { it.isLetterOrDigit() || it == '_' }.take(48)
@@ -184,6 +199,7 @@ internal class BottleLookupDebugReport(
         const val MAX_DURATION_MS = 10 * 60 * 1000L
         const val MAX_REASONS = 12
         const val MAX_FACT_FIELDS = 4
+        const val MAX_FAILURE_LOCATIONS = 4
 
         private val OUTCOMES = setOf("RUNNING", "SUCCESS", "PARTIAL", "NOT_FOUND", "FAILED", "CANCELLED", "DISABLED")
         private val RESULTS = setOf(
@@ -193,6 +209,8 @@ internal class BottleLookupDebugReport(
             "SELECTED_EXACT_MATCH", "SELECTED_FALLBACK", "CANDIDATE_SELECTED", "NO_USABLE_SOURCE", "FETCHED", "BARCODE_VERIFIED", "STRUCTURED_PRODUCT_MATCH",
             "BARCODE_MISSING", "BARCODE_MISMATCH", "AMBIGUOUS_BARCODE", "CANDIDATES_READY", "CANDIDATES_REJECTED",
             "CANCELLED", "UNEXPECTED_ERROR", "SKIPPED", "PERSISTED", "PERSISTENCE_FAILED", "UNKNOWN",
+            "READY", "COMPLETE", "FAILED", "REJECTED", "TIMEOUT", "INVALID_MODEL", "INVALID_SOURCE_URL",
+            "LOCAL_RUNTIME_ERROR", "LOCAL_MODEL_ERROR",
         )
         private val REASONS = setOf(
             "HIT_TEXT_MISSING_BARCODE", "GENERIC_BARCODE_LOOKUP", "NO_EXACT_CODE_IN_PAGE", "TARGET_BARCODE_MISMATCH",
@@ -204,12 +222,28 @@ internal class BottleLookupDebugReport(
             "NO_SEARCH_RESULTS", "MODEL_NOT_CONFIGURED", "PRODUCT_NOT_FOUND", "BRAND_UNRESOLVED",
             "PRODUCT_NAME_UNRESOLVED", "QUANTITY_UNRESOLVED", "ABV_PERCENT_UNRESOLVED",
             "PRODUCT_NAME_MISSING", "INVALID_TARGET_BARCODE", "BARCODE_IN_STRUCTURED_PRODUCT",
+            "LOCAL_MODEL_FILE_UNREADABLE", "LOCAL_RUNTIME_INITIALIZATION_FAILED", "LOCAL_NATIVE_RUNTIME_UNAVAILABLE",
+            "LOCAL_MODEL_FILE_INVALID",
+            "LOCAL_MODEL_LOAD_FAILED", "LOCAL_MODEL_PREPARATION_FAILED", "LOCAL_UNSUPPORTED_ARCHITECTURE",
+            "LOCAL_PROMPT_SETUP_FAILED", "LOCAL_GENERATION_FAILED", "LOCAL_GENERATION_TIMEOUT",
+            "LOCAL_MODEL_OUTPUT_INVALID", "LOCAL_IDENTITY_BINDING_FAILED", "LOCAL_INFERENCE_FAILED",
         )
         private val FACT_FIELDS = setOf("PRODUCT_NAME", "BRAND", "QUANTITY", "ABV_PERCENT", "OTHER")
         private val PROVIDERS = setOf(
             "APP", "Local database", "Open Food Facts", "Firecrawl", "MODEL", "ON_DEVICE", "OLLAMA_CLOUD",
             "On-device Qwen3", "Ollama Cloud", "unknown",
         )
+        private val FAILURE_TYPES = setOf(
+            "IllegalStateException", "IllegalArgumentException", "IOException", "FileNotFoundException",
+            "SecurityException", "UnsupportedArchitectureException", "UnsatisfiedLinkError", "NoSuchMethodError",
+            "ExceptionInInitializerError", "OutOfMemoryError", "TimeoutCancellationException",
+            "CancellationException", "RuntimeException", "LinkageError", "NativeFailure", "OtherException",
+        )
+
+        private val SAFE_FAILURE_LOCATION = Regex("[A-Za-z0-9_.$]+\\.[A-Za-z0-9_$<>]+:-?[0-9]+")
+
+        private fun safeFailureLocation(value: String): String? = value
+            .takeIf { it.length <= 120 && SAFE_FAILURE_LOCATION.matches(it) }
 
         fun safeDiagnosticUrl(raw: String): String? = runCatching {
             val uri = URI(raw.trim())

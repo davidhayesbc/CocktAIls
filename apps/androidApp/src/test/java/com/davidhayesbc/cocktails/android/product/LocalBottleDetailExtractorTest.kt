@@ -1,5 +1,9 @@
 package com.davidhayesbc.cocktails.android.product
 
+import com.arm.aichat.InferenceEngine
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -108,5 +112,177 @@ class LocalBottleDetailExtractorTest {
         assertEquals("5011333150725", suggestions.targetBarcode)
         assertTrue(prompt.contains("[barcode omitted]"))
         assertFalse(prompt.contains("5011333150725"))
+    }
+
+    @Test
+    fun localRuntimeFailureIsNotReportedAsNetworkFailureAndLeaksNoExceptionMessage() = runBlocking {
+        val source = WebPageText("Test Gin", "https://shop.example/gin", "Test Gin 40% ABV", "Firecrawl")
+        val modelFile = validHeaderModelFile()
+        val engine = FakeInferenceEngine(
+            initialState = InferenceEngine.State.Error(
+                exception = IllegalStateException("secret /private/model.gguf token=do-not-copy"),
+                diagnosticType = "UnsatisfiedLinkError",
+                diagnosticFrames = listOf(StackTraceElement("com.arm.aichat.internal.InferenceEngineImpl", "init", "InferenceEngineImpl.kt", 91)),
+            ),
+        )
+        val events = mutableListOf<BottleLookupDebugEvent>()
+
+        val result = try {
+            LocalBottleDetailExtractor({ modelFile.absolutePath }, LlamaCppLocalInferenceRunner(engine))
+                .extractWithDiagnostics(source, LOCAL_MODEL_LABEL, null, events::add)
+        } finally {
+            modelFile.delete()
+        }
+
+        assertEquals(BottleDetailExtractionResult.LocalFailure(LocalInferenceFailureCode.NATIVE_RUNTIME_UNAVAILABLE), result)
+        val report = newDebugReport().also { events.forEach(it::record) }.toJson()
+        assertTrue(report.contains("LOCAL_RUNTIME_INITIALIZATION"))
+        assertTrue(report.contains("LOCAL_NATIVE_RUNTIME_UNAVAILABLE"))
+        assertTrue(report.contains("UnsatisfiedLinkError"))
+        assertTrue(report.contains("InferenceEngineImpl.init:91"))
+        assertFalse(report.contains("NETWORK_ERROR"))
+        assertFalse(report.contains("do-not-copy"))
+        assertFalse(report.contains("/private/model.gguf"))
+        assertFalse(report.contains("secret"))
+    }
+
+    @Test
+    fun reportsLocalValidationLoadGenerationParseAndIdentityStages() = runBlocking {
+        val barcode = "5011333150725"
+        val identity = StructuredBottleIdentity(
+            barcode,
+            "Test Whisky",
+            "Structured product fields: barcode $barcode; product Test Whisky",
+        )
+        val source = WebPageText(
+            "Test Whisky",
+            "https://shop.example/whisky",
+            "Test Whisky 40% ABV",
+            "Firecrawl",
+            listOf(identity),
+        )
+        val modelFile = validHeaderModelFile()
+        val engine = FakeInferenceEngine(
+            output = """{"facts":[{"field":"product_name","value":"Test Whisky","evidence":"Test Whisky 40% ABV"}]}""",
+        )
+        val events = mutableListOf<BottleLookupDebugEvent>()
+
+        val result = try {
+            LocalBottleDetailExtractor({ modelFile.absolutePath }, LlamaCppLocalInferenceRunner(engine))
+                .extractWithDiagnostics(source, LOCAL_MODEL_LABEL, barcode, events::add)
+        } finally {
+            modelFile.delete()
+        }
+
+        assertTrue(result is BottleDetailExtractionResult.Found)
+        val stages = events.map(BottleLookupDebugEvent::stage)
+        assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_INPUT_VALIDATION))
+        assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_RUNTIME_INITIALIZATION))
+        assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_MODEL_LOADING))
+        assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_PROMPT_SETUP))
+        assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_GENERATION))
+        assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_RESPONSE_PARSING))
+        assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_IDENTITY_BINDING))
+        assertTrue(engine.cleanedUp)
+    }
+
+    @Test
+    fun localModelLoadAndGenerationFailuresKeepTheirActualStage() = runBlocking {
+        val page = WebPageText("Test Gin", "https://shop.example/gin", "Test Gin 40% ABV", "Firecrawl")
+        val modelFile = validHeaderModelFile()
+
+        val loadEvents = mutableListOf<BottleLookupDebugEvent>()
+        try {
+            val loadResult = LocalBottleDetailExtractor({ modelFile.absolutePath }, LlamaCppLocalInferenceRunner(FakeInferenceEngine(throwOn = "load")))
+                .extractWithDiagnostics(page, LOCAL_MODEL_LABEL, null, loadEvents::add)
+            assertEquals(BottleDetailExtractionResult.LocalFailure(LocalInferenceFailureCode.MODEL_LOAD_FAILED), loadResult)
+            assertTrue(loadEvents.any { it.stage == BottleLookupDebugStage.LOCAL_MODEL_LOADING && it.result == "FAILED" })
+
+            val generationEvents = mutableListOf<BottleLookupDebugEvent>()
+            val generationResult = LocalBottleDetailExtractor({ modelFile.absolutePath }, LlamaCppLocalInferenceRunner(FakeInferenceEngine(throwOn = "generation")))
+                .extractWithDiagnostics(page, LOCAL_MODEL_LABEL, null, generationEvents::add)
+            assertEquals(BottleDetailExtractionResult.LocalFailure(LocalInferenceFailureCode.GENERATION_FAILED), generationResult)
+            assertTrue(generationEvents.any { it.stage == BottleLookupDebugStage.LOCAL_GENERATION && it.result == "FAILED" })
+            assertFalse(generationEvents.any { "NETWORK_ERROR" == it.result })
+        } finally {
+            modelFile.delete()
+        }
+    }
+
+    @Test
+    fun rejectsInvalidInstalledModelBeforeInitializingNativeRuntime() = runBlocking {
+        val invalidModel = java.io.File.createTempFile("invalid-qwen-", ".gguf").apply { writeText("not a GGUF model") }
+        val events = mutableListOf<BottleLookupDebugEvent>()
+        try {
+            val result = LocalBottleDetailExtractor(
+                { invalidModel.absolutePath },
+                LlamaCppLocalInferenceRunner(FakeInferenceEngine()),
+            ).extractWithDiagnostics(
+                WebPageText("Test Gin", "https://shop.example/gin", "Test Gin 40% ABV", "Firecrawl"),
+                LOCAL_MODEL_LABEL,
+                null,
+                events::add,
+            )
+
+            assertEquals(BottleDetailExtractionResult.LocalFailure(LocalInferenceFailureCode.MODEL_FILE_INVALID), result)
+            assertTrue(events.any { it.stage == BottleLookupDebugStage.LOCAL_INPUT_VALIDATION && it.reasonCodes.contains("LOCAL_MODEL_FILE_INVALID") })
+            assertFalse(events.any { it.stage == BottleLookupDebugStage.LOCAL_RUNTIME_INITIALIZATION })
+        } finally {
+            invalidModel.delete()
+        }
+    }
+
+    private fun newDebugReport() = BottleLookupDebugReport(
+        createdAtMillis = 1,
+        versionName = "test",
+        versionCode = 1,
+        originalBarcode = "5011333150725",
+        normalizedBarcode = "5011333150725",
+        openFoodFactsEnabled = false,
+        openFoodFactsConfigured = true,
+        firecrawlEnabled = true,
+        firecrawlConfigured = true,
+        extractorProvider = "On-device Qwen3",
+        modelIdentifier = LOCAL_MODEL_LABEL,
+        query = "\"5011333150725\"",
+        onDeviceAiEnabled = true,
+        onDeviceModelInstalled = true,
+        localModelIdentifier = LOCAL_MODEL_LABEL,
+    )
+
+    private fun validHeaderModelFile() = java.io.File.createTempFile("qwen-test-", ".gguf").apply {
+        writeBytes(byteArrayOf('G'.code.toByte(), 'G'.code.toByte(), 'U'.code.toByte(), 'F'.code.toByte()))
+    }
+
+    private class FakeInferenceEngine(
+        initialState: InferenceEngine.State = InferenceEngine.State.Initialized,
+        private val output: String = "{}",
+        private val throwOn: String? = null,
+    ) : InferenceEngine {
+        override val state = MutableStateFlow(initialState)
+        var cleanedUp = false
+
+        override suspend fun loadModel(pathToModel: String) {
+            if (throwOn == "load") throw testFailure()
+        }
+
+        override suspend fun setSystemPrompt(systemPrompt: String) {
+            if (throwOn == "prompt") throw testFailure()
+        }
+
+        override fun sendUserPrompt(message: String, predictLength: Int): Flow<String> = flow {
+            if (throwOn == "generation") throw testFailure()
+            emit(output)
+        }
+
+        override suspend fun bench(pp: Int, tg: Int, pl: Int, nr: Int): String = ""
+
+        override fun cleanUp() { cleanedUp = true }
+
+        override fun destroy() = Unit
+
+        private fun testFailure() = IllegalStateException("secret path=/private/model.gguf api_key=never-copy").apply {
+            stackTrace = arrayOf(StackTraceElement("com.arm.aichat.internal.InferenceEngineImpl", "loadModel", "InferenceEngineImpl.kt", 145))
+        }
     }
 }

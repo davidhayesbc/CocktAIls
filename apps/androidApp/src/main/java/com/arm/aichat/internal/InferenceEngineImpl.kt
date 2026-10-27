@@ -121,10 +121,18 @@ internal class InferenceEngineImpl private constructor(
                 _state.value = InferenceEngine.State.Initialized
 
             } catch (failure: Exception) {
-                _state.value = InferenceEngine.State.Error(failure)
+                _state.value = InferenceEngine.State.Error(
+                    exception = failure,
+                    diagnosticType = failure.javaClass.simpleName,
+                    diagnosticFrames = failure.stackTrace.toList(),
+                )
                 throw failure
             } catch (failure: LinkageError) {
-                _state.value = InferenceEngine.State.Error(IllegalStateException("Native local model runtime is unavailable"))
+                _state.value = InferenceEngine.State.Error(
+                    exception = IllegalStateException("Native local model runtime is unavailable"),
+                    diagnosticType = failure.javaClass.simpleName,
+                    diagnosticFrames = failure.stackTrace.toList(),
+                )
             }
         }
     }
@@ -159,7 +167,11 @@ internal class InferenceEngineImpl private constructor(
                 _cancelGeneration = false
                 _state.value = InferenceEngine.State.ModelReady
             } catch (failure: Exception) {
-                _state.value = InferenceEngine.State.Error(failure)
+                _state.value = InferenceEngine.State.Error(
+                    exception = failure,
+                    diagnosticType = failure.javaClass.simpleName,
+                    diagnosticFrames = failure.stackTrace.toList(),
+                )
                 throw failure
             }
         }

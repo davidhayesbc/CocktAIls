@@ -76,6 +76,23 @@ internal sealed interface BottleDetailExtractionResult {
     data object QuotaOrRateLimited : BottleDetailExtractionResult
     data object Unavailable : BottleDetailExtractionResult
     data object InvalidResponse : BottleDetailExtractionResult
+    data class LocalFailure(val code: LocalInferenceFailureCode) : BottleDetailExtractionResult
+}
+
+internal enum class LocalInferenceFailureCode(val wireValue: String) {
+    MODEL_FILE_UNREADABLE("LOCAL_MODEL_FILE_UNREADABLE"),
+    MODEL_FILE_INVALID("LOCAL_MODEL_FILE_INVALID"),
+    NATIVE_RUNTIME_UNAVAILABLE("LOCAL_NATIVE_RUNTIME_UNAVAILABLE"),
+    RUNTIME_INITIALIZATION_FAILED("LOCAL_RUNTIME_INITIALIZATION_FAILED"),
+    MODEL_LOAD_FAILED("LOCAL_MODEL_LOAD_FAILED"),
+    MODEL_PREPARATION_FAILED("LOCAL_MODEL_PREPARATION_FAILED"),
+    UNSUPPORTED_ARCHITECTURE("LOCAL_UNSUPPORTED_ARCHITECTURE"),
+    PROMPT_SETUP_FAILED("LOCAL_PROMPT_SETUP_FAILED"),
+    GENERATION_FAILED("LOCAL_GENERATION_FAILED"),
+    GENERATION_TIMEOUT("LOCAL_GENERATION_TIMEOUT"),
+    MODEL_OUTPUT_INVALID("LOCAL_MODEL_OUTPUT_INVALID"),
+    IDENTITY_BINDING_FAILED("LOCAL_IDENTITY_BINDING_FAILED"),
+    INFERENCE_FAILED("LOCAL_INFERENCE_FAILED"),
 }
 
 /** Retrieval and model inference are separate, allowing a future on-device implementation. */
