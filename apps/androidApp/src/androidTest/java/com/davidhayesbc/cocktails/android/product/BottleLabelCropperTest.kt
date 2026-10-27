@@ -75,6 +75,6 @@ class BottleLabelCropperTest {
         val output = ByteArrayOutputStream()
         bitmap.compress(Bitmap.CompressFormat.JPEG, 92, output)
         bitmap.recycle()
-        return output.toByteArray()
+        return stripJpegMetadata(output.toByteArray()) ?: error("Synthetic JPEG metadata could not be removed")
     }
 }

@@ -654,7 +654,7 @@ class OfflineRecipeSmokeTest {
             assertEquals(BottleEnrichmentStatus.RUNNING, jobs.getValue(second.id).status)
             assertTrue(jobs.getValue(second.id).labelCaptureRequired)
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-queue-status-${first.id}"))
-            composeRule.onNodeWithTag("bottle-queue-status-${first.id}").assertTextEquals("Processing while you scan · keep intake open")
+            composeRule.onNodeWithTag("bottle-queue-status-${first.id}").assertTextEquals("Processing in the background · you can leave intake")
             composeRule.onNodeWithTag("capture-label-${second.id}").assertExists()
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("skip-label-${second.id}"))
             composeRule.onNodeWithTag("skip-label-${second.id}").performClick()

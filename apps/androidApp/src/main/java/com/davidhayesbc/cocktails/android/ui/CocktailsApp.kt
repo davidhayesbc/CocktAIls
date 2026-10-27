@@ -185,9 +185,11 @@ import com.davidhayesbc.cocktails.android.product.BottleScanEnrichmentRuntime
 import com.davidhayesbc.cocktails.android.product.BottleCaptureToken
 import com.davidhayesbc.cocktails.android.product.bottleCaptureTempFileName
 import com.davidhayesbc.cocktails.android.product.bottleCaptureDraftIsStillOpen
+import com.davidhayesbc.cocktails.android.product.processingBottleCaptureAfterCompletion
 import com.davidhayesbc.cocktails.android.product.isCurrentBottleCapture
 import com.davidhayesbc.cocktails.android.product.restoreBottleCaptureToken
 import com.davidhayesbc.cocktails.android.product.BottleLabelCropper
+import com.davidhayesbc.cocktails.android.product.stripJpegMetadata
 import com.davidhayesbc.cocktails.android.product.BottleLabelCropEditorState
 import com.davidhayesbc.cocktails.android.product.NormalizedLabelCrop
 import com.davidhayesbc.cocktails.android.product.SharedPreferencesBottleEnrichmentQueueStorage
@@ -313,7 +315,7 @@ private fun readAndCompressProductPhoto(context: Context, uri: Uri): ByteArray {
         for (quality in listOf(82, 74, 66, 58, 50)) {
             val output = ByteArrayOutputStream()
             prepared.compress(Bitmap.CompressFormat.JPEG, quality, output)
-            val result = output.toByteArray()
+            val result = stripJpegMetadata(output.toByteArray()) ?: continue
             if (result.size <= MAX_PRODUCT_PHOTO_BYTES && isProductPhotoJpeg(result)) return result
         }
     } finally {
@@ -1058,6 +1060,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             draftId = draft.id,
             attemptToken = queued.attemptToken,
             requiresNetwork = plan.openFoodFactsEnabled || plan.firecrawlEnabled,
+            replaceExisting = existingJob != null,
         )
         bottleWebSearchStates = bottleWebSearchStates + (draft.id to previous.copy(
             automatedScan = true,
@@ -1418,7 +1421,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 if (!isCurrentBottleCaptureOperation(token)) {
                     file.delete()
                     clearPersistedCameraLaunch(token)
-                    processingBottleCameraToken = null
+                    processingBottleCameraToken = processingBottleCaptureAfterCompletion(processingBottleCameraToken, token)
                     return@launch
                 }
                 val stagedPreview = targetDraftId?.let { File(directory, "pending-$it-${token.generation}.tmp") }
@@ -1436,7 +1439,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     stagedOriginal?.delete()
                     file.delete()
                     clearPersistedCameraLaunch(token)
-                    processingBottleCameraToken = null
+                    processingBottleCameraToken = processingBottleCaptureAfterCompletion(processingBottleCameraToken, token)
                     return@launch
                 }
                 val stored = if (staged && targetDraftId != null && stagedPreview != null && stagedOriginal != null) {
@@ -1450,7 +1453,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 if (!isCurrentBottleCaptureOperation(token)) {
                     file.delete()
                     clearPersistedCameraLaunch(token)
-                    processingBottleCameraToken = null
+                    processingBottleCameraToken = processingBottleCaptureAfterCompletion(processingBottleCameraToken, token)
                     return@launch
                 }
                 pendingBottleLabelOriginalPhoto = originalPhoto
@@ -1463,7 +1466,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 }
                 file.delete()
                 clearPersistedCameraLaunch(token)
-                processingBottleCameraToken = null
+                processingBottleCameraToken = processingBottleCaptureAfterCompletion(processingBottleCameraToken, token)
         }
     }
 

@@ -72,4 +72,13 @@ class BottleCaptureGenerationTest {
         assertNull(restoreBottleCaptureToken(true, 42, "draft", false, "capture-99-draft.jpg"))
         assertEquals(BottleCaptureToken(42, null), restoreBottleCaptureToken(true, 42, null, true, "capture-42-manual.jpg"))
     }
+
+    @Test
+    fun staleDecodeCompletionCannotClearANewerCaptureOperation() {
+        val old = BottleCaptureToken(50, "draft-old")
+        val current = BottleCaptureToken(51, "draft-new")
+
+        assertEquals(current, processingBottleCaptureAfterCompletion(current, old))
+        assertNull(processingBottleCaptureAfterCompletion(old, old))
+    }
 }

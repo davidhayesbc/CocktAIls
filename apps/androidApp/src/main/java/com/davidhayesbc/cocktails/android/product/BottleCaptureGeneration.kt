@@ -29,3 +29,9 @@ internal fun restoreBottleCaptureToken(
 
 internal fun bottleCaptureDraftIsStillOpen(token: BottleCaptureToken, openDraftIds: Set<String>): Boolean =
     token.draftId == null || token.draftId in openDraftIds
+
+/** A stale completion may clear only the capture operation that it still owns. */
+internal fun processingBottleCaptureAfterCompletion(
+    current: BottleCaptureToken?,
+    completed: BottleCaptureToken,
+): BottleCaptureToken? = if (current == completed) null else current
