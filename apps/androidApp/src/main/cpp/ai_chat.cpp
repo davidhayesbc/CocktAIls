@@ -122,6 +122,10 @@ static llama_context *init_context(llama_model *model, const int n_ctx = DEFAULT
     ctx_params.n_ubatch = BATCH_SIZE;
     ctx_params.n_threads = n_threads;
     ctx_params.n_threads_batch = n_threads;
+    // The pinned llama.cpp CPU backend checks this callback while evaluating graph nodes,
+    // allowing cancellation to interrupt a long decode/prompt-prefill batch.
+    ctx_params.abort_callback = generation_abort_callback;
+    ctx_params.abort_callback_data = &g_generation_cancellation;
     auto *context = llama_init_from_model(g_model, ctx_params);
     if (context == nullptr) {
         LOGe("%s: llama_new_context_with_model() returned null)", __func__);
@@ -368,11 +372,13 @@ static int decode_tokens_in_batches(
 
         // Decode this batch
         const int decode_result = llama_process(context, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+        // llama.cpp reports an aborted graph as a nonzero decode result. Preserve the
+        // cancellation outcome instead of reclassifying it as a generic decode failure.
+        if (g_generation_cancellation.requested()) return 3;
         if (decode_result) {
             LOGe("%s: llama_decode failed w/ %d", __func__, decode_result);
             return 1;
         }
-        if (g_generation_cancellation.requested()) return 3;
     }
     return 0;
 }
@@ -412,7 +418,9 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_processSystemPrompt(
     }
 
     // Decode system tokens in batches
-    if (decode_tokens_in_batches(g_context, g_batch, system_tokens, current_position)) {
+    const int decode_status = decode_tokens_in_batches(g_context, g_batch, system_tokens, current_position);
+    if (decode_status == 3) return 3;
+    if (decode_status != 0) {
         LOGe("%s: llama_decode() failed!", __func__);
         return 2;
     }

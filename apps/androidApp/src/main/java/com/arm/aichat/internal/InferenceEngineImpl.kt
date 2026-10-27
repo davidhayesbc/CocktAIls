@@ -185,6 +185,10 @@ internal class InferenceEngineImpl private constructor(
             _readyForSystemPrompt = false
             _state.value = InferenceEngine.State.ProcessingSystemPrompt
             processSystemPrompt(systemPrompt).let { result ->
+                if (result == NATIVE_GENERATION_CANCELLED) {
+                    _state.value = InferenceEngine.State.ModelReady
+                    throw CancellationException("Native prompt processing cancelled")
+                }
                 if (result != 0) {
                     RuntimeException("Failed to process system prompt: $result").also {
                         _state.value = InferenceEngine.State.Error(it)

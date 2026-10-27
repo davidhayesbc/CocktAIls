@@ -46,13 +46,17 @@ int main() {
     // Cancellation can be requested from the timeout thread while JNI runs on its own dispatcher.
     generation_cancellation cancellation;
     assert(!cancellation.requested());
+    assert(!generation_abort_callback(&cancellation));
     std::thread timeout_thread([&cancellation] { cancellation.request(); });
     timeout_thread.join();
     assert(cancellation.requested());
+    assert(generation_abort_callback(&cancellation));
     const bool may_generate = !cancellation.requested() && budget.has_remaining_tokens();
     assert(!may_generate);
     cancellation.reset();
     assert(!cancellation.requested());
+    assert(!generation_abort_callback(&cancellation));
+    assert(!generation_abort_callback(nullptr));
 
     budget.begin_request(0);
     assert(!budget.has_remaining_tokens());

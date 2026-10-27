@@ -6,8 +6,11 @@ import com.arm.aichat.NativeCpuBackendUnavailableException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
@@ -16,6 +19,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 class LocalBottleDetailExtractorTest {
     @Test
@@ -58,6 +64,27 @@ class LocalBottleDetailExtractorTest {
         assertTrue(result is BottleDetailExtractionResult.Found)
         assertTrue("Prompt should not forward an entire long page", promptLength <= 3_200)
         assertEquals(160, outputBudget)
+    }
+
+    @Test
+    fun fullBoundedSourceStillDetectsConflictsBeyondShortInferencePrompt() = runBlocking {
+        val lateConflict = "North Star Gin is 43% ABV."
+        val source = "North Star Gin is 40% ABV. " + "Ordinary retailer text. ".repeat(150) + lateConflict
+        var prompt = ""
+        val result = LocalBottleDetailExtractor({ "/model.gguf" }, LocalInferenceRunner { _, _, userPrompt, _ ->
+            prompt = userPrompt
+            """{"facts":[{"field":"abv_percent","value":"40%","evidence":"North Star Gin is 40% ABV"}]}"""
+        }).extract(
+            WebPageText("North Star Gin", "https://example.org/gin", source, "Firecrawl"),
+            LOCAL_MODEL_LABEL,
+        )
+
+        assertTrue(result is BottleDetailExtractionResult.Found)
+        val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
+        assertTrue(BottleFactField.ABV_PERCENT in suggestions.unresolvedFields)
+        assertTrue(suggestions.facts.none { it.field == BottleFactField.ABV_PERCENT })
+        assertTrue("Prompt remains short enough for the local model", prompt.length <= 3_200)
+        assertFalse("The late conflict is outside the model prompt", prompt.contains(lateConflict))
     }
 
     @Test
@@ -430,6 +457,53 @@ class LocalBottleDetailExtractorTest {
         assertTrue(job.isCancelled)
     }
 
+    @Test
+    fun callerCancellationDuringSystemPromptWaitsForNativeExitBeforeCleanup() = runBlocking {
+        val modelFile = validHeaderModelFile()
+        val engine = BlockingNativeInferenceEngine(blockSystemPrompt = true)
+        val runner = LlamaCppLocalInferenceRunner(engine, generationTimeoutMs = 10_000)
+        val job = launch { runner.generateWithDiagnostics(modelFile.absolutePath, "system", "user", 16) {} }
+        try {
+            assertTrue(withContext(Dispatchers.IO) { engine.systemPromptEntered.await(3, TimeUnit.SECONDS) })
+            job.cancel()
+            job.join()
+
+            assertTrue(engine.nativeCancellationRequested)
+            assertTrue(engine.nativeOperationExited)
+            assertTrue(engine.cleanedUp)
+            assertTrue("Cleanup must follow exit from the simulated native call", engine.cleanupOrder > engine.nativeExitOrder)
+        } finally {
+            engine.releaseNativeOperation.countDown()
+            modelFile.delete()
+        }
+    }
+
+    @Test
+    fun callerCancellationDuringGenerationWaitsForNativeExitAndNextRequestResetsFlag() = runBlocking {
+        val modelFile = validHeaderModelFile()
+        val engine = BlockingNativeInferenceEngine(blockSystemPrompt = false)
+        val runner = LlamaCppLocalInferenceRunner(engine, generationTimeoutMs = 10_000)
+        val job = launch { runner.generateWithDiagnostics(modelFile.absolutePath, "system", "user", 16) {} }
+        try {
+            assertTrue(withContext(Dispatchers.IO) { engine.generationEntered.await(3, TimeUnit.SECONDS) })
+            job.cancel()
+            job.join()
+
+            assertTrue(engine.nativeCancellationRequested)
+            assertTrue(engine.nativeOperationExited)
+            assertTrue(engine.cleanedUp)
+            assertTrue("Cleanup must follow exit from the simulated native call", engine.cleanupOrder > engine.nativeExitOrder)
+
+            engine.blockNextGeneration = false
+            assertEquals("{}", runner.generateWithDiagnostics(modelFile.absolutePath, "system", "user", 16) {})
+            assertFalse("Loading a fresh native request clears its cancellation flag", engine.nativeCancellationRequested)
+            assertTrue(engine.loadCount >= 2)
+        } finally {
+            engine.releaseNativeOperation.countDown()
+            modelFile.delete()
+        }
+    }
+
     private fun newDebugReport() = BottleLookupDebugReport(
         createdAtMillis = 1,
         versionName = "test",
@@ -517,6 +591,90 @@ class LocalBottleDetailExtractorTest {
             onEvent(BottleLookupDebugEvent(BottleLookupDebugStage.LOCAL_GENERATION, "On-device Qwen3", "RUNNING"))
             delay(1_000)
             return "{}"
+        }
+    }
+
+    /** Simulates a JNI call that cannot return until the native cancellation callback fires. */
+    private class BlockingNativeInferenceEngine(
+        private val blockSystemPrompt: Boolean,
+    ) : InferenceEngine {
+        override val state = MutableStateFlow<InferenceEngine.State>(InferenceEngine.State.Initialized)
+        val systemPromptEntered = CountDownLatch(1)
+        val generationEntered = CountDownLatch(1)
+        val releaseNativeOperation = CountDownLatch(1)
+        @Volatile var nativeCancellationRequested = false
+            private set
+        @Volatile var nativeOperationExited = false
+            private set
+        @Volatile var cleanedUp = false
+            private set
+        @Volatile var blockNextGeneration = true
+        @Volatile var loadCount = 0
+            private set
+        @Volatile var nativeExitOrder = 0
+            private set
+        @Volatile var cleanupOrder = 0
+            private set
+        private val order = AtomicInteger()
+
+        override suspend fun loadModel(pathToModel: String) {
+            loadCount++
+            nativeCancellationRequested = false
+            nativeOperationExited = false
+            cleanedUp = false
+            cleanupOrder = 0
+            state.value = InferenceEngine.State.ModelReady
+        }
+
+        override suspend fun setSystemPrompt(systemPrompt: String) {
+            if (blockSystemPrompt) {
+                state.value = InferenceEngine.State.ProcessingSystemPrompt
+                withContext(NonCancellable + Dispatchers.IO) {
+                    systemPromptEntered.countDown()
+                    releaseNativeOperation.await()
+                    recordNativeExit()
+                }
+                state.value = InferenceEngine.State.ModelReady
+                if (nativeCancellationRequested) throw CancellationException("Simulated native prompt prefill cancelled")
+            }
+        }
+
+        override fun sendUserPrompt(message: String, predictLength: Int): Flow<String> = flow {
+            state.value = InferenceEngine.State.ProcessingUserPrompt
+            if (blockNextGeneration) {
+                try {
+                    withContext(NonCancellable + Dispatchers.IO) {
+                        generationEntered.countDown()
+                        releaseNativeOperation.await()
+                    }
+                } finally {
+                    recordNativeExit()
+                }
+                if (nativeCancellationRequested) return@flow
+            }
+            state.value = InferenceEngine.State.Generating
+            emit("{}")
+            state.value = InferenceEngine.State.ModelReady
+        }
+
+        override fun requestGenerationCancellation() {
+            nativeCancellationRequested = true
+            releaseNativeOperation.countDown()
+        }
+
+        override suspend fun bench(pp: Int, tg: Int, pl: Int, nr: Int): String = ""
+
+        override fun cleanUp() {
+            cleanedUp = true
+            cleanupOrder = order.incrementAndGet()
+            state.value = InferenceEngine.State.Initialized
+        }
+
+        override fun destroy() = Unit
+
+        private fun recordNativeExit() {
+            nativeOperationExited = true
+            nativeExitOrder = order.incrementAndGet()
         }
     }
 }

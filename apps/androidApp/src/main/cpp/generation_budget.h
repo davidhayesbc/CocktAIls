@@ -49,3 +49,7 @@ public:
 private:
     std::atomic<bool> requested_{false};
 };
+
+inline bool generation_abort_callback(void *data) {
+    return data != nullptr && static_cast<generation_cancellation *>(data)->requested();
+}
