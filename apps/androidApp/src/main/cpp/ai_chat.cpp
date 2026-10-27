@@ -1,6 +1,7 @@
 #include <jni.h>
 #include <iomanip>
 #include <cmath>
+#include <exception>
 #include <string>
 #include <atomic>
 #include <unistd.h>
@@ -36,6 +37,15 @@ constexpr int   OVERFLOW_HEADROOM       = 4;
 constexpr int   BATCH_SIZE              = 128;
 constexpr float DEFAULT_SAMPLER_TEMP    = 0.3f;
 
+static constexpr char LOCAL_FACTS_GBNF[] = R"GBNF(
+root ::= "{\"facts\":[" fact-list "]}"
+fact-list ::= | fact ("," fact)*
+fact ::= "{\"field\":" field ",\"value\":" string ",\"evidence\":" string "}"
+field ::= "\"product_name\"" | "\"brand\"" | "\"quantity\"" | "\"abv_percent\""
+string ::= "\"" char* "\""
+char ::= [^"\\\x7F\x00-\x1F] | "\\" (["\\bfnrt] | "u" [0-9a-fA-F]{4})
+)GBNF";
+
 static llama_model                      * g_model;
 static llama_context                    * g_context;
 static common_batch                       g_batch;
@@ -44,6 +54,7 @@ static common_sampler                   * g_sampler;
 static std::atomic<bool> g_capture_model_load_log{false};
 static std::atomic<int> g_model_load_failure_status{NATIVE_MODEL_LOAD_FAILED};
 static generation_cancellation g_generation_cancellation;
+static generation_budget g_generation_budget;
 
 static void aichat_android_log_callback(enum ggml_log_level level, const char * message, void *) {
     if (!g_capture_model_load_log.load(std::memory_order_relaxed) ||
@@ -136,6 +147,7 @@ static llama_context *init_context(llama_model *model, const int n_ctx = DEFAULT
 static common_sampler *new_sampler(float temp) {
     common_params_sampling sparams;
     sparams.temp = temp;
+    sparams.grammar = common_grammar(COMMON_GRAMMAR_TYPE_USER, LOCAL_FACTS_GBNF);
     return common_sampler_init(g_model, sparams);
 }
 
@@ -143,12 +155,21 @@ extern "C"
 JNIEXPORT jint JNICALL
 Java_com_arm_aichat_internal_InferenceEngineImpl_prepare(JNIEnv * /*env*/, jobject /*unused*/) {
     g_generation_cancellation.reset();
+    g_generation_budget.finish(generation_finish_reason::unknown);
     auto *context = init_context(g_model);
     if (!context) { return 1; }
     g_context = context;
     g_batch = common_batch(context);
     g_chat_templates = common_chat_templates_init(g_model, "");
-    g_sampler = new_sampler(DEFAULT_SAMPLER_TEMP);
+    try {
+        g_sampler = new_sampler(DEFAULT_SAMPLER_TEMP);
+    } catch (const std::exception &) {
+        llama_free(g_context);
+        g_context = nullptr;
+        g_batch = common_batch();
+        g_chat_templates.reset();
+        return 1;
+    }
     return 0;
 }
 
@@ -332,7 +353,6 @@ static std::string chat_add_and_format(const std::string &role, const std::strin
  * - token chars caching
  * - current assistant message being generated
  */
-static generation_budget g_generation_budget;
 static std::string cached_token_chars;
 static std::ostringstream assistant_ss;
 
@@ -522,8 +542,12 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_generateNextToken(
         JNIEnv *env,
         jobject /*unused*/
 ) {
-    if (g_generation_cancellation.requested()) return nullptr;
+    if (g_generation_cancellation.requested()) {
+        g_generation_budget.finish(generation_finish_reason::cancelled);
+        return nullptr;
+    }
     if (!g_generation_budget.has_remaining_tokens()) {
+        g_generation_budget.finish(generation_finish_reason::token_limit);
         return nullptr;
     }
 
@@ -535,6 +559,7 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_generateNextToken(
 
     // Context positions may shift, so output length is tracked independently.
     if (!g_generation_budget.has_remaining_tokens()) {
+        g_generation_budget.finish(generation_finish_reason::token_limit);
         return nullptr;
     }
 
@@ -545,7 +570,11 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_generateNextToken(
     // Populate the batch with new token, then decode
     g_batch.clear();
     g_batch.add(new_token_id, current_position, 0, true);
-    if (llama_process(g_context, LLAMA_PROCESS_TYPE_DECODE, g_batch.get()) != 0) {
+    const int decode_status = llama_process(g_context, LLAMA_PROCESS_TYPE_DECODE, g_batch.get());
+    if (decode_status != 0) {
+        g_generation_budget.finish(g_generation_cancellation.requested()
+                ? generation_finish_reason::cancelled
+                : generation_finish_reason::decode_error);
         LOGe("%s: llama_decode() failed for generated token", __func__);
         return nullptr;
     }
@@ -556,6 +585,7 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_generateNextToken(
 
     // Stop if next token is EOG
     if (llama_vocab_is_eog(llama_model_get_vocab(g_model), new_token_id)) {
+        g_generation_budget.finish(generation_finish_reason::end_of_sequence);
         LOGd("id: %d,\tIS EOG!\nSTOP.", new_token_id);
         chat_add_and_format(ROLE_ASSISTANT, assistant_ss.str());
         return nullptr;
@@ -588,6 +618,18 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_requestNativeGenerationCancella
     // This entry point touches only an atomic flag, so the caller may safely invoke it while the
     // inference dispatcher is inside a native decode operation.
     g_generation_cancellation.request();
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_com_arm_aichat_internal_InferenceEngineImpl_generationOutputTokenCount(JNIEnv *, jobject) {
+    return g_generation_budget.generated_tokens();
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_com_arm_aichat_internal_InferenceEngineImpl_generationFinishReason(JNIEnv *, jobject) {
+    return static_cast<int>(g_generation_budget.finish_reason());
 }
 
 

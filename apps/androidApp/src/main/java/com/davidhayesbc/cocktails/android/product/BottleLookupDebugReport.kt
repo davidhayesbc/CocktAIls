@@ -54,6 +54,8 @@ internal data class BottleLookupDebugEvent(
     val failureLocations: List<String> = emptyList(),
     val promptCharacters: Int? = null,
     val outputChunks: Int? = null,
+    val generatedTokens: Int? = null,
+    val finishReason: String? = null,
 )
 
 /**
@@ -165,6 +167,8 @@ internal class BottleLookupDebugReport(
         failureLocations = event.failureLocations.mapNotNull(::safeFailureLocation).distinct().take(MAX_FAILURE_LOCATIONS),
         promptCharacters = event.promptCharacters?.coerceIn(0, MAX_PROMPT_CHARACTERS),
         outputChunks = event.outputChunks?.coerceIn(0, MAX_OUTPUT_CHUNKS),
+        generatedTokens = event.generatedTokens?.coerceIn(0, MAX_GENERATED_TOKENS),
+        finishReason = event.finishReason?.takeIf(FINISH_REASONS::contains),
     )
 
     private fun BottleLookupDebugEvent.toJson() = buildJsonObject {
@@ -181,6 +185,8 @@ internal class BottleLookupDebugReport(
         put("failureLocations", buildJsonArray { failureLocations.forEach { add(JsonPrimitive(it)) } })
         promptCharacters?.let { put("promptCharacters", it) }
         outputChunks?.let { put("outputChunks", it) }
+        generatedTokens?.let { put("generatedTokens", it) }
+        finishReason?.let { put("finishReason", it) }
     }
 
     private fun String.safeVersion() = filter { it.isLetterOrDigit() || it in ".-_+" }.take(80).ifBlank { "unknown" }
@@ -211,6 +217,7 @@ internal class BottleLookupDebugReport(
         const val MAX_FAILURE_LOCATIONS = 4
         const val MAX_PROMPT_CHARACTERS = 20_000
         const val MAX_OUTPUT_CHUNKS = 1_024
+        const val MAX_GENERATED_TOKENS = 1_024
 
         private val OUTCOMES = setOf("RUNNING", "SUCCESS", "PARTIAL", "NOT_FOUND", "FAILED", "CANCELLED", "DISABLED")
         private val RESULTS = setOf(
@@ -238,11 +245,15 @@ internal class BottleLookupDebugReport(
             "LOCAL_MODEL_LOAD_FAILED", "LOCAL_MODEL_ALLOCATION_FAILED", "LOCAL_MODEL_ARCHITECTURE_UNSUPPORTED",
             "LOCAL_MODEL_PREPARATION_FAILED", "LOCAL_UNSUPPORTED_ARCHITECTURE",
             "LOCAL_PROMPT_SETUP_FAILED", "LOCAL_GENERATION_FAILED", "LOCAL_GENERATION_TIMEOUT",
+            "LOCAL_MODEL_OUTPUT_TRUNCATED",
             "LOCAL_RUNTIME_CLEANUP_FAILED",
             "STRUCTURED_FACTS_FALLBACK_AFTER_TIMEOUT",
+            "STRUCTURED_FACTS_FALLBACK_AFTER_TRUNCATION", "STRUCTURED_FACTS_FALLBACK_AFTER_MALFORMED_RESPONSE",
+            "LOCAL_GENERATION_TOKEN_LIMIT",
             "LOCAL_MODEL_OUTPUT_INVALID", "LOCAL_IDENTITY_BINDING_FAILED", "LOCAL_INFERENCE_FAILED",
         )
         private val FACT_FIELDS = setOf("PRODUCT_NAME", "BRAND", "QUANTITY", "ABV_PERCENT", "OTHER")
+        private val FINISH_REASONS = setOf("END_OF_SEQUENCE", "TOKEN_LIMIT", "CANCELLED", "DECODE_ERROR", "UNKNOWN")
         private val PROVIDERS = setOf(
             "APP", "Local database", "Open Food Facts", "Firecrawl", "MODEL", "ON_DEVICE", "OLLAMA_CLOUD",
             "On-device Qwen3", "Ollama Cloud", "unknown",

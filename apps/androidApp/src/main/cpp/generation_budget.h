@@ -3,6 +3,15 @@
 #include <algorithm>
 #include <atomic>
 
+enum class generation_finish_reason : int {
+    unknown = 0,
+    running = 1,
+    end_of_sequence = 2,
+    token_limit = 3,
+    cancelled = 4,
+    decode_error = 5,
+};
+
 inline int bounded_prompt_token_count(
     const int requested_tokens,
     const int current_position,
@@ -18,6 +27,7 @@ public:
     void begin_request(const int max_output_tokens) {
         max_output_tokens_ = std::max(0, max_output_tokens);
         generated_tokens_ = 0;
+        finish_reason_ = generation_finish_reason::running;
     }
 
     bool has_remaining_tokens() const {
@@ -34,9 +44,18 @@ public:
         return generated_tokens_;
     }
 
+    void finish(const generation_finish_reason reason) {
+        finish_reason_ = reason;
+    }
+
+    generation_finish_reason finish_reason() const {
+        return finish_reason_;
+    }
+
 private:
     int max_output_tokens_ = 0;
     int generated_tokens_ = 0;
+    generation_finish_reason finish_reason_ = generation_finish_reason::unknown;
 };
 
 /** Cross-thread cancellation flag; native inference polls it between bounded decode batches. */

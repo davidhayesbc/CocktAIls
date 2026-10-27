@@ -92,6 +92,10 @@ internal class InferenceEngineImpl private constructor(
 
     private external fun generateNextToken(): String?
 
+    private external fun generationOutputTokenCount(): Int
+
+    private external fun generationFinishReason(): Int
+
     private external fun requestNativeGenerationCancellation()
 
     private external fun unload()
@@ -111,6 +115,18 @@ internal class InferenceEngineImpl private constructor(
     override fun requestGenerationCancellation() {
         _cancelGeneration = true
         if (_nativeInitialized) requestNativeGenerationCancellation()
+    }
+
+    override suspend fun lastGenerationStats(): InferenceEngine.GenerationStats? = withContext(llamaDispatcher) {
+        if (!_nativeInitialized) return@withContext null
+        val reason = when (generationFinishReason()) {
+            2 -> InferenceEngine.GenerationFinishReason.END_OF_SEQUENCE
+            3 -> InferenceEngine.GenerationFinishReason.TOKEN_LIMIT
+            4 -> InferenceEngine.GenerationFinishReason.CANCELLED
+            5 -> InferenceEngine.GenerationFinishReason.DECODE_ERROR
+            else -> InferenceEngine.GenerationFinishReason.UNKNOWN
+        }
+        InferenceEngine.GenerationStats(generatedTokens = generationOutputTokenCount().coerceAtLeast(0), finishReason = reason)
     }
 
     /**

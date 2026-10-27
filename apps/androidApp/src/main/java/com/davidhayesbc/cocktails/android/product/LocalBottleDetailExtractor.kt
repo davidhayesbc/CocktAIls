@@ -127,12 +127,17 @@ internal class LocalBottleDetailExtractor(
         } catch (failure: Exception) {
             val code = (failure as? LocalInferenceFailureException)?.code ?: classifyLocalFailure(currentFailureStage, failure)
             if (!runnerReportedFailure) recordLocalFailure(currentFailureStage, code, failure, ::record)
-            if (code == LocalInferenceFailureCode.GENERATION_TIMEOUT && structuredFallback != null) {
+            if (code in setOf(LocalInferenceFailureCode.GENERATION_TIMEOUT, LocalInferenceFailureCode.MODEL_OUTPUT_TRUNCATED) && structuredFallback != null) {
+                val fallbackReason = if (code == LocalInferenceFailureCode.GENERATION_TIMEOUT) {
+                    "STRUCTURED_FACTS_FALLBACK_AFTER_TIMEOUT"
+                } else {
+                    "STRUCTURED_FACTS_FALLBACK_AFTER_TRUNCATION"
+                }
                 record(BottleLookupDebugEvent(
                     BottleLookupDebugStage.LOCAL_IDENTITY_BINDING,
                     providerLabel,
                     "COMPLETE",
-                    reasonCodes = listOf("STRUCTURED_FACTS_FALLBACK_AFTER_TIMEOUT"),
+                    reasonCodes = listOf(fallbackReason),
                     factFields = listOf(BottleFactField.PRODUCT_NAME.wireValue),
                 ))
                 return structuredFallback
@@ -165,6 +170,20 @@ internal class LocalBottleDetailExtractor(
             return BottleDetailExtractionResult.LocalFailure(LocalInferenceFailureCode.MODEL_OUTPUT_INVALID)
         }
         recordExtractionResult(BottleLookupDebugStage.LOCAL_RESPONSE_PARSING, parsed, ::record)
+
+        if (parsed is BottleDetailExtractionResult.Rejected &&
+            parsed.reason == BottleExtractionRejectionReason.MALFORMED_MODEL_RESPONSE &&
+            structuredFallback != null
+        ) {
+            record(BottleLookupDebugEvent(
+                BottleLookupDebugStage.LOCAL_IDENTITY_BINDING,
+                providerLabel,
+                "COMPLETE",
+                reasonCodes = listOf("STRUCTURED_FACTS_FALLBACK_AFTER_MALFORMED_RESPONSE"),
+                factFields = listOf(BottleFactField.PRODUCT_NAME.wireValue),
+            ))
+            return structuredFallback
+        }
 
         if (structuredIdentity == null && requiredBarcode == null) return parsed
         record(BottleLookupDebugEvent(BottleLookupDebugStage.LOCAL_IDENTITY_BINDING, providerLabel, "RUNNING"))
@@ -228,6 +247,8 @@ private fun recordLocalFailure(
     durationMillis: Long = 0,
     promptCharacters: Int? = null,
     outputChunks: Int? = null,
+    generatedTokens: Int? = null,
+    finishReason: String? = null,
 ) {
     record(BottleLookupDebugEvent(
         stage = stage,
@@ -239,6 +260,8 @@ private fun recordLocalFailure(
         failureLocations = safeFailureLocations(overrideFrames ?: failure.stackTrace.toList()),
         promptCharacters = promptCharacters,
         outputChunks = outputChunks,
+        generatedTokens = generatedTokens,
+        finishReason = finishReason,
     ))
 }
 
@@ -354,6 +377,8 @@ internal class LlamaCppLocalInferenceRunner internal constructor(
             reason: String? = null,
             promptCharacters: Int? = null,
             outputChunks: Int? = null,
+            generatedTokens: Int? = null,
+            finishReason: String? = null,
         ) {
             val duration = if (result == "RUNNING") {
                 stageStartedAt[stage] = System.nanoTime()
@@ -368,6 +393,8 @@ internal class LlamaCppLocalInferenceRunner internal constructor(
                     reasonCodes = listOfNotNull(reason),
                     promptCharacters = promptCharacters,
                     outputChunks = outputChunks,
+                    generatedTokens = generatedTokens,
+                    finishReason = finishReason,
                 ))
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -523,6 +550,7 @@ internal class LlamaCppLocalInferenceRunner internal constructor(
                     stageMonitor.cancelAndJoin()
                 }
             }
+            val generationStats = if (chunks != null) engine.lastGenerationStats() else null
             currentCoroutineContext().ensureActive()
             if (timeoutRequested.get() && chunks != null) {
                 val elapsedMs = (System.nanoTime() - generationStartedAt) / 1_000_000L
@@ -540,10 +568,48 @@ internal class LlamaCppLocalInferenceRunner internal constructor(
                     durationMillis = elapsed(activeStage),
                     promptCharacters = userPrompt.length,
                     outputChunks = outputChunks,
+                    generatedTokens = generationStats?.generatedTokens,
+                    finishReason = generationStats?.finishReason?.wireValue,
                 )
                 throw LocalInferenceFailureException(LocalInferenceFailureCode.GENERATION_TIMEOUT)
             }
-            emit(activeStage, "COMPLETE", promptCharacters = userPrompt.length, outputChunks = outputChunks)
+            when (generationStats?.finishReason) {
+                InferenceEngine.GenerationFinishReason.TOKEN_LIMIT -> {
+                    emit(
+                        activeStage,
+                        "FAILED",
+                        "LOCAL_GENERATION_TOKEN_LIMIT",
+                        promptCharacters = userPrompt.length,
+                        outputChunks = outputChunks,
+                        generatedTokens = generationStats.generatedTokens,
+                        finishReason = generationStats.finishReason.wireValue,
+                    )
+                    throw LocalInferenceFailureException(LocalInferenceFailureCode.MODEL_OUTPUT_TRUNCATED)
+                }
+                InferenceEngine.GenerationFinishReason.DECODE_ERROR,
+                InferenceEngine.GenerationFinishReason.UNKNOWN -> {
+                    emit(
+                        activeStage,
+                        "FAILED",
+                        "LOCAL_GENERATION_FAILED",
+                        promptCharacters = userPrompt.length,
+                        outputChunks = outputChunks,
+                        generatedTokens = generationStats.generatedTokens,
+                        finishReason = generationStats.finishReason.wireValue,
+                    )
+                    throw LocalInferenceFailureException(LocalInferenceFailureCode.GENERATION_FAILED)
+                }
+                InferenceEngine.GenerationFinishReason.CANCELLED -> throw CancellationException("Native generation cancelled")
+                else -> Unit
+            }
+            emit(
+                activeStage,
+                "COMPLETE",
+                promptCharacters = userPrompt.length,
+                outputChunks = outputChunks,
+                generatedTokens = generationStats?.generatedTokens,
+                finishReason = generationStats?.finishReason?.wireValue,
+            )
             return chunks.joinToString("").take(MAX_LOCAL_OUTPUT_CHARS)
         } catch (cancelled: CancellationException) {
             emit(activeStage, "CANCELLED", "REQUEST_CANCELLED")

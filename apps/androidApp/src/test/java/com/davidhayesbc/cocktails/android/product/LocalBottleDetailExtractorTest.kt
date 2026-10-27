@@ -170,6 +170,82 @@ class LocalBottleDetailExtractorTest {
     }
 
     @Test
+    fun malformedLocalOutputKeepsOnlyTheIndependentlyVerifiedStructuredProductName() = runBlocking {
+        val barcode = "5011333150725"
+        val identity = StructuredBottleIdentity(
+            barcode,
+            "Auchentoshan Three Wood",
+            "Structured product fields: barcode $barcode; product Auchentoshan Three Wood",
+        )
+        val page = WebPageText(
+            "Auchentoshan Three Wood",
+            "https://shop.example/three-wood",
+            "Auchentoshan Three Wood 750 mL, 43% ABV.",
+            "Firecrawl",
+            listOf(identity),
+        )
+        val events = mutableListOf<BottleLookupDebugEvent>()
+        val result = LocalBottleDetailExtractor(
+            { "/model.gguf" },
+            LocalInferenceRunner { _, _, _, _ -> "I found this bottle: Auchentoshan Three Wood" },
+        ).extractWithDiagnostics(page, LOCAL_MODEL_LABEL, barcode, events::add)
+
+        assertTrue(result is BottleDetailExtractionResult.Found)
+        val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
+        assertEquals("Structured product data", suggestions.provider)
+        assertEquals("Auchentoshan Three Wood", suggestions.facts.single().value)
+        assertEquals(setOf(BottleFactField.BRAND, BottleFactField.QUANTITY, BottleFactField.ABV_PERCENT), suggestions.unresolvedFields)
+        assertTrue(events.any {
+            it.stage == BottleLookupDebugStage.LOCAL_RESPONSE_PARSING &&
+                it.reasonCodes == listOf("MALFORMED_MODEL_RESPONSE")
+        })
+        assertTrue(events.any {
+            it.stage == BottleLookupDebugStage.LOCAL_IDENTITY_BINDING &&
+                it.reasonCodes == listOf("STRUCTURED_FACTS_FALLBACK_AFTER_MALFORMED_RESPONSE")
+        })
+    }
+
+    @Test
+    fun tokenLimitIsReportedAndFallsBackToVerifiedStructuredNameOnly() = runBlocking {
+        val barcode = "5011333150725"
+        val identity = StructuredBottleIdentity(
+            barcode,
+            "Auchentoshan Three Wood",
+            "Structured product fields: barcode $barcode; product Auchentoshan Three Wood",
+        )
+        val modelFile = validHeaderModelFile()
+        val engine = FakeInferenceEngine(
+            output = "{\"facts\":[",
+            generationStats = InferenceEngine.GenerationStats(
+                160,
+                InferenceEngine.GenerationFinishReason.TOKEN_LIMIT,
+            ),
+        )
+        val events = mutableListOf<BottleLookupDebugEvent>()
+        try {
+            val result = LocalBottleDetailExtractor({ modelFile.absolutePath }, LlamaCppLocalInferenceRunner(engine))
+                .extractWithDiagnostics(
+                    WebPageText("Auchentoshan Three Wood", "https://shop.example/three-wood", "Auchentoshan Three Wood", "Firecrawl", listOf(identity)),
+                    LOCAL_MODEL_LABEL,
+                    barcode,
+                    events::add,
+                )
+
+            assertTrue(result is BottleDetailExtractionResult.Found)
+            val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
+            assertEquals("Structured product data", suggestions.provider)
+            assertEquals("Auchentoshan Three Wood", suggestions.facts.single().value)
+            val generation = events.single { it.stage == BottleLookupDebugStage.LOCAL_GENERATION && it.result == "FAILED" }
+            assertEquals(160, generation.generatedTokens)
+            assertEquals("TOKEN_LIMIT", generation.finishReason)
+            assertTrue(generation.reasonCodes.contains("LOCAL_GENERATION_TOKEN_LIMIT"))
+            assertTrue(events.any { "STRUCTURED_FACTS_FALLBACK_AFTER_TRUNCATION" in it.reasonCodes })
+        } finally {
+            modelFile.delete()
+        }
+    }
+
+    @Test
     fun localRuntimeFailureIsNotReportedAsNetworkFailureAndLeaksNoExceptionMessage() = runBlocking {
         val source = WebPageText("Test Gin", "https://shop.example/gin", "Test Gin 40% ABV", "Firecrawl")
         val modelFile = validHeaderModelFile()
@@ -219,6 +295,10 @@ class LocalBottleDetailExtractorTest {
         val modelFile = validHeaderModelFile()
         val engine = FakeInferenceEngine(
             output = """{"facts":[{"field":"product_name","value":"Test Whisky","evidence":"Test Whisky 40% ABV"}]}""",
+            generationStats = InferenceEngine.GenerationStats(
+                49,
+                InferenceEngine.GenerationFinishReason.END_OF_SEQUENCE,
+            ),
         )
         val events = mutableListOf<BottleLookupDebugEvent>()
 
@@ -246,6 +326,8 @@ class LocalBottleDetailExtractorTest {
         assertTrue(firstToken.durationMillis > 0)
         val generation = events.single { it.stage == BottleLookupDebugStage.LOCAL_GENERATION && it.result == "COMPLETE" }
         assertEquals(1, generation.outputChunks)
+        assertEquals(49, generation.generatedTokens)
+        assertEquals("END_OF_SEQUENCE", generation.finishReason)
         assertTrue(generation.durationMillis > 0)
         assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_GENERATION))
         assertTrue(stages.contains(BottleLookupDebugStage.LOCAL_RESPONSE_PARSING))
@@ -531,6 +613,7 @@ class LocalBottleDetailExtractorTest {
         private val output: String = "{}",
         private val throwOn: String? = null,
         private val waitForNativeCancel: Boolean = false,
+        private val generationStats: InferenceEngine.GenerationStats? = null,
     ) : InferenceEngine {
         override val state = MutableStateFlow(initialState)
         var cleanedUp = false
@@ -563,6 +646,8 @@ class LocalBottleDetailExtractorTest {
         }
 
         override fun requestGenerationCancellation() { nativeCancellationRequested = true }
+
+        override suspend fun lastGenerationStats(): InferenceEngine.GenerationStats? = generationStats
 
         override suspend fun bench(pp: Int, tg: Int, pl: Int, nr: Int): String = ""
 

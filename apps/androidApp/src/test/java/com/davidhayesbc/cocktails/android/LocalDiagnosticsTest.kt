@@ -157,6 +157,21 @@ class LocalDiagnosticsTest {
             ),
             reasonCodes = listOf("HIT_TEXT_MISSING_BARCODE", "Authorization: HEADER_CANARY"),
         ))
+        report.record(BottleLookupDebugEvent(
+            stage = BottleLookupDebugStage.LOCAL_GENERATION,
+            provider = "On-device Qwen3",
+            result = "COMPLETE",
+            outputChunks = 49,
+            generatedTokens = 49,
+            finishReason = "END_OF_SEQUENCE",
+        ))
+        report.record(BottleLookupDebugEvent(
+            stage = BottleLookupDebugStage.LOCAL_GENERATION,
+            provider = "On-device Qwen3",
+            result = "COMPLETE",
+            generatedTokens = Int.MAX_VALUE,
+            finishReason = "raw_native_output_secret",
+        ))
         report.finish("PARTIAL")
         store.recordBottleLookup(report)
 
@@ -166,6 +181,10 @@ class LocalDiagnosticsTest {
         assertTrue(exported.contains("5011333150725"))
         assertTrue(exported.contains("https://shop.example/"))
         assertTrue(exported.contains("httpStatus"))
+        assertTrue(exported.contains("\"generatedTokens\": 49"))
+        assertTrue(exported.contains("\"generatedTokens\": 1024"))
+        assertTrue(exported.contains("\"finishReason\": \"END_OF_SEQUENCE\""))
+        assertFalse(exported.contains("raw_native_output_secret"))
         assertTrue(exported.contains("\"ollamaCloud\""))
         assertTrue(exported.contains("\"configured\": true"))
         assertFalse(exported.contains("URL_CANARY"))

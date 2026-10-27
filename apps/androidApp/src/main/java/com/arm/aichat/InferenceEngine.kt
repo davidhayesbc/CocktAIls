@@ -8,6 +8,16 @@ import kotlinx.coroutines.flow.StateFlow
  * Interface defining the core LLM inference operations.
  */
 interface InferenceEngine {
+    enum class GenerationFinishReason(val wireValue: String) {
+        UNKNOWN("UNKNOWN"),
+        END_OF_SEQUENCE("END_OF_SEQUENCE"),
+        TOKEN_LIMIT("TOKEN_LIMIT"),
+        CANCELLED("CANCELLED"),
+        DECODE_ERROR("DECODE_ERROR"),
+    }
+
+    data class GenerationStats(val generatedTokens: Int, val finishReason: GenerationFinishReason)
+
     /**
      * Current state of the inference engine
      */
@@ -32,6 +42,9 @@ interface InferenceEngine {
 
     /** Requests interruption of an in-flight native prompt/generation operation when supported. */
     fun requestGenerationCancellation() = Unit
+
+    /** Returns bounded metadata for the last completed native generation, when available. */
+    suspend fun lastGenerationStats(): GenerationStats? = null
 
     /**
      * Runs a benchmark with the specified parameters.

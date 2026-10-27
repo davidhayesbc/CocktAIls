@@ -5,6 +5,7 @@
 
 int main() {
     generation_budget budget;
+    assert(budget.finish_reason() == generation_finish_reason::unknown);
 
     // Prompt length is not output allowance, even when the prompt nearly fills context.
     constexpr int long_prompt_tokens = 9000;
@@ -19,6 +20,7 @@ int main() {
 
     // Even with the largest prompt that fits, output stays independently bounded.
     budget.begin_request(requested_output_tokens);
+    assert(budget.finish_reason() == generation_finish_reason::running);
 
     int shifted_context_position = system_prompt_tokens + accepted_prompt_tokens;
     int sampled_tokens = 0;
@@ -33,6 +35,8 @@ int main() {
     assert(budget.generated_tokens() == requested_output_tokens);
     assert(shifted_context_position < 0);
     assert(!budget.has_remaining_tokens());
+    budget.finish(generation_finish_reason::token_limit);
+    assert(budget.finish_reason() == generation_finish_reason::token_limit);
 
     assert(bounded_prompt_token_count(9000, 3900, context_size, headroom) == 67);
     assert(bounded_prompt_token_count(9000, context_size, context_size, headroom) == 0);
@@ -60,4 +64,5 @@ int main() {
 
     budget.begin_request(0);
     assert(!budget.has_remaining_tokens());
+    assert(budget.finish_reason() == generation_finish_reason::running);
 }
