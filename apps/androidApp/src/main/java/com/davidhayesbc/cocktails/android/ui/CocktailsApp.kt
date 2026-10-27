@@ -83,6 +83,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.geometry.Size
@@ -2785,29 +2786,40 @@ private fun BottleIntakeFlowScreen(
     var brand by remember(session.id) { mutableStateOf("") }
     var productName by remember(session.id) { mutableStateOf("") }
     Column(modifier.fillMaxSize().imePadding()) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                when {
-                    labelCameraOutputFile != null -> "Now capture the label"
-                    else -> when (route) {
-                    BottleIntakeRoute.SETUP -> "Build your shelf"
-                    BottleIntakeRoute.CAPTURE_LABEL -> "Now capture the label"
-                    BottleIntakeRoute.SCANNING -> "Scan the next bottle"
-                    BottleIntakeRoute.REVIEW -> "Review your bottle"
-                    BottleIntakeRoute.QUEUE -> "Your bottle queue"
-                    BottleIntakeRoute.PAUSE -> "Pause for now"
-                    BottleIntakeRoute.MANUAL_ENTRY -> "Add a bottle manually"
-                    }
-                },
-                style = MaterialTheme.typography.headlineMedium,
-                modifier = Modifier.weight(1f),
-            )
-            if (route !in setOf(BottleIntakeRoute.SETUP, BottleIntakeRoute.MANUAL_ENTRY)) {
-                TextButton(onClick = onPauseQueue, modifier = Modifier.testTag("intake-pause")) { Text("Pause") }
+        if (route == BottleIntakeRoute.SETUP && labelCameraOutputFile == null) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("CocktAIls", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                TextButton(onClick = onDismiss, modifier = Modifier.testTag("intake-close")) { Text("Close") }
+            }
+        } else {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    when {
+                        labelCameraOutputFile != null -> "Now capture the label"
+                        else -> when (route) {
+                            BottleIntakeRoute.SETUP -> "Build your shelf"
+                            BottleIntakeRoute.CAPTURE_LABEL -> "Now capture the label"
+                            BottleIntakeRoute.SCANNING -> "Scan the next bottle"
+                            BottleIntakeRoute.REVIEW -> "Review your bottle"
+                            BottleIntakeRoute.QUEUE -> "Your bottle queue"
+                            BottleIntakeRoute.PAUSE -> "Pause for now"
+                            BottleIntakeRoute.MANUAL_ENTRY -> "Add a bottle manually"
+                        }
+                    },
+                    style = MaterialTheme.typography.headlineMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                if (route !in setOf(BottleIntakeRoute.SETUP, BottleIntakeRoute.MANUAL_ENTRY)) {
+                    TextButton(onClick = onPauseQueue, modifier = Modifier.testTag("intake-pause")) { Text("Pause") }
+                }
             }
         }
 
@@ -2838,17 +2850,69 @@ private fun BottleIntakeFlowScreen(
                 }
             }
         } else when (route) {
-            BottleIntakeRoute.SETUP -> Column(
-                Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).testTag("bottle-intake-scroll").padding(horizontal = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp),
-            ) {
-                Text("Capture now, confirm later.", style = MaterialTheme.typography.titleLarge)
-                Text("Scan each bottle, then take a quick label photo. Search and AI work in the background while you keep going. Nothing is added to My Bar until you review and save the batch.", style = MaterialTheme.typography.bodyLarge)
-                Text("Label photos stay on this phone and are not sent to search or AI providers.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                permissionMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                Button(onClick = onScan, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("intake-allow-camera")) { Text("Allow camera & continue") }
-                OutlinedButton(onClick = { onRouteChange(BottleIntakeRoute.MANUAL_ENTRY) }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("intake-manual-start")) { Text("Start with manual entry") }
-                TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Keep drafts and exit") }
+            BottleIntakeRoute.SETUP -> Column(Modifier.weight(1f).fillMaxWidth()) {
+                Column(
+                    Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
+                        .testTag("bottle-intake-scroll").padding(horizontal = 24.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp),
+                ) {
+                    Text(
+                        "Build your shelf",
+                        style = MaterialTheme.typography.headlineMedium.copy(fontSize = 30.sp, lineHeight = 36.sp),
+                    )
+                    Card(
+                        modifier = Modifier.fillMaxWidth().testTag("intake-setup-card-capture"),
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    ) {
+                        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Capture now, confirm later", style = MaterialTheme.typography.titleLarge)
+                            Text(
+                                "Scan a bottle, take a label photo, and keep going. Review or edit each bottle before accepting it.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    Card(
+                        modifier = Modifier.fillMaxWidth().testTag("intake-setup-card-background-work"),
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    ) {
+                        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("Web search + AI", style = MaterialTheme.typography.titleMedium)
+                                Text("Background", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Text(
+                                "Enabled providers process the barcode while you capture labels. Nothing is sent unless its provider is enabled and configured.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    Text(
+                        "Camera access is used to scan barcodes and capture labels you choose. Label photos stay on this phone and are not sent to lookup or AI providers.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    permissionMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 10.dp, bottom = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Button(
+                        onClick = onScan,
+                        shape = RoundedCornerShape(28.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("intake-allow-camera"),
+                    ) { Text("Allow camera & continue") }
+                    OutlinedButton(
+                        onClick = { onRouteChange(BottleIntakeRoute.MANUAL_ENTRY) },
+                        shape = RoundedCornerShape(28.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("intake-manual-start"),
+                    ) { Text("Start with manual entry") }
+                }
             }
 
             BottleIntakeRoute.CAPTURE_LABEL -> {

@@ -24,7 +24,6 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
 import org.junit.rules.TestName
 
@@ -89,11 +88,15 @@ class BarcodeScannerLifecycleTest {
         composeRule.onNodeWithText("My Bar").performClick()
         composeRule.onNodeWithTag("start-bottle-intake").performClick()
         composeRule.onNodeWithText("Build your shelf").assertIsDisplayed()
-        val setupScreenshot = saveTestScreenshot(
+        composeRule.onNodeWithText("CocktAIls").assertIsDisplayed()
+        composeRule.onNodeWithTag("intake-setup-card-capture").assertIsDisplayed()
+        composeRule.onNodeWithTag("intake-setup-card-background-work").assertIsDisplayed()
+        composeRule.onNodeWithTag("intake-close").assertIsDisplayed()
+        composeRule.onNodeWithTag("intake-allow-camera").assertIsDisplayed()
+        saveTestScreenshot(
             InstrumentationRegistry.getInstrumentation(),
             "onboarding-integrated-setup.png",
         )
-        assertTrue("The integrated onboarding setup screenshot was not staged", setupScreenshot.startsWith("/sdcard/Download/CocktAIlsDiagnostics/"))
         composeRule.onNodeWithTag("intake-allow-camera").performClick()
         awaitIntakeScanner()
         composeRule.onNodeWithText("Scan the next bottle").assertIsDisplayed()
@@ -103,11 +106,10 @@ class BarcodeScannerLifecycleTest {
             composeRule.onAllNodesWithText("Camera is live and barcode frames are being analyzed.")
                 .fetchSemanticsNodes().isNotEmpty()
         }
-        val intakeScannerScreenshot = saveTestScreenshot(
+        saveTestScreenshot(
             InstrumentationRegistry.getInstrumentation(),
             "onboarding-barcode-scanner.png",
         )
-        assertTrue("The full-screen intake scanner screenshot was not staged", intakeScannerScreenshot.startsWith("/sdcard/Download/CocktAIlsDiagnostics/"))
     }
 
     private fun clickPermissionPrompt(vararg acceptedLabels: String) {

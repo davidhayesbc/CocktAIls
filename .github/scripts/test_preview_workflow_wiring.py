@@ -5,6 +5,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 PREVIEW_WORKFLOW = ROOT / ".github/workflows/preview-release.yml"
 ANDROID_WORKFLOW = ROOT / ".github/workflows/android-ci.yml"
+ANDROID_SCREENSHOT_RUNNER = ROOT / ".github/scripts/run_android_instrumentation_with_screenshots.sh"
 
 
 def section(source: str, name: str, next_name: str) -> str:
@@ -34,6 +35,20 @@ class PreviewWorkflowWiringTest(unittest.TestCase):
         source = ANDROID_WORKFLOW.read_text()
         self.assertIn("python3 -m unittest discover -s .github/scripts -p 'test_preview_*.py'", source)
         self.assertIn("permissions:\n  contents: read", source)
+
+    def test_emulator_screenshots_are_collected_from_app_private_storage_before_uninstall(self):
+        workflow = ANDROID_WORKFLOW.read_text()
+        collector = ANDROID_SCREENSHOT_RUNNER.read_text()
+        self.assertIn("bash .github/scripts/run_android_instrumentation_with_screenshots.sh", workflow)
+        self.assertIn('shell run-as "$app_id" ls', collector)
+        self.assertIn("exec-out run-as", collector)
+        self.assertIn("connectedDebugAndroidTest", collector)
+        self.assertIn("data.startswith(b\"\\x89PNG\\r\\n\\x1a\\n\")", collector)
+        self.assertIn("readonly required_visual_screenshots=(", collector)
+        self.assertIn("onboarding-integrated-setup.png", collector)
+        self.assertIn("onboarding-barcode-scanner.png", collector)
+        self.assertIn("${{ runner.temp }}/onboarding-*.png", workflow)
+        self.assertIn('shell cmd uimode night yes', ANDROID_WORKFLOW.read_text())
 
 
 if __name__ == "__main__":

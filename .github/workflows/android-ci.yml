@@ -233,12 +233,13 @@ jobs:
             sleep 5
           done
           timeout 10 "$adb" -s emulator-5554 shell svc wifi disable
+          timeout 10 "$adb" -s emulator-5554 shell cmd uimode night yes
 
       - name: Prepare connected instrumentation APKs
         run: ./gradlew --no-daemon :apps:androidApp:assembleDebug :apps:androidApp:assembleDebugAndroidTest
 
       - name: Run offline launch and persistence smoke test
-        run: timeout 900 ./gradlew --no-daemon :apps:androidApp:connectedDebugAndroidTest
+        run: bash .github/scripts/run_android_instrumentation_with_screenshots.sh
 
       - name: Collect emulator diagnostics
         if: always()
@@ -266,38 +267,8 @@ jobs:
           tail -n 100 "$RUNNER_TEMP/cocktails-adb-bootstrap.log"
           echo '--- KVM acceleration check ---'
           cat "$RUNNER_TEMP/cocktails-kvm-check.log"
-          echo '--- permission prompt screenshots ---'
-          screenshot_dir=/sdcard/Download/CocktAIlsDiagnostics
-          for test_name in deniedCameraPermissionKeepsManualBarcodeEntryAvailable scannerCanBeOpenedClosedReopenedAndActivityRecreated; do
-            screenshot="$screenshot_dir/camera-permission-$test_name.png"
-            if timeout 10 "$adb" -s emulator-5554 shell test -f "$screenshot"; then
-              timeout 15 "$adb" -s emulator-5554 pull "$screenshot" "$RUNNER_TEMP/$(basename "$screenshot")"
-            fi
-          done
-          echo '--- batch intake failure screenshot ---'
-          batch_screenshot="$screenshot_dir/batch-intake-count-failure.png"
-          if timeout 10 "$adb" -s emulator-5554 shell test -f "$batch_screenshot"; then
-            timeout 15 "$adb" -s emulator-5554 pull "$batch_screenshot" "$RUNNER_TEMP/$(basename "$batch_screenshot")"
-          fi
-          echo '--- onboarding UI screenshots ---'
-          for screenshot_name in \
-            onboarding-setup-component-simulated.png \
-            onboarding-integrated-setup.png \
-            onboarding-scanning-route-simulated.png \
-            onboarding-barcode-scanner.png \
-            onboarding-label-step-simulated.png \
-            onboarding-label-preview-simulated.png \
-            onboarding-label-camera-layout-simulated.png \
-            onboarding-queue-simulated.png \
-            onboarding-review-simulated.png \
-            onboarding-pause-simulated.png; do
-            screenshot="$screenshot_dir/$screenshot_name"
-            if timeout 10 "$adb" -s emulator-5554 shell test -f "$screenshot"; then
-              timeout 15 "$adb" -s emulator-5554 pull "$screenshot" "$RUNNER_TEMP/$screenshot_name"
-            else
-              echo "Screenshot not captured: $screenshot_name"
-            fi
-          done
+          echo '--- instrumentation log tail ---'
+          tail -n 180 "$RUNNER_TEMP/cocktails-instrumentation.log"
 
       - name: Upload emulator diagnostics
         if: always()
@@ -311,6 +282,8 @@ jobs:
             ${{ runner.temp }}/cocktails-avdmanager.log
             ${{ runner.temp }}/cocktails-adb-bootstrap.log
             ${{ runner.temp }}/cocktails-kvm-check.log
+            ${{ runner.temp }}/cocktails-instrumentation.log
+            ${{ runner.temp }}/cocktails-instrumentation.exit
             ${{ runner.temp }}/camera-permission-*.png
             ${{ runner.temp }}/batch-intake-*.png
             ${{ runner.temp }}/onboarding-*.png

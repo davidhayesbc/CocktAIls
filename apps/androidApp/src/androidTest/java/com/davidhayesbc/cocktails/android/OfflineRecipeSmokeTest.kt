@@ -33,6 +33,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.ComposeView
 import com.davidhayesbc.cocktails.android.ui.BottleIntakeScreen
@@ -184,7 +186,10 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("batch-manual-name").performTextInput(bottleName)
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-add-manual-bottle"))
         composeRule.onNodeWithTag("batch-add-manual-bottle").performClick()
-        composeRule.onNodeWithTag("batch-manual-entry").performClick()
+        composeRule.onNodeWithText("Scan the next bottle").assertIsDisplayed()
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-manual-entry"))
+        composeRule.onNodeWithTag("batch-manual-entry").assertIsDisplayed().performClick()
+        composeRule.onNodeWithText("Add a bottle manually").assertIsDisplayed()
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-manual-name"))
         composeRule.onNodeWithTag("batch-manual-name").performTextInput(bottleName)
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-add-manual-bottle"))
@@ -670,9 +675,12 @@ class OfflineRecipeSmokeTest {
         // Restoring the source does not require a label capture; lookup and
         // capture are independent, so another bottle remains scannable.
         composeRule.onNodeWithText("Keep draft & return to queue").performClick()
-        composeRule.onNodeWithText("Resume scanner").performClick()
+        composeRule.onNodeWithText("Your bottle queue").assertIsDisplayed()
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("Resume scanner"))
+        composeRule.onNodeWithText("Resume scanner").assertIsDisplayed().performClick()
+        composeRule.onNodeWithText("Scan the next bottle").assertIsDisplayed()
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-scan-bottles"))
-        composeRule.onNodeWithTag("batch-scan-bottles").assertIsEnabled()
+        composeRule.onNodeWithTag("batch-scan-bottles").assertIsDisplayed().assertIsEnabled()
     }
 
     @Test
@@ -716,8 +724,9 @@ class OfflineRecipeSmokeTest {
 
         try {
             setTestContent {
-                CocktailsTheme {
-                    BottleIntakeScreen(
+                CocktailsTheme(darkTheme = true) {
+                    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                        BottleIntakeScreen(
                         modifier = Modifier.fillMaxSize(), session = activeSession, route = route, onRouteChange = { route = it }, homes = listOf(home),
                         capturePhoto = capturedLabel, captureMessage = null, permissionMessage = null,
                         pendingLabelDraftId = pendingLabelId,
@@ -753,11 +762,17 @@ class OfflineRecipeSmokeTest {
                         onHomeChanged = {}, onLevelChanged = {},
                         onConfirm = { BottleIntakeCommitResult.Invalid("Test only") }, onCancel = {}, onDismiss = {},
                         onPauseQueue = { route = BottleIntakeRoute.PAUSE }, onResumeScanning = { route = BottleIntakeRoute.SCANNING },
-                    )
+                        )
+                    }
                 }
             }
 
             composeRule.waitForIdle()
+            composeRule.onNodeWithText("CocktAIls").assertIsDisplayed()
+            composeRule.onNodeWithTag("intake-setup-card-capture").assertIsDisplayed()
+            composeRule.onNodeWithTag("intake-setup-card-background-work").assertIsDisplayed()
+            composeRule.onNodeWithTag("intake-close").assertIsDisplayed()
+            composeRule.onNodeWithTag("intake-allow-camera").assertIsDisplayed()
             captureOnboardingScreenshot("onboarding-setup-component-simulated.png")
             composeRule.onNodeWithTag("intake-allow-camera").performClick()
             composeRule.waitForIdle()
@@ -842,11 +857,8 @@ class OfflineRecipeSmokeTest {
     }
 
     private fun captureOnboardingScreenshot(fileName: String) {
-        val savedAt = saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), fileName)
-        if (!savedAt.startsWith("/sdcard/Download/CocktAIlsDiagnostics/")) {
-            throw AssertionError("The onboarding screenshot was not copied to CI artifact staging: $savedAt")
-        }
-        Log.i("CocktAIlsOnboardingScreenshot", "$fileName saved for the emulator diagnostics artifact")
+        saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), fileName)
+        Log.i("CocktAIlsOnboardingScreenshot", "$fileName captured in app-private test storage for CI collection")
     }
 
     /** Generated, fictional label used only to make the review preview legible in screenshots. */
