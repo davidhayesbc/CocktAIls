@@ -120,23 +120,27 @@ internal fun BottleLabelCameraScreen(
                             val geometry = view.width to view.height
                             val rotation = view.display?.rotation ?: Surface.ROTATION_0
                             if (geometry != lastBoundGeometry || rotation != lastBoundRotation) {
-                                val viewPort = view.viewPort
-                                if (viewPort == null) {
-                                    cameraMessage = "The camera preview could not be aligned. You can still capture and crop by hand."
-                                } else {
-                                    capture.targetRotation = rotation
-                                    analysisUseCase.targetRotation = rotation
-                                    val group = UseCaseGroup.Builder()
-                                        .setViewPort(viewPort)
-                                        .addUseCase(preview)
-                                        .addUseCase(capture)
-                                        .addUseCase(analysisUseCase)
-                                        .build()
-                                    provider?.unbindAll()
-                                    provider?.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, group)
-                                    lastBoundGeometry = geometry
-                                    lastBoundRotation = rotation
-                                    cameraMessage = "No clear label edge yet. Center it in the guide; you can crop by hand after capture."
+                                runCatching {
+                                    val viewPort = view.viewPort
+                                    if (viewPort == null) {
+                                        cameraMessage = "The camera preview could not be aligned. You can still capture and crop by hand."
+                                    } else {
+                                        capture.targetRotation = rotation
+                                        analysisUseCase.targetRotation = rotation
+                                        val group = UseCaseGroup.Builder()
+                                            .setViewPort(viewPort)
+                                            .addUseCase(preview)
+                                            .addUseCase(capture)
+                                            .addUseCase(analysisUseCase)
+                                            .build()
+                                        provider?.unbindAll()
+                                        provider?.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, group)
+                                        lastBoundGeometry = geometry
+                                        lastBoundRotation = rotation
+                                        cameraMessage = "No clear label edge yet. Center it in the guide; you can crop by hand after capture."
+                                    }
+                                }.onFailure {
+                                    cameraMessage = "Camera preview alignment failed. You can still capture and crop by hand."
                                 }
                             }
                         }
