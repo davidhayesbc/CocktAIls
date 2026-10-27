@@ -574,7 +574,7 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("capture-live-label").assertExists()
             composeRule.onNodeWithText("Take label photo").assertExists()
             composeRule.waitForIdle()
-            captureOnboardingScreenshot("onboarding-label-camera-layout.png")
+            captureOnboardingScreenshot("onboarding-label-camera-layout-simulated.png")
             assertTrue("A label must not be captured before the user taps the shutter", !photoSaved)
             composeRule.onNodeWithTag("cancel-live-label").performClick()
             assertEquals("The callback must retain the capture that opened this screen", captureToken, cancelledToken)
@@ -691,11 +691,7 @@ class OfflineRecipeSmokeTest {
             override fun write(value: String): Boolean { rawQueue = value; return true }
         }
         val queue = BottleEnrichmentQueue(queueStorage)
-        val labelBitmap = android.graphics.Bitmap.createBitmap(8, 8, android.graphics.Bitmap.Config.ARGB_8888)
-        val labelPhotoOutput = java.io.ByteArrayOutputStream()
-        labelBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, labelPhotoOutput)
-        labelBitmap.recycle()
-        val testLabelPhoto = labelPhotoOutput.toByteArray()
+        val testLabelPhoto = syntheticLabelReferencePhoto()
         var activeSession by mutableStateOf(repository.openBottleIntakeSession()!!)
         var jobs by mutableStateOf<Map<String, BottleEnrichmentJob>>(emptyMap())
         var pendingLabelId by mutableStateOf<String?>(null)
@@ -762,10 +758,10 @@ class OfflineRecipeSmokeTest {
             }
 
             composeRule.waitForIdle()
-            captureOnboardingScreenshot("onboarding-setup.png")
+            captureOnboardingScreenshot("onboarding-setup-component-simulated.png")
             composeRule.onNodeWithTag("intake-allow-camera").performClick()
             composeRule.waitForIdle()
-            captureOnboardingScreenshot("onboarding-scanning.png")
+            captureOnboardingScreenshot("onboarding-scanning-route-simulated.png")
             composeRule.onNodeWithTag("batch-scan-bottles").assertIsEnabled().performClick()
             val first = activeSession.drafts.single()
             assertEquals(BottleEnrichmentStatus.RUNNING, jobs.getValue(first.id).status)
@@ -774,11 +770,11 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("capture-label-${first.id}").assertIsDisplayed()
             composeRule.onAllNodes(hasTestTag("batch-scan-bottles")).assertCountEquals(0)
             composeRule.waitForIdle()
-            captureOnboardingScreenshot("onboarding-label-step.png")
+            captureOnboardingScreenshot("onboarding-label-step-simulated.png")
 
             composeRule.onNodeWithTag("capture-label-${first.id}").performClick()
             composeRule.waitForIdle()
-            captureOnboardingScreenshot("onboarding-label-preview.png")
+            captureOnboardingScreenshot("onboarding-label-preview-simulated.png")
             composeRule.onNodeWithTag("use-label-${first.id}").assertIsDisplayed().performClick()
             assertEquals(BottleEnrichmentStatus.RUNNING, jobs.getValue(first.id).status)
             assertFalse(jobs.getValue(first.id).labelCaptureRequired)
@@ -799,7 +795,7 @@ class OfflineRecipeSmokeTest {
 
             composeRule.onNodeWithTag("open-bottle-queue").performClick()
             composeRule.waitForIdle()
-            captureOnboardingScreenshot("onboarding-queue.png")
+            captureOnboardingScreenshot("onboarding-queue-simulated.png")
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("Resume scanner"))
             composeRule.onNodeWithText("Resume scanner").performClick()
 
@@ -809,12 +805,12 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("review-ready-bottles").performClick()
             assertEquals(first.id, activeReviewId)
             composeRule.waitForIdle()
-            captureOnboardingScreenshot("onboarding-review.png")
+            captureOnboardingScreenshot("onboarding-review-simulated.png")
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("accept-scanned-bottle-${first.id}"))
             composeRule.onNodeWithTag("accept-scanned-bottle-${first.id}").assertExists()
             route = BottleIntakeRoute.PAUSE
             composeRule.waitForIdle()
-            captureOnboardingScreenshot("onboarding-pause.png")
+            captureOnboardingScreenshot("onboarding-pause-simulated.png")
         } finally {
             repository.cancelBottleIntakeSession(session.id)
             driver.close()
@@ -851,6 +847,46 @@ class OfflineRecipeSmokeTest {
             throw AssertionError("The onboarding screenshot was not copied to CI artifact staging: $savedAt")
         }
         Log.i("CocktAIlsOnboardingScreenshot", "$fileName saved for the emulator diagnostics artifact")
+    }
+
+    /** Generated, fictional label used only to make the review preview legible in screenshots. */
+    private fun syntheticLabelReferencePhoto(): ByteArray {
+        val bitmap = android.graphics.Bitmap.createBitmap(420, 620, android.graphics.Bitmap.Config.ARGB_8888)
+        try {
+            val canvas = android.graphics.Canvas(bitmap)
+            canvas.drawColor(android.graphics.Color.rgb(232, 229, 218))
+            val bottlePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = android.graphics.Color.rgb(44, 72, 57)
+            }
+            canvas.drawRoundRect(72f, 118f, 348f, 598f, 64f, 64f, bottlePaint)
+            canvas.drawRoundRect(170f, 54f, 250f, 180f, 18f, 18f, bottlePaint)
+            canvas.drawRect(178f, 32f, 242f, 76f, bottlePaint)
+            val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = android.graphics.Color.rgb(243, 236, 211)
+            }
+            canvas.drawRoundRect(100f, 230f, 320f, 482f, 12f, 12f, labelPaint)
+            val borderPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = android.graphics.Color.rgb(148, 112, 54)
+                style = android.graphics.Paint.Style.STROKE
+                strokeWidth = 5f
+            }
+            canvas.drawRoundRect(112f, 242f, 308f, 470f, 8f, 8f, borderPaint)
+            val textPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = android.graphics.Color.rgb(46, 57, 43)
+                textAlign = android.graphics.Paint.Align.CENTER
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+            }
+            textPaint.textSize = 24f
+            canvas.drawText("SAMPLE LABEL", 210f, 320f, textPaint)
+            textPaint.textSize = 36f
+            canvas.drawText("BOTANICAL", 210f, 372f, textPaint)
+            canvas.drawText("GIN", 210f, 416f, textPaint)
+            val output = java.io.ByteArrayOutputStream()
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, output)
+            return output.toByteArray()
+        } finally {
+            bitmap.recycle()
+        }
     }
 
     private fun assertBatchCountVisibleWithDiagnostics() {

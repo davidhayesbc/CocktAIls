@@ -281,15 +281,16 @@ jobs:
           fi
           echo '--- onboarding UI screenshots ---'
           for screenshot_name in \
-            onboarding-setup.png \
-            onboarding-scanning.png \
+            onboarding-setup-component-simulated.png \
+            onboarding-integrated-setup.png \
+            onboarding-scanning-route-simulated.png \
             onboarding-barcode-scanner.png \
-            onboarding-label-step.png \
-            onboarding-label-preview.png \
-            onboarding-label-camera-layout.png \
-            onboarding-queue.png \
-            onboarding-review.png \
-            onboarding-pause.png; do
+            onboarding-label-step-simulated.png \
+            onboarding-label-preview-simulated.png \
+            onboarding-label-camera-layout-simulated.png \
+            onboarding-queue-simulated.png \
+            onboarding-review-simulated.png \
+            onboarding-pause-simulated.png; do
             screenshot="$screenshot_dir/$screenshot_name"
             if timeout 10 "$adb" -s emulator-5554 shell test -f "$screenshot"; then
               timeout 15 "$adb" -s emulator-5554 pull "$screenshot" "$RUNNER_TEMP/$screenshot_name"

@@ -70,14 +70,10 @@ class BarcodeScannerLifecycleTest {
             composeRule.onAllNodesWithText("Camera is live and barcode frames are being analyzed.")
                 .fetchSemanticsNodes().isNotEmpty()
         }
-        val scannerScreenshot = saveTestScreenshot(
-            InstrumentationRegistry.getInstrumentation(),
-            "onboarding-barcode-scanner.png",
-        )
-        assertTrue("Live scanner screenshot was not staged for the CI artifact: $scannerScreenshot", scannerScreenshot.startsWith("/sdcard/Download/CocktAIlsDiagnostics/"))
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         composeRule.waitForIdle()
         composeRule.onAllNodesWithText("Scan a bottle").assertCountEquals(0)
+
         composeRule.onNodeWithText("Scan barcode").performClick()
         awaitScannerDialog()
         composeRule.onNodeWithText("Enter manually").performClick()
@@ -86,6 +82,30 @@ class BarcodeScannerLifecycleTest {
         composeRule.activityRule.scenario.recreate()
         composeRule.waitForIdle()
         composeRule.onAllNodesWithText("Scan a bottle").assertCountEquals(0)
+
+        // Capture the actual bottle-intake path: My Bar → setup → permission already
+        // granted → the full-screen intake barcode scanner (not the legacy ingredient form).
+        composeRule.onNodeWithText("My Bar").performClick()
+        composeRule.onNodeWithTag("start-bottle-intake").performClick()
+        composeRule.onNodeWithText("Build your shelf").assertIsDisplayed()
+        val setupScreenshot = saveTestScreenshot(
+            InstrumentationRegistry.getInstrumentation(),
+            "onboarding-integrated-setup.png",
+        )
+        assertTrue("The integrated onboarding setup screenshot was not staged", setupScreenshot.startsWith("/sdcard/Download/CocktAIlsDiagnostics/"))
+        composeRule.onNodeWithTag("intake-allow-camera").performClick()
+        awaitScannerDialog()
+        awaitCameraPermissionGranted()
+        composeRule.onNodeWithTag("barcode-camera-preview").assertIsDisplayed()
+        composeRule.waitUntil(timeoutMillis = 30_000) {
+            composeRule.onAllNodesWithText("Camera is live and barcode frames are being analyzed.")
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        val intakeScannerScreenshot = saveTestScreenshot(
+            InstrumentationRegistry.getInstrumentation(),
+            "onboarding-barcode-scanner.png",
+        )
+        assertTrue("The full-screen intake scanner screenshot was not staged", intakeScannerScreenshot.startsWith("/sdcard/Download/CocktAIlsDiagnostics/"))
     }
 
     private fun clickPermissionPrompt(vararg acceptedLabels: String) {

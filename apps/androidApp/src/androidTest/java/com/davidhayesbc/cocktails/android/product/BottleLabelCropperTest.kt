@@ -117,7 +117,7 @@ class BottleLabelCropperTest {
     fun rawLumaCoordinatesUseUnrotatedImageProxyTransformForAsymmetric90And270Frames() {
         val cropRect = Rect(80, 20, 560, 460)
         val rawFactory = rawAnalysisTransformFactory()
-        val previewTransform = OutputTransform(Matrix(), Size(cropRect.width(), cropRect.height()))
+        val previewTransform = normalizedViewportToPixels(cropRect.width(), cropRect.height())
         val detected = NormalizedLabelCrop(0.13f, 0.21f, 0.61f, 0.76f)
         val mapped = listOf(0, 90, 270).map { rotation ->
             val imageProxy = fakeImageProxy(640, 480, cropRect, rotation)
@@ -207,6 +207,20 @@ class BottleLabelCropperTest {
             }
         } as ImageProxy
     }
+
+    /** CameraX OutputTransforms map normalized viewport coordinates to output pixels. */
+    private fun normalizedViewportToPixels(width: Int, height: Int): OutputTransform = OutputTransform(
+        Matrix().apply {
+            setValues(
+                floatArrayOf(
+                    width / 2f, 0f, width / 2f,
+                    0f, height / 2f, height / 2f,
+                    0f, 0f, 1f,
+                ),
+            )
+        },
+        Size(width, height),
+    )
 
     private fun assertCropClose(expected: NormalizedLabelCrop, actual: NormalizedLabelCrop, tolerance: Float = 0.00001f) {
         assertTrue("left ${actual.left} != ${expected.left}", kotlin.math.abs(actual.left - expected.left) <= tolerance)
