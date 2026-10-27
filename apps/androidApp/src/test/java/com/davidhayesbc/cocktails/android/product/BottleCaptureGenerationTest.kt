@@ -4,6 +4,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertArrayEquals
 import org.junit.Test
 
 class BottleCaptureGenerationTest {
@@ -95,5 +96,34 @@ class BottleCaptureGenerationTest {
         assertEquals(first, callbackToken)
         assertEquals("A late first result must not take ownership of the second capture", second, current)
         assertFalse(isCurrentBottleCapture(first, current.generation, current.draftId))
+    }
+
+    @Test
+    fun failedRetakeKeepsThePreviouslyReviewablePhotoAndCrop() {
+        val previous = PendingBottlePhoto(
+            selected = byteArrayOf(1, 2, 3),
+            original = byteArrayOf(4, 5, 6),
+            suggestedCrop = NormalizedLabelCrop(0.2f, 0.2f, 0.8f, 0.8f),
+        )
+
+        val afterFailure = pendingBottlePhotoAfterCapture(previous, decodedPhoto = null, suggestedCrop = null)
+        assertArrayEquals(previous.selected, afterFailure.selected)
+        assertArrayEquals(previous.original, afterFailure.original)
+        assertEquals(previous.suggestedCrop, afterFailure.suggestedCrop)
+
+        val replacement = byteArrayOf(9, 8, 7)
+        val afterSuccess = pendingBottlePhotoAfterCapture(previous, replacement, suggestedCrop = null)
+        assertArrayEquals(replacement, afterSuccess.selected)
+        assertArrayEquals(replacement, afterSuccess.original)
+        assertNull(afterSuccess.suggestedCrop)
+    }
+
+    @Test
+    fun oldFrameAndOutlineCannotCrossAViewportGenerationChange() {
+        assertFalse(cameraFrameBelongsToGeometry(frameGeneration = 10, currentGeneration = 11))
+        assertTrue(cameraFrameBelongsToGeometry(frameGeneration = 11, currentGeneration = 11))
+        assertFalse(stableBoundaryCanSeedCapture(isStable = true, boundaryGeneration = 10, currentGeneration = 11))
+        assertFalse(stableBoundaryCanSeedCapture(isStable = false, boundaryGeneration = 11, currentGeneration = 11))
+        assertTrue(stableBoundaryCanSeedCapture(isStable = true, boundaryGeneration = 11, currentGeneration = 11))
     }
 }

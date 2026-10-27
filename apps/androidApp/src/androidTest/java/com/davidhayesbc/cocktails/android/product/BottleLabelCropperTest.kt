@@ -4,8 +4,12 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
+import android.graphics.Rect
 import android.graphics.Paint
 import android.util.Size
+import androidx.camera.core.ImageInfo
+import androidx.camera.core.ImageProxy
+import androidx.camera.view.transform.ImageProxyTransformFactory
 import androidx.camera.view.transform.OutputTransform
 import androidx.camera.view.TransformExperimental
 import androidx.annotation.OptIn
@@ -19,6 +23,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.ByteArrayOutputStream
+import java.lang.reflect.Proxy
 
 @RunWith(AndroidJUnit4::class)
 @OptIn(markerClass = [TransformExperimental::class])
@@ -106,6 +111,101 @@ class BottleLabelCropperTest {
         assertEquals((6 + 4).toByte(), downsampled.bytes[0])
         assertEquals((6 + 31 + 4 + 31).toByte(), downsampled.bytes.last())
         assertNull(downsampleCameraLuma(plane, width, height, rowStride, pixelStride, 60, 60, 32, 32, maxDimension = 32))
+    }
+
+    @Test
+    fun rawLumaCoordinatesUseUnrotatedImageProxyTransformForAsymmetric90And270Frames() {
+        val cropRect = Rect(80, 20, 560, 460)
+        val rawFactory = rawAnalysisTransformFactory()
+        val previewTransform = OutputTransform(Matrix(), Size(cropRect.width(), cropRect.height()))
+        val detected = NormalizedLabelCrop(0.13f, 0.21f, 0.61f, 0.76f)
+        val mapped = listOf(0, 90, 270).map { rotation ->
+            val imageProxy = fakeImageProxy(640, 480, cropRect, rotation)
+            try {
+                val sourceTransform = rawFactory.getOutputTransform(imageProxy)
+                mapAnalysisCropToPreview(
+                    crop = detected,
+                    analysisCropWidth = cropRect.width(),
+                    analysisCropHeight = cropRect.height(),
+                    sourceTransform = sourceTransform,
+                    previewTransform = previewTransform,
+                    viewWidth = cropRect.width(),
+                    viewHeight = cropRect.height(),
+                )
+            } finally {
+                imageProxy.close()
+            }
+        }
+        mapped.forEach { result -> assertNotNull("The raw Y-plane rectangle should map in each display rotation", result) }
+        assertCropClose(mapped[0]!!, mapped[1]!!)
+        assertCropClose(mapped[0]!!, mapped[2]!!)
+
+        // Guard against accidentally enabling CameraX rotation on coordinates that were
+        // detected directly in the unrotated cropRect/Y-plane coordinate system.
+        val rotatingFactory = ImageProxyTransformFactory().apply {
+            setUsingCropRect(true)
+            setUsingRotationDegrees(true)
+        }
+        val rotatedProxy = fakeImageProxy(640, 480, cropRect, 90)
+        val rotateAgain = try {
+            mapAnalysisCropToPreview(
+                detected,
+                cropRect.width(),
+                cropRect.height(),
+                rotatingFactory.getOutputTransform(rotatedProxy),
+                previewTransform,
+                cropRect.width(),
+                cropRect.height(),
+            )
+        } finally {
+            rotatedProxy.close()
+        }
+        assertNotNull(rotateAgain)
+        assertTrue(
+            "Applying ImageProxy rotation to the raw crop should visibly change this asymmetric rectangle",
+            kotlin.math.abs(rotateAgain!!.left - mapped[0]!!.left) > 0.05f ||
+                kotlin.math.abs(rotateAgain.top - mapped[0]!!.top) > 0.05f,
+        )
+    }
+
+    private fun fakeImageProxy(width: Int, height: Int, crop: Rect, rotationDegrees: Int): ImageProxy {
+        val imageInfo = Proxy.newProxyInstance(
+            ImageInfo::class.java.classLoader,
+            arrayOf(ImageInfo::class.java),
+        ) { _, method, _ ->
+            when (method.name) {
+                "getRotationDegrees" -> rotationDegrees
+                "getTimestamp" -> 1L
+                else -> when (method.returnType) {
+                    java.lang.Boolean.TYPE -> false
+                    java.lang.Integer.TYPE -> 0
+                    java.lang.Long.TYPE -> 0L
+                    java.lang.Float.TYPE -> 0f
+                    java.lang.Double.TYPE -> 0.0
+                    else -> null
+                }
+            }
+        } as ImageInfo
+        return Proxy.newProxyInstance(
+            ImageProxy::class.java.classLoader,
+            arrayOf(ImageProxy::class.java),
+        ) { _, method, _ ->
+            when (method.name) {
+                "getWidth" -> width
+                "getHeight" -> height
+                "getFormat" -> android.graphics.ImageFormat.YUV_420_888
+                "getCropRect" -> Rect(crop)
+                "getImageInfo" -> imageInfo
+                "getPlanes" -> emptyArray<ImageProxy.PlaneProxy>()
+                "close" -> null
+                else -> when (method.returnType) {
+                    java.lang.Boolean.TYPE -> false
+                    java.lang.Integer.TYPE -> 0
+                    java.lang.Long.TYPE -> 0L
+                    else -> null
+                }
+            }
+        } as ImageProxy
     }
 
     private fun assertCropClose(expected: NormalizedLabelCrop, actual: NormalizedLabelCrop, tolerance: Float = 0.00001f) {

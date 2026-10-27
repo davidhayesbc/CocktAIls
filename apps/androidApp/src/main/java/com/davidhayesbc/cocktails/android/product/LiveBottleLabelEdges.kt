@@ -3,6 +3,7 @@ package com.davidhayesbc.cocktails.android.product
 import android.graphics.RectF
 import androidx.annotation.OptIn
 import androidx.camera.view.transform.CoordinateTransform
+import androidx.camera.view.transform.ImageProxyTransformFactory
 import androidx.camera.view.transform.OutputTransform
 import androidx.camera.view.TransformExperimental
 import org.opencv.core.CvType
@@ -18,6 +19,13 @@ internal data class LiveBottleLabelBoundary(
     val crop: NormalizedLabelCrop,
     val stable: Boolean,
 )
+
+/** Analysis coordinates come from the raw, cropped Y plane; CameraX must not rotate them again. */
+@OptIn(markerClass = [TransformExperimental::class])
+internal fun rawAnalysisTransformFactory(): ImageProxyTransformFactory = ImageProxyTransformFactory().apply {
+    setUsingCropRect(true)
+    setUsingRotationDegrees(false)
+}
 
 internal data class DownsampledLuma(val width: Int, val height: Int, val bytes: ByteArray)
 

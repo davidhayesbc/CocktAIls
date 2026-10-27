@@ -70,6 +70,11 @@ class BarcodeScannerLifecycleTest {
             composeRule.onAllNodesWithText("Camera is live and barcode frames are being analyzed.")
                 .fetchSemanticsNodes().isNotEmpty()
         }
+        val scannerScreenshot = saveTestScreenshot(
+            InstrumentationRegistry.getInstrumentation(),
+            "onboarding-barcode-scanner.png",
+        )
+        assertTrue("Live scanner screenshot was not staged for the CI artifact: $scannerScreenshot", scannerScreenshot.startsWith("/sdcard/Download/CocktAIlsDiagnostics/"))
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         composeRule.waitForIdle()
         composeRule.onAllNodesWithText("Scan a bottle").assertCountEquals(0)

@@ -279,6 +279,24 @@ jobs:
           if timeout 10 "$adb" -s emulator-5554 shell test -f "$batch_screenshot"; then
             timeout 15 "$adb" -s emulator-5554 pull "$batch_screenshot" "$RUNNER_TEMP/$(basename "$batch_screenshot")"
           fi
+          echo '--- onboarding UI screenshots ---'
+          for screenshot_name in \
+            onboarding-setup.png \
+            onboarding-scanning.png \
+            onboarding-barcode-scanner.png \
+            onboarding-label-step.png \
+            onboarding-label-preview.png \
+            onboarding-label-camera-layout.png \
+            onboarding-queue.png \
+            onboarding-review.png \
+            onboarding-pause.png; do
+            screenshot="$screenshot_dir/$screenshot_name"
+            if timeout 10 "$adb" -s emulator-5554 shell test -f "$screenshot"; then
+              timeout 15 "$adb" -s emulator-5554 pull "$screenshot" "$RUNNER_TEMP/$screenshot_name"
+            else
+              echo "Screenshot not captured: $screenshot_name"
+            fi
+          done
 
       - name: Upload emulator diagnostics
         if: always()
@@ -294,6 +312,7 @@ jobs:
             ${{ runner.temp }}/cocktails-kvm-check.log
             ${{ runner.temp }}/camera-permission-*.png
             ${{ runner.temp }}/batch-intake-*.png
+            ${{ runner.temp }}/onboarding-*.png
             apps/androidApp/build/outputs/androidTest-results/connected/**/*.xml
             apps/androidApp/build/reports/androidTests/connected/**
           if-no-files-found: ignore

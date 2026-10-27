@@ -207,6 +207,7 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-name-0"))
         composeRule.onNodeWithTag("bottle-intake-draft-name-0").performTextInput(bottleName)
         composeRule.onNodeWithText("Keep draft & return to queue").performClick()
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-confirm"))
         composeRule.onNodeWithTag("batch-confirm").assertIsEnabled()
         composeRule.onNodeWithTag("batch-confirm").performClick()
 
@@ -387,7 +388,7 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("batch-confirm").performClick()
             assertTrue(repository.openBottleIntakeSession() == null)
             val savedProductId = repository.pantry(home.id).first().productId!!
-            assertEquals(setOf("Auchentoshan Three Wood", "Auchentoshan"), repository.productFactSources(savedProductId).map { it.fieldValue }.toSet())
+            assertEquals(setOf("Auchentoshan Three Wood", "Auchentoshan", "43%"), repository.productFactSources(savedProductId).map { it.fieldValue }.toSet())
             assertEquals(null, pendingEvidenceStore.read(first.id))
         } finally {
             setTestContent { }
@@ -477,7 +478,9 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("bottle-intake-draft-name-0").assert(
                 editableTextIs(""),
             )
-            composeRule.onNodeWithTag("batch-confirm").assertIsNotEnabled()
+            val acceptTag = "accept-scanned-bottle-${draft.id}"
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag(acceptTag))
+            composeRule.onNodeWithTag(acceptTag).assertIsNotEnabled()
         } finally {
             setTestContent { }
             driver.close()
@@ -570,6 +573,8 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("live-label-edge-overlay").assertExists()
             composeRule.onNodeWithTag("capture-live-label").assertExists()
             composeRule.onNodeWithText("Take label photo").assertExists()
+            composeRule.waitForIdle()
+            captureOnboardingScreenshot("onboarding-label-camera-layout.png")
             assertTrue("A label must not be captured before the user taps the shutter", !photoSaved)
             composeRule.onNodeWithTag("cancel-live-label").performClick()
             assertEquals("The callback must retain the capture that opened this screen", captureToken, cancelledToken)
@@ -666,6 +671,7 @@ class OfflineRecipeSmokeTest {
         // capture are independent, so another bottle remains scannable.
         composeRule.onNodeWithText("Keep draft & return to queue").performClick()
         composeRule.onNodeWithText("Resume scanner").performClick()
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-scan-bottles"))
         composeRule.onNodeWithTag("batch-scan-bottles").assertIsEnabled()
     }
 
@@ -685,12 +691,17 @@ class OfflineRecipeSmokeTest {
             override fun write(value: String): Boolean { rawQueue = value; return true }
         }
         val queue = BottleEnrichmentQueue(queueStorage)
+        val labelBitmap = android.graphics.Bitmap.createBitmap(8, 8, android.graphics.Bitmap.Config.ARGB_8888)
+        val labelPhotoOutput = java.io.ByteArrayOutputStream()
+        labelBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, labelPhotoOutput)
+        labelBitmap.recycle()
+        val testLabelPhoto = labelPhotoOutput.toByteArray()
         var activeSession by mutableStateOf(repository.openBottleIntakeSession()!!)
         var jobs by mutableStateOf<Map<String, BottleEnrichmentJob>>(emptyMap())
         var pendingLabelId by mutableStateOf<String?>(null)
         var capturedLabel by mutableStateOf<ByteArray?>(null)
         var activeReviewId by mutableStateOf<String?>(null)
-        var route by mutableStateOf(BottleIntakeRoute.SCANNING)
+        var route by mutableStateOf(BottleIntakeRoute.SETUP)
         var sequence = 10L
         val barcode = "5011333150725"
 
@@ -718,7 +729,7 @@ class OfflineRecipeSmokeTest {
                         activeReviewDraftId = activeReviewId, ollamaCloudEnabled = false, localAiEnabled = false,
                         onSearchDraft = {}, onFetchDraftSource = { _, _ -> }, onExtractDraftDetails = {},
                         onExtractDraftDetailsOnDevice = {}, onResumeEnrichment = { _, _ -> }, onCancelDraftSearch = {},
-                        onCaptureLabel = { capturedLabel = "test-label-image".encodeToByteArray() },
+                        onCaptureLabel = { capturedLabel = testLabelPhoto },
                         onUsePendingLabel = { draftId ->
                             queue.completeLabelCapture(draftId, sequence++)
                             pendingLabelId = null
@@ -735,17 +746,26 @@ class OfflineRecipeSmokeTest {
                             true
                         },
                         onDiscardCapturedLabel = {}, onAttachCapturedLabel = {},
-                        onScan = { scanAnotherBottle(); route = BottleIntakeRoute.CAPTURE_LABEL },
+                        onScan = {
+                            if (route == BottleIntakeRoute.SETUP) route = BottleIntakeRoute.SCANNING
+                            else { scanAnotherBottle(); route = BottleIntakeRoute.CAPTURE_LABEL }
+                        },
                         onReviewBottle = { activeReviewId = it; route = BottleIntakeRoute.REVIEW },
                         onAcceptAndScanNext = { activeReviewId = null; route = BottleIntakeRoute.SCANNING },
                         onAddManual = { _, _, _, _, _, _, _ -> false },
                         onRemove = {}, onUpdate = { repository.updateBottleIntakeDraft(it) }, onFieldEdited = { _, _ -> },
                         onHomeChanged = {}, onLevelChanged = {},
-                        onConfirm = { BottleIntakeCommitResult.Invalid("Test only") }, onCancel = {}, onDismiss = {}, onPauseQueue = {}, onResumeScanning = {},
+                        onConfirm = { BottleIntakeCommitResult.Invalid("Test only") }, onCancel = {}, onDismiss = {},
+                        onPauseQueue = { route = BottleIntakeRoute.PAUSE }, onResumeScanning = { route = BottleIntakeRoute.SCANNING },
                     )
                 }
             }
 
+            composeRule.waitForIdle()
+            captureOnboardingScreenshot("onboarding-setup.png")
+            composeRule.onNodeWithTag("intake-allow-camera").performClick()
+            composeRule.waitForIdle()
+            captureOnboardingScreenshot("onboarding-scanning.png")
             composeRule.onNodeWithTag("batch-scan-bottles").assertIsEnabled().performClick()
             val first = activeSession.drafts.single()
             assertEquals(BottleEnrichmentStatus.RUNNING, jobs.getValue(first.id).status)
@@ -753,8 +773,12 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("capture-label-${first.id}"))
             composeRule.onNodeWithTag("capture-label-${first.id}").assertIsDisplayed()
             composeRule.onAllNodes(hasTestTag("batch-scan-bottles")).assertCountEquals(0)
+            composeRule.waitForIdle()
+            captureOnboardingScreenshot("onboarding-label-step.png")
 
             composeRule.onNodeWithTag("capture-label-${first.id}").performClick()
+            composeRule.waitForIdle()
+            captureOnboardingScreenshot("onboarding-label-preview.png")
             composeRule.onNodeWithTag("use-label-${first.id}").assertIsDisplayed().performClick()
             assertEquals(BottleEnrichmentStatus.RUNNING, jobs.getValue(first.id).status)
             assertFalse(jobs.getValue(first.id).labelCaptureRequired)
@@ -773,13 +797,24 @@ class OfflineRecipeSmokeTest {
             assertEquals(BottleEnrichmentStatus.RUNNING, jobs.getValue(second.id).status)
             composeRule.onNodeWithTag("batch-scan-bottles").assertIsEnabled()
 
+            composeRule.onNodeWithTag("open-bottle-queue").performClick()
+            composeRule.waitForIdle()
+            captureOnboardingScreenshot("onboarding-queue.png")
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("Resume scanner"))
+            composeRule.onNodeWithText("Resume scanner").performClick()
+
             assertTrue(queue.finish(first.id, BottleEnrichmentStatus.READY_FOR_REVIEW, "CANDIDATES_READY", sequence++))
             updateJobs()
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("review-ready-bottles"))
             composeRule.onNodeWithTag("review-ready-bottles").performClick()
             assertEquals(first.id, activeReviewId)
+            composeRule.waitForIdle()
+            captureOnboardingScreenshot("onboarding-review.png")
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("accept-scanned-bottle-${first.id}"))
             composeRule.onNodeWithTag("accept-scanned-bottle-${first.id}").assertExists()
+            route = BottleIntakeRoute.PAUSE
+            composeRule.waitForIdle()
+            captureOnboardingScreenshot("onboarding-pause.png")
         } finally {
             repository.cancelBottleIntakeSession(session.id)
             driver.close()
@@ -808,6 +843,14 @@ class OfflineRecipeSmokeTest {
     private fun keepBottleIntakeForLater() {
         composeRule.onNodeWithTag("intake-pause").performClick()
         composeRule.onNodeWithText("Keep drafts & exit").performClick()
+    }
+
+    private fun captureOnboardingScreenshot(fileName: String) {
+        val savedAt = saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), fileName)
+        if (!savedAt.startsWith("/sdcard/Download/CocktAIlsDiagnostics/")) {
+            throw AssertionError("The onboarding screenshot was not copied to CI artifact staging: $savedAt")
+        }
+        Log.i("CocktAIlsOnboardingScreenshot", "$fileName saved for the emulator diagnostics artifact")
     }
 
     private fun assertBatchCountVisibleWithDiagnostics() {

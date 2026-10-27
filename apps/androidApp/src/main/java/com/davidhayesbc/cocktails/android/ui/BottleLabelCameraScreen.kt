@@ -12,7 +12,6 @@ import androidx.camera.core.UseCaseGroup
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.camera.view.TransformExperimental
-import androidx.camera.view.transform.ImageProxyTransformFactory
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -49,8 +48,11 @@ import com.davidhayesbc.cocktails.android.product.LiveBottleLabelEdgeStabilizer
 import com.davidhayesbc.cocktails.android.product.BottleCaptureToken
 import com.davidhayesbc.cocktails.android.product.NormalizedLabelCrop
 import com.davidhayesbc.cocktails.android.product.bindBottleCaptureCallback
+import com.davidhayesbc.cocktails.android.product.cameraFrameBelongsToGeometry
 import com.davidhayesbc.cocktails.android.product.downsampleCameraLuma
 import com.davidhayesbc.cocktails.android.product.mapAnalysisCropToPreview
+import com.davidhayesbc.cocktails.android.product.rawAnalysisTransformFactory
+import com.davidhayesbc.cocktails.android.product.stableBoundaryCanSeedCapture
 import org.opencv.android.OpenCVLoader
 import java.io.File
 import java.util.concurrent.Executors
@@ -71,6 +73,8 @@ internal fun BottleLabelCameraScreen(
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var boundary by remember { mutableStateOf<LiveBottleLabelBoundary?>(null) }
+    var boundaryGeometryGeneration by remember { mutableStateOf(-1L) }
+    var currentGeometryGeneration by remember { mutableStateOf(0L) }
     var cameraMessage by remember { mutableStateOf("Starting label camera…") }
     var takingPicture by remember { mutableStateOf(false) }
     val bindCurrentViewport = remember { mutableStateOf<(() -> Unit)?>(null) }
@@ -85,6 +89,7 @@ internal fun BottleLabelCameraScreen(
     DisposableEffect(previewView, lifecycleOwner, output) {
         val disposed = AtomicBoolean(false)
         val lastAnalysisNanos = AtomicLong(0)
+        val geometryGeneration = AtomicLong(0)
         val detectorInitialized = AtomicBoolean(false)
         val detectorReady = AtomicBoolean(false)
         val view = previewView
@@ -92,12 +97,10 @@ internal fun BottleLabelCameraScreen(
         var provider: ProcessCameraProvider? = null
         var analyzer: ImageAnalysis? = null
         val stabilizer = LiveBottleLabelEdgeStabilizer()
+        var stabilizerGeometryGeneration = 0L
         var lastBoundGeometry: Pair<Int, Int>? = null
         var lastBoundRotation: Int? = null
-        val imageTransformFactory = ImageProxyTransformFactory().apply {
-            setUsingCropRect(true)
-            setUsingRotationDegrees(true)
-        }
+        val imageTransformFactory = rawAnalysisTransformFactory()
         if (view != null) {
             val future = ProcessCameraProvider.getInstance(context)
             future.addListener({
@@ -121,6 +124,10 @@ internal fun BottleLabelCameraScreen(
                             val rotation = view.display?.rotation ?: Surface.ROTATION_0
                             if (geometry != lastBoundGeometry || rotation != lastBoundRotation) {
                                 runCatching {
+                                    val generation = geometryGeneration.incrementAndGet()
+                                    currentGeometryGeneration = generation
+                                    boundary = null
+                                    boundaryGeometryGeneration = -1L
                                     val viewPort = view.viewPort
                                     if (viewPort == null) {
                                         cameraMessage = "The camera preview could not be aligned. You can still capture and crop by hand."
@@ -146,18 +153,24 @@ internal fun BottleLabelCameraScreen(
                         }
                     }
                     analysisUseCase.setAnalyzer(analysisExecutor) { proxy ->
+                        val frameGeometryGeneration = geometryGeneration.get()
                         try {
                             val now = System.nanoTime()
                             val previous = lastAnalysisNanos.get()
                             if (disposed.get() || now - previous < ANALYSIS_INTERVAL_NANOS || !lastAnalysisNanos.compareAndSet(previous, now)) return@setAnalyzer
+                            if (stabilizerGeometryGeneration != frameGeometryGeneration) {
+                                stabilizer.update(null)
+                                stabilizerGeometryGeneration = frameGeometryGeneration
+                            }
                             if (detectorInitialized.compareAndSet(false, true)) {
                                 detectorReady.set(runCatching { OpenCVLoader.initLocal() }.getOrDefault(false))
                             }
                             if (!detectorReady.get()) {
                                 stabilizer.update(null)
                                 ContextCompat.getMainExecutor(context).execute {
-                                    if (!disposed.get()) {
+                                    if (!disposed.get() && cameraFrameBelongsToGeometry(frameGeometryGeneration, geometryGeneration.get())) {
                                         boundary = null
+                                        boundaryGeometryGeneration = frameGeometryGeneration
                                         cameraMessage = "Edge detection is unavailable. You can still take the photo and crop it by hand."
                                     }
                                 }
@@ -179,14 +192,19 @@ internal fun BottleLabelCameraScreen(
                                 cropHeight = rect.height(),
                             ) ?: run {
                                 stabilizer.update(null)
-                                ContextCompat.getMainExecutor(context).execute { if (!disposed.get()) boundary = null }
+                                ContextCompat.getMainExecutor(context).execute {
+                                    if (!disposed.get() && cameraFrameBelongsToGeometry(frameGeometryGeneration, geometryGeneration.get())) {
+                                        boundary = null
+                                        boundaryGeometryGeneration = frameGeometryGeneration
+                                    }
+                                }
                                 return@setAnalyzer
                             }
                             val detection = runCatching { LiveBottleLabelEdgeDetector.suggestLuma(luma.width, luma.height, luma.bytes) }.getOrNull()
                             val stable = stabilizer.update(detection)
                             val sourceTransform = stable?.let { runCatching { imageTransformFactory.getOutputTransform(proxy) }.getOrNull() }
                             ContextCompat.getMainExecutor(context).execute {
-                                if (!disposed.get()) {
+                                if (!disposed.get() && cameraFrameBelongsToGeometry(frameGeometryGeneration, geometryGeneration.get())) {
                                     val previewTransform = runCatching { view.outputTransform }.getOrNull()
                                     val mapped = if (stable != null && sourceTransform != null && previewTransform != null) {
                                         mapAnalysisCropToPreview(
@@ -200,6 +218,7 @@ internal fun BottleLabelCameraScreen(
                                         )
                                     } else null
                                     boundary = mapped?.let { stable?.copy(crop = it) }
+                                    boundaryGeometryGeneration = frameGeometryGeneration
                                     cameraMessage = when {
                                         !detectorReady.get() -> "Edge detection is unavailable. You can still take a photo and crop it by hand."
                                         boundary?.stable == true -> "Label edge steady · check it, then take the photo."
@@ -211,8 +230,9 @@ internal fun BottleLabelCameraScreen(
                         } catch (_: Exception) {
                             stabilizer.update(null)
                             ContextCompat.getMainExecutor(context).execute {
-                                if (!disposed.get()) {
+                                if (!disposed.get() && cameraFrameBelongsToGeometry(frameGeometryGeneration, geometryGeneration.get())) {
                                     boundary = null
+                                    boundaryGeometryGeneration = frameGeometryGeneration
                                     cameraMessage = "Label edges could not be checked. You can still take the photo and crop it by hand."
                                 }
                             }
@@ -291,7 +311,9 @@ internal fun BottleLabelCameraScreen(
             Button(
                 onClick = {
                     val capture = imageCapture ?: return@Button
-                    val detectedCropAtShutter = boundary?.takeIf { it.stable }?.crop
+                    val detectedCropAtShutter = boundary?.takeIf {
+                        stableBoundaryCanSeedCapture(it.stable, boundaryGeometryGeneration, currentGeometryGeneration)
+                    }?.crop
                     val parent = output.parentFile
                     if (parent == null || (!parent.isDirectory && !parent.mkdirs()) || (output.exists() && !output.delete())) {
                         cameraMessage = "The label photo could not be prepared in local storage. Retry or cancel the photo; the bottle draft is safe."

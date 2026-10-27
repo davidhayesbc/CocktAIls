@@ -184,8 +184,10 @@ import com.davidhayesbc.cocktails.android.product.BottleEnrichmentStatus
 import com.davidhayesbc.cocktails.android.product.BottleEnrichmentWorkScheduler
 import com.davidhayesbc.cocktails.android.product.BottleScanEnrichmentRuntime
 import com.davidhayesbc.cocktails.android.product.BottleCaptureToken
+import com.davidhayesbc.cocktails.android.product.PendingBottlePhoto
 import com.davidhayesbc.cocktails.android.product.bottleCaptureTempFileName
 import com.davidhayesbc.cocktails.android.product.bottleCaptureDraftIsStillOpen
+import com.davidhayesbc.cocktails.android.product.pendingBottlePhotoAfterCapture
 import com.davidhayesbc.cocktails.android.product.processingBottleCaptureAfterCompletion
 import com.davidhayesbc.cocktails.android.product.isCurrentBottleCapture
 import com.davidhayesbc.cocktails.android.product.restoreBottleCaptureToken
@@ -1470,12 +1472,18 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     processingBottleCameraToken = processingBottleCaptureAfterCompletion(processingBottleCameraToken, token)
                     return@launch
                 }
-                pendingBottleLabelOriginalPhoto = originalPhoto
-                pendingBottleLabelPhoto = originalPhoto
-                pendingBottleLabelCropSuggestion = suggestion
+                val updatedPhoto = pendingBottlePhotoAfterCapture(
+                    previous = PendingBottlePhoto(pendingBottleLabelPhoto, pendingBottleLabelOriginalPhoto, pendingBottleLabelCropSuggestion),
+                    decodedPhoto = originalPhoto,
+                    suggestedCrop = suggestion,
+                )
+                pendingBottleLabelPhoto = updatedPhoto.selected
+                pendingBottleLabelOriginalPhoto = updatedPhoto.original
+                pendingBottleLabelCropSuggestion = updatedPhoto.suggestedCrop
                 bottleLabelCaptureMessage = when {
                     targetDraftId != null && originalPhoto != null && !stored -> "The label is captured, but its preview could not be saved. Retake it or skip; the bottle draft is safe."
                     result.isSuccess -> null
+                    pendingBottleLabelPhoto != null -> "The retake could not be prepared. Your previous label is still here; retry or keep it."
                     else -> "The camera photo could not be prepared. The draft was not changed; try again or skip the photo."
                 }
                 file.delete()
