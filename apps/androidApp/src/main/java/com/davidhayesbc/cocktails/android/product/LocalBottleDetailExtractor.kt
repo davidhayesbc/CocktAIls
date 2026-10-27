@@ -7,15 +7,15 @@ import com.arm.aichat.internal.InferenceEngineImpl
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
+import java.util.concurrent.TimeoutException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 internal class LocalBottleDetailExtractor(
     private val modelPath: () -> String?,
@@ -34,7 +34,13 @@ internal class LocalBottleDetailExtractor(
     ): BottleDetailExtractionResult {
         fun record(event: BottleLookupDebugEvent) {
             // Diagnostics must not be able to break an otherwise usable local extraction.
-            runCatching { onDebugEvent(event) }
+            try {
+                onDebugEvent(event)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // Ordinary reporting errors do not interrupt bottle entry. Fatal errors propagate.
+            }
         }
 
         record(BottleLookupDebugEvent(BottleLookupDebugStage.LOCAL_INPUT_VALIDATION, providerLabel, "RUNNING"))
@@ -92,17 +98,6 @@ internal class LocalBottleDetailExtractor(
                         .also { record(BottleLookupDebugEvent(BottleLookupDebugStage.LOCAL_GENERATION, providerLabel, "COMPLETE")) }
                 }
             }
-        } catch (cancelled: TimeoutCancellationException) {
-            if (!runnerReportedFailure) {
-                record(BottleLookupDebugEvent(
-                    currentFailureStage,
-                    providerLabel,
-                    "TIMEOUT",
-                    reasonCodes = listOf(LocalInferenceFailureCode.GENERATION_TIMEOUT.wireValue),
-                    failureType = "TimeoutCancellationException",
-                ))
-            }
-            return BottleDetailExtractionResult.LocalFailure(LocalInferenceFailureCode.GENERATION_TIMEOUT)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
@@ -284,13 +279,19 @@ internal class LlamaCppLocalInferenceRunner internal constructor(private val eng
         var activeStage = BottleLookupDebugStage.LOCAL_RUNTIME_INITIALIZATION
         var modelLoadAttempted = false
 
-        fun emit(stage: BottleLookupDebugStage, result: String, reason: String? = null) = runCatching {
-            onEvent(BottleLookupDebugEvent(
+        fun emit(stage: BottleLookupDebugStage, result: String, reason: String? = null) {
+            try {
+                onEvent(BottleLookupDebugEvent(
                 stage = stage,
                 provider = "On-device Qwen3",
                 result = result,
                 reasonCodes = listOfNotNull(reason),
-            ))
+                ))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // Keep inference independent from ordinary diagnostic storage failures.
+            }
         }
 
         try {
@@ -313,12 +314,17 @@ internal class LlamaCppLocalInferenceRunner internal constructor(private val eng
 
             activeStage = BottleLookupDebugStage.LOCAL_RUNTIME_INITIALIZATION
             emit(activeStage, "RUNNING")
-            val initial = try {
-                withTimeout(RUNTIME_INITIALIZATION_TIMEOUT_MS) {
-                    engine.state.first { it is InferenceEngine.State.Initialized || it is InferenceEngine.State.Error }
-                }
-            } catch (timeout: TimeoutCancellationException) {
-                recordLocalFailure(activeStage, LocalInferenceFailureCode.RUNTIME_INITIALIZATION_FAILED, timeout, onEvent)
+            val initial = withTimeoutOrNull(RUNTIME_INITIALIZATION_TIMEOUT_MS) {
+                engine.state.first { it is InferenceEngine.State.Initialized || it is InferenceEngine.State.Error }
+            }
+            if (initial == null) {
+                recordLocalFailure(
+                    activeStage,
+                    LocalInferenceFailureCode.RUNTIME_INITIALIZATION_FAILED,
+                    TimeoutException(),
+                    onEvent,
+                    overrideType = "TimeoutCancellationException",
+                )
                 throw LocalInferenceFailureException(LocalInferenceFailureCode.RUNTIME_INITIALIZATION_FAILED)
             }
             if (initial is InferenceEngine.State.Error) {
@@ -352,19 +358,21 @@ internal class LlamaCppLocalInferenceRunner internal constructor(private val eng
 
             activeStage = BottleLookupDebugStage.LOCAL_GENERATION
             emit(activeStage, "RUNNING")
-            val chunks = withTimeout(GENERATION_TIMEOUT_MS) {
+            val chunks = withTimeoutOrNull(GENERATION_TIMEOUT_MS) {
                 engine.sendUserPrompt(userPrompt, maxTokens).toList()
+            }
+            if (chunks == null) {
+                recordLocalFailure(
+                    activeStage,
+                    LocalInferenceFailureCode.GENERATION_TIMEOUT,
+                    TimeoutException(),
+                    onEvent,
+                    overrideType = "TimeoutCancellationException",
+                )
+                throw LocalInferenceFailureException(LocalInferenceFailureCode.GENERATION_TIMEOUT)
             }
             emit(activeStage, "COMPLETE")
             return chunks.joinToString("").take(MAX_LOCAL_OUTPUT_CHARS)
-        } catch (timeout: TimeoutCancellationException) {
-            val code = if (activeStage == BottleLookupDebugStage.LOCAL_GENERATION) {
-                LocalInferenceFailureCode.GENERATION_TIMEOUT
-            } else {
-                LocalInferenceFailureCode.RUNTIME_INITIALIZATION_FAILED
-            }
-            recordLocalFailure(activeStage, code, timeout, onEvent)
-            throw LocalInferenceFailureException(code)
         } catch (cancelled: CancellationException) {
             emit(activeStage, "CANCELLED", "REQUEST_CANCELLED")
             throw cancelled
@@ -381,7 +389,21 @@ internal class LlamaCppLocalInferenceRunner internal constructor(private val eng
         } finally {
             if (modelLoadAttempted) {
                 withContext(NonCancellable + Dispatchers.IO) {
-                    runCatching { engine.cleanUp() }
+                    emit(BottleLookupDebugStage.LOCAL_RUNTIME_CLEANUP, "RUNNING")
+                    try {
+                        engine.cleanUp()
+                        emit(BottleLookupDebugStage.LOCAL_RUNTIME_CLEANUP, "COMPLETE")
+                    } catch (cancelled: CancellationException) {
+                        emit(BottleLookupDebugStage.LOCAL_RUNTIME_CLEANUP, "CANCELLED", "REQUEST_CANCELLED")
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        recordLocalFailure(
+                            BottleLookupDebugStage.LOCAL_RUNTIME_CLEANUP,
+                            LocalInferenceFailureCode.RUNTIME_CLEANUP_FAILED,
+                            failure,
+                            onEvent,
+                        )
+                    }
                 }
             }
         }

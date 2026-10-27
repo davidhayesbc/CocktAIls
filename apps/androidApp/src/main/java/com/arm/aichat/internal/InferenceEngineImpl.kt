@@ -110,30 +110,14 @@ internal class InferenceEngineImpl private constructor(
 
     init {
         llamaScope.launch {
-            try {
-                check(_state.value is InferenceEngine.State.Uninitialized) {
-                    "Cannot load native library in ${_state.value.javaClass.simpleName}!"
-                }
-                _state.value = InferenceEngine.State.Initializing
-                System.loadLibrary("ai-chat")
-                init(nativeLibDir)
-                _nativeInitialized = true
-                _state.value = InferenceEngine.State.Initialized
-
-            } catch (failure: Exception) {
-                _state.value = InferenceEngine.State.Error(
-                    exception = failure,
-                    diagnosticType = failure.javaClass.simpleName,
-                    diagnosticFrames = failure.stackTrace.toList(),
-                )
-                throw failure
-            } catch (failure: LinkageError) {
-                _state.value = InferenceEngine.State.Error(
-                    exception = IllegalStateException("Native local model runtime is unavailable"),
-                    diagnosticType = failure.javaClass.simpleName,
-                    diagnosticFrames = failure.stackTrace.toList(),
-                )
-            }
+            initializeInferenceRuntime(
+                state = _state,
+                initialize = {
+                    System.loadLibrary("ai-chat")
+                    init(nativeLibDir)
+                },
+                onInitialized = { _nativeInitialized = true },
+            )
         }
     }
 
@@ -301,5 +285,41 @@ internal class InferenceEngineImpl private constructor(
             }
         }
         llamaScope.cancel()
+    }
+}
+
+/** Publishes ordinary initialization failures to the awaited state instead of leaking them from launch. */
+internal fun initializeInferenceRuntime(
+    state: MutableStateFlow<InferenceEngine.State>,
+    initialize: () -> Unit,
+    onInitialized: () -> Unit = {},
+) {
+    try {
+        check(state.value is InferenceEngine.State.Uninitialized) {
+            "Cannot load native library in ${state.value.javaClass.simpleName}!"
+        }
+        state.value = InferenceEngine.State.Initializing
+        initialize()
+        onInitialized()
+        state.value = InferenceEngine.State.Initialized
+    } catch (cancelled: CancellationException) {
+        state.value = InferenceEngine.State.Error(
+            exception = IllegalStateException("Native local model runtime initialization was cancelled"),
+            diagnosticType = "CancellationException",
+            diagnosticFrames = cancelled.stackTrace.toList(),
+        )
+        throw cancelled
+    } catch (failure: Exception) {
+        state.value = InferenceEngine.State.Error(
+            exception = failure,
+            diagnosticType = failure.javaClass.simpleName,
+            diagnosticFrames = failure.stackTrace.toList(),
+        )
+    } catch (failure: LinkageError) {
+        state.value = InferenceEngine.State.Error(
+            exception = IllegalStateException("Native local model runtime is unavailable"),
+            diagnosticType = failure.javaClass.simpleName,
+            diagnosticFrames = failure.stackTrace.toList(),
+        )
     }
 }

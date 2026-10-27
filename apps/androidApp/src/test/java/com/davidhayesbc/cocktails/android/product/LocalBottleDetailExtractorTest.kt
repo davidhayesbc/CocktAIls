@@ -1,10 +1,15 @@
 package com.davidhayesbc.cocktails.android.product
 
 import com.arm.aichat.InferenceEngine
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -232,6 +237,57 @@ class LocalBottleDetailExtractorTest {
         }
     }
 
+    @Test
+    fun diagnosticCallbackCancellationIsNotSwallowed() = runBlocking {
+        val extractor = LocalBottleDetailExtractor(
+            { null },
+            LocalInferenceRunner { _, _, _, _ -> error("Runner must not be called") },
+        )
+        try {
+            extractor.extractWithDiagnostics(
+                WebPageText("Gin", "https://shop.example/gin", "Gin 40% ABV", "Firecrawl"),
+                LOCAL_MODEL_LABEL,
+                null,
+            ) { throw CancellationException("cancel diagnostics") }
+            throw AssertionError("Diagnostic cancellation should propagate")
+        } catch (cancelled: CancellationException) {
+            assertEquals("cancel diagnostics", cancelled.message)
+        }
+    }
+
+    @Test
+    fun callerTimeoutIsNotReclassifiedAsLocalGenerationTimeout() = runBlocking {
+        val extractor = LocalBottleDetailExtractor({ "/model.gguf" }, DelayedDiagnosticRunner())
+        try {
+            withTimeout(50) {
+                extractor.extractWithDiagnostics(
+                    WebPageText("Gin", "https://shop.example/gin", "Gin 40% ABV", "Firecrawl"),
+                    LOCAL_MODEL_LABEL,
+                    null,
+                )
+            }
+            throw AssertionError("The enclosing deadline should propagate")
+        } catch (_: TimeoutCancellationException) {
+            // Expected: a caller-owned deadline is cancellation, not a model-stage timeout result.
+        }
+    }
+
+    @Test
+    fun explicitCallerCancellationIsNotConvertedToExtractionFailure() = runBlocking {
+        val extractor = LocalBottleDetailExtractor({ "/model.gguf" }, DelayedDiagnosticRunner())
+        val job = launch {
+            extractor.extractWithDiagnostics(
+                WebPageText("Gin", "https://shop.example/gin", "Gin 40% ABV", "Firecrawl"),
+                LOCAL_MODEL_LABEL,
+                null,
+            )
+        }
+        delay(20)
+        job.cancel()
+        job.join()
+        assertTrue(job.isCancelled)
+    }
+
     private fun newDebugReport() = BottleLookupDebugReport(
         createdAtMillis = 1,
         versionName = "test",
@@ -283,6 +339,25 @@ class LocalBottleDetailExtractorTest {
 
         private fun testFailure() = IllegalStateException("secret path=/private/model.gguf api_key=never-copy").apply {
             stackTrace = arrayOf(StackTraceElement("com.arm.aichat.internal.InferenceEngineImpl", "loadModel", "InferenceEngineImpl.kt", 145))
+        }
+    }
+
+    private class DelayedDiagnosticRunner : DiagnosticLocalInferenceRunner {
+        override suspend fun generate(modelPath: String, systemPrompt: String, userPrompt: String, maxTokens: Int): String {
+            delay(1_000)
+            return "{}"
+        }
+
+        override suspend fun generateWithDiagnostics(
+            modelPath: String,
+            systemPrompt: String,
+            userPrompt: String,
+            maxTokens: Int,
+            onEvent: (BottleLookupDebugEvent) -> Unit,
+        ): String {
+            onEvent(BottleLookupDebugEvent(BottleLookupDebugStage.LOCAL_GENERATION, "On-device Qwen3", "RUNNING"))
+            delay(1_000)
+            return "{}"
         }
     }
 }
