@@ -126,4 +126,12 @@ class BottleCaptureGenerationTest {
         assertFalse(stableBoundaryCanSeedCapture(isStable = false, boundaryGeneration = 11, currentGeneration = 11))
         assertTrue(stableBoundaryCanSeedCapture(isStable = true, boundaryGeneration = 11, currentGeneration = 11))
     }
+
+    @Test
+    fun sameSizeDisplayRotationStillRequiresCameraViewportRebind() {
+        assertFalse(cameraGeometryChanged(Pair(480, 440), Pair(480, 440), 0, 0))
+        assertTrue(cameraGeometryChanged(Pair(480, 440), Pair(480, 440), 0, 2))
+        assertTrue(cameraGeometryChanged(Pair(480, 440), Pair(440, 480), 0, 1))
+        assertTrue(cameraGeometryChanged(null, Pair(480, 440), null, 0))
+    }
 }

@@ -1,5 +1,8 @@
 package com.davidhayesbc.cocktails.android.ui
 
+import android.hardware.display.DisplayManager
+import android.os.Handler
+import android.os.Looper
 import android.view.Surface
 import android.view.View
 import androidx.annotation.OptIn
@@ -48,6 +51,7 @@ import com.davidhayesbc.cocktails.android.product.LiveBottleLabelEdgeStabilizer
 import com.davidhayesbc.cocktails.android.product.BottleCaptureToken
 import com.davidhayesbc.cocktails.android.product.NormalizedLabelCrop
 import com.davidhayesbc.cocktails.android.product.bindBottleCaptureCallback
+import com.davidhayesbc.cocktails.android.product.cameraGeometryChanged
 import com.davidhayesbc.cocktails.android.product.cameraFrameBelongsToGeometry
 import com.davidhayesbc.cocktails.android.product.downsampleCameraLuma
 import com.davidhayesbc.cocktails.android.product.mapAnalysisCropToPreview
@@ -122,7 +126,7 @@ internal fun BottleLabelCameraScreen(
                         if (!disposed.get() && view.width > 0 && view.height > 0) {
                             val geometry = view.width to view.height
                             val rotation = view.display?.rotation ?: Surface.ROTATION_0
-                            if (geometry != lastBoundGeometry || rotation != lastBoundRotation) {
+                            if (cameraGeometryChanged(lastBoundGeometry, geometry, lastBoundRotation, rotation)) {
                                 runCatching {
                                     val generation = geometryGeneration.incrementAndGet()
                                     currentGeometryGeneration = generation
@@ -266,6 +270,23 @@ internal fun BottleLabelCameraScreen(
         }
         view.addOnLayoutChangeListener(listener)
         onDispose { view.removeOnLayoutChangeListener(listener) }
+    }
+
+    DisposableEffect(previewView, context) {
+        val view = previewView
+        val displayManager = context.getSystemService(DisplayManager::class.java)
+        if (view == null || displayManager == null) return@DisposableEffect onDispose { }
+        val listener = object : DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) = Unit
+            override fun onDisplayRemoved(displayId: Int) = Unit
+            override fun onDisplayChanged(displayId: Int) {
+                if (view.display?.displayId == displayId) {
+                    view.post { bindCurrentViewport.value?.invoke() }
+                }
+            }
+        }
+        displayManager.registerDisplayListener(listener, Handler(Looper.getMainLooper()))
+        onDispose { displayManager.unregisterDisplayListener(listener) }
     }
 
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {

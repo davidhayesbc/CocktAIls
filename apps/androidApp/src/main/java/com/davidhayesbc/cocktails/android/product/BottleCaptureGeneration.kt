@@ -9,6 +9,13 @@ internal data class PendingBottlePhoto(
     val suggestedCrop: NormalizedLabelCrop?,
 )
 
+internal fun cameraGeometryChanged(
+    previousSize: Pair<Int, Int>?,
+    currentSize: Pair<Int, Int>,
+    previousRotation: Int?,
+    currentRotation: Int,
+): Boolean = previousSize != currentSize || previousRotation != currentRotation
+
 /** A failed retake keeps the currently reviewable photo; a successful decode atomically replaces it. */
 internal fun pendingBottlePhotoAfterCapture(
     previous: PendingBottlePhoto,

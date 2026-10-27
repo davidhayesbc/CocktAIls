@@ -15,6 +15,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
@@ -94,7 +95,8 @@ class BarcodeScannerLifecycleTest {
         )
         assertTrue("The integrated onboarding setup screenshot was not staged", setupScreenshot.startsWith("/sdcard/Download/CocktAIlsDiagnostics/"))
         composeRule.onNodeWithTag("intake-allow-camera").performClick()
-        awaitScannerDialog()
+        awaitIntakeScanner()
+        composeRule.onNodeWithText("Scan the next bottle").assertIsDisplayed()
         awaitCameraPermissionGranted()
         composeRule.onNodeWithTag("barcode-camera-preview").assertIsDisplayed()
         composeRule.waitUntil(timeoutMillis = 30_000) {
@@ -136,6 +138,17 @@ class BarcodeScannerLifecycleTest {
             failWithCameraUiDiagnostics("Scanner dialog did not appear after the camera action: ${failure.message}")
         }
         composeRule.onNodeWithText("Scan a bottle").assertIsDisplayed()
+    }
+
+    private fun awaitIntakeScanner() {
+        try {
+            composeRule.waitUntil(timeoutMillis = 15_000) {
+                composeRule.onAllNodesWithTag("barcode-camera-frame").fetchSemanticsNodes().isNotEmpty()
+            }
+        } catch (failure: AssertionError) {
+            failWithCameraUiDiagnostics("Full-screen intake scanner did not appear: ${failure.message}")
+        }
+        composeRule.onNodeWithTag("barcode-camera-frame").assertIsDisplayed()
     }
 
     private fun awaitCameraPermissionGranted() {
