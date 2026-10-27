@@ -16,7 +16,7 @@ interface InferenceEngine {
     /**
      * Load a model from the given path.
      *
-     * @throws UnsupportedArchitectureException if model architecture not supported
+     * @throws ModelLoadException if the native model loader cannot load the file.
      */
     suspend fun loadModel(pathToModel: String)
 
@@ -91,4 +91,5 @@ val State.isModelLoaded: Boolean
         this is State.ProcessingUserPrompt ||
         this is State.Generating
 
-class UnsupportedArchitectureException : Exception()
+/** A native load failure whose underlying cause is not exposed by the JNI loader. */
+class ModelLoadException : Exception("The native model loader could not load the selected model.")

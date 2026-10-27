@@ -2,7 +2,7 @@ package com.arm.aichat.internal
 
 import android.content.Context
 import com.arm.aichat.InferenceEngine
-import com.arm.aichat.UnsupportedArchitectureException
+import com.arm.aichat.ModelLoadException
 import com.arm.aichat.internal.InferenceEngineImpl.Companion.getInstance
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -139,10 +139,7 @@ internal class InferenceEngineImpl private constructor(
 
                 _readyForSystemPrompt = false
                 _state.value = InferenceEngine.State.LoadingModel
-                load(pathToModel).let {
-                    // TODO-han.yin: find a better way to pass other error codes
-                    if (it != 0) throw UnsupportedArchitectureException()
-                }
+                requireNativeModelLoadSucceeded(load(pathToModel))
                 prepare().let {
                     if (it != 0) throw IOException("Failed to prepare resources")
                 }
@@ -286,6 +283,11 @@ internal class InferenceEngineImpl private constructor(
         }
         llamaScope.cancel()
     }
+}
+
+/** JNI currently reports only success (0) or a null model result (nonzero). */
+internal fun requireNativeModelLoadSucceeded(result: Int) {
+    if (result != 0) throw ModelLoadException()
 }
 
 /** Publishes ordinary initialization failures to the awaited state instead of leaking them from launch. */

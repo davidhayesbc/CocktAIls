@@ -1,6 +1,7 @@
 package com.davidhayesbc.cocktails.android.product
 
 import com.arm.aichat.InferenceEngine
+import com.arm.aichat.ModelLoadException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
@@ -201,7 +202,9 @@ class LocalBottleDetailExtractorTest {
             val loadResult = LocalBottleDetailExtractor({ modelFile.absolutePath }, LlamaCppLocalInferenceRunner(FakeInferenceEngine(throwOn = "load")))
                 .extractWithDiagnostics(page, LOCAL_MODEL_LABEL, null, loadEvents::add)
             assertEquals(BottleDetailExtractionResult.LocalFailure(LocalInferenceFailureCode.MODEL_LOAD_FAILED), loadResult)
-            assertTrue(loadEvents.any { it.stage == BottleLookupDebugStage.LOCAL_MODEL_LOADING && it.result == "FAILED" })
+            val loadFailure = loadEvents.single { it.stage == BottleLookupDebugStage.LOCAL_MODEL_LOADING && it.result == "FAILED" }
+            assertEquals(listOf("LOCAL_MODEL_LOAD_FAILED"), loadFailure.reasonCodes)
+            assertEquals("ModelLoadException", loadFailure.failureType)
 
             val generationEvents = mutableListOf<BottleLookupDebugEvent>()
             val generationResult = LocalBottleDetailExtractor({ modelFile.absolutePath }, LlamaCppLocalInferenceRunner(FakeInferenceEngine(throwOn = "generation")))
@@ -319,7 +322,7 @@ class LocalBottleDetailExtractorTest {
         var cleanedUp = false
 
         override suspend fun loadModel(pathToModel: String) {
-            if (throwOn == "load") throw testFailure()
+            if (throwOn == "load") throw ModelLoadException()
         }
 
         override suspend fun setSystemPrompt(systemPrompt: String) {

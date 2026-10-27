@@ -1,6 +1,7 @@
 package com.arm.aichat.internal
 
 import com.arm.aichat.InferenceEngine
+import com.arm.aichat.ModelLoadException
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -18,6 +19,22 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class InferenceEngineInitializationTest {
+    @Test
+    fun nativeNullModelResultIsNotMisreportedAsUnsupportedArchitecture() {
+        try {
+            requireNativeModelLoadSucceeded(1)
+            throw AssertionError("A failed native model load must fail")
+        } catch (failure: ModelLoadException) {
+            assertEquals("ModelLoadException", failure.javaClass.simpleName)
+            assertFalse(failure.message.orEmpty().contains("architecture", ignoreCase = true))
+        }
+    }
+
+    @Test
+    fun nativeModelLoadSuccessResultIsAccepted() {
+        requireNativeModelLoadSucceeded(0)
+    }
+
     @Test
     fun ordinaryInitializationFailureIsPublishedWithoutEscapingBackgroundLaunch() = runBlocking {
         val state = MutableStateFlow<InferenceEngine.State>(InferenceEngine.State.Uninitialized)

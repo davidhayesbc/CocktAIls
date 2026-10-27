@@ -2,7 +2,6 @@ package com.davidhayesbc.cocktails.android.product
 
 import android.content.Context
 import com.arm.aichat.InferenceEngine
-import com.arm.aichat.UnsupportedArchitectureException
 import com.arm.aichat.internal.InferenceEngineImpl
 import java.io.File
 import java.io.FileInputStream
@@ -186,7 +185,6 @@ private fun recordLocalFailure(
 }
 
 private fun classifyLocalFailure(stage: BottleLookupDebugStage, failure: Throwable): LocalInferenceFailureCode = when {
-    failure is UnsupportedArchitectureException -> LocalInferenceFailureCode.UNSUPPORTED_ARCHITECTURE
     (failure is IOException || failure is SecurityException) && stage == BottleLookupDebugStage.LOCAL_INPUT_VALIDATION -> LocalInferenceFailureCode.MODEL_FILE_UNREADABLE
     failure is IOException && stage == BottleLookupDebugStage.LOCAL_MODEL_LOADING -> LocalInferenceFailureCode.MODEL_PREPARATION_FAILED
     failure is SecurityException -> LocalInferenceFailureCode.MODEL_FILE_UNREADABLE
@@ -202,7 +200,7 @@ private fun classifyLocalFailure(stage: BottleLookupDebugStage, failure: Throwab
 
 private fun safeFailureType(type: String): String = when (type) {
     "IllegalStateException", "IllegalArgumentException", "IOException", "FileNotFoundException",
-    "SecurityException", "UnsupportedArchitectureException", "UnsatisfiedLinkError", "NoSuchMethodError",
+    "SecurityException", "ModelLoadException", "UnsatisfiedLinkError", "NoSuchMethodError",
     "ExceptionInInitializerError", "OutOfMemoryError", "TimeoutCancellationException",
     "CancellationException", "RuntimeException", "LinkageError" -> type
     else -> "OtherException"
