@@ -67,6 +67,9 @@ jobs:
       - name: Run shared-core tests, Android checks, and package APK
         run: ./gradlew --no-daemon :shared:core:compileCommonMainKotlinMetadata :shared:core:testDebugUnitTest :apps:androidApp:compileDebugAndroidTestKotlin :apps:androidApp:lintDebug :shared:core:lintDebug :apps:androidApp:assembleDebug
 
+      - name: Verify native backend libraries are extracted for dynamic discovery
+        run: python3 .github/scripts/verify_native_library_packaging.py apps/androidApp/build/outputs/apk/debug/androidApp-debug.apk "$ANDROID_HOME/build-tools/36.0.0/aapt"
+
       - name: Upload debug APK artifact
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

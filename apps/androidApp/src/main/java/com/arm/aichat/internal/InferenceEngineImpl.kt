@@ -61,12 +61,14 @@ internal class InferenceEngineImpl private constructor(
          * @throws IllegalArgumentException if native library path is invalid
          * @throws UnsatisfiedLinkError if library failed to load
          */
-        internal fun getInstance(context: Context) =
+        internal fun getInstance(context: Context): InferenceEngine =
             instance ?: synchronized(this) {
-                val nativeLibDir = context.applicationInfo.nativeLibraryDir
-                require(nativeLibDir.isNotBlank()) { "Expected a valid native library path!" }
+                instance ?: run {
+                    val nativeLibDir = context.applicationInfo.nativeLibraryDir
+                    require(nativeLibDir.isNotBlank()) { "Expected a valid native library path!" }
 
-                InferenceEngineImpl(nativeLibDir).also { instance = it }
+                    InferenceEngineImpl(nativeLibDir).also { instance = it }
+                }
             }
     }
 

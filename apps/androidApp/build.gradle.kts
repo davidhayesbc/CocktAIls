@@ -10,6 +10,13 @@ android {
     compileSdk = 36
     ndkVersion = "29.0.14206865"
 
+    packaging {
+        jniLibs {
+            // ggml dynamically discovers libggml-cpu-*.so by enumerating nativeLibraryDir.
+            useLegacyPackaging = true
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
