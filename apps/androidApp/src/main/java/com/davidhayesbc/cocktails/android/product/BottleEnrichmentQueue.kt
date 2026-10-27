@@ -58,6 +58,7 @@ internal data class BottleEnrichmentJob(
     val updatedAtMillis: Long,
     val enqueuedElapsedRealtimeMillis: Long? = null,
     val enqueuedBootCount: Int? = null,
+    val attemptToken: String? = null,
 )
 
 internal interface BottleEnrichmentQueueStorage {
@@ -88,6 +89,7 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
         sourceUrl: String? = null,
         model: String? = null,
         nowMillis: Long,
+        attemptToken: String? = null,
     ): BottleEnrichmentJob? = synchronized(PROCESS_QUEUE_LOCK) {
         if (!isSafeJobMetadata(sessionId, draftId, operation, sourceUrl, model)) return null
         val current = jobs()
@@ -107,6 +109,7 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
             updatedAtMillis = nowMillis,
             enqueuedElapsedRealtimeMillis = existing?.enqueuedElapsedRealtimeMillis,
             enqueuedBootCount = existing?.enqueuedBootCount,
+            attemptToken = attemptToken?.takeIf { it.matches(UUID_PATTERN) } ?: UUID.randomUUID().toString(),
         )
         job.takeIf { write(withoutDraft + it) }
     }
@@ -116,11 +119,12 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
         sessionId: String,
         draftId: String,
         operation: BottleEnrichmentOperation,
+        attemptToken: String,
         nowMillis: Long,
     ): BottleEnrichmentJob? = synchronized(PROCESS_QUEUE_LOCK) {
         val current = status(draftId) ?: return@synchronized null
-        if (current.sessionId != sessionId || current.status != BottleEnrichmentStatus.QUEUED) return@synchronized null
-        begin(sessionId, draftId, operation, nowMillis = nowMillis)
+        if (current.sessionId != sessionId || current.status != BottleEnrichmentStatus.QUEUED || current.attemptToken != attemptToken) return@synchronized null
+        begin(sessionId, draftId, operation, nowMillis = nowMillis, attemptToken = attemptToken)
     }
 
     /** A worker may advance stages only while it still owns the running queue row. */
@@ -130,11 +134,12 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
         operation: BottleEnrichmentOperation,
         sourceUrl: String? = null,
         model: String? = null,
+        attemptToken: String,
         nowMillis: Long,
     ): BottleEnrichmentJob? = synchronized(PROCESS_QUEUE_LOCK) {
         val current = status(draftId) ?: return@synchronized null
-        if (current.sessionId != sessionId || current.status != BottleEnrichmentStatus.RUNNING) return@synchronized null
-        begin(sessionId, draftId, operation, sourceUrl, model, nowMillis)
+        if (current.sessionId != sessionId || current.status != BottleEnrichmentStatus.RUNNING || current.attemptToken != attemptToken) return@synchronized null
+        begin(sessionId, draftId, operation, sourceUrl, model, nowMillis, attemptToken)
     }
 
     fun requireLabel(sessionId: String, draftId: String, nowMillis: Long): BottleEnrichmentJob? = putState(
@@ -192,16 +197,42 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
     /** Runs a result commit only while the worker still owns the running row. */
     fun completeIfRunning(
         draftId: String,
+        attemptToken: String,
         nowMillis: Long,
         finalize: () -> Pair<BottleEnrichmentStatus, String>,
     ): Boolean = synchronized(PROCESS_QUEUE_LOCK) {
         val current = jobs()
         val active = current.firstOrNull { it.draftId == draftId }
-            ?.takeIf { it.status == BottleEnrichmentStatus.RUNNING }
+            ?.takeIf { it.status == BottleEnrichmentStatus.RUNNING && it.attemptToken == attemptToken }
             ?: return@synchronized false
         val (status, resultCode) = finalize()
         if (status !in setOf(BottleEnrichmentStatus.READY_FOR_REVIEW, BottleEnrichmentStatus.NEEDS_ATTENTION)) return@synchronized false
         if (!resultCode.matches(Regex("[A-Z0-9_]{1,80}"))) return@synchronized false
+        write(current.map { job ->
+            if (job.id == active.id) job.copy(status = status, resultCode = resultCode, updatedAtMillis = nowMillis) else job
+        })
+    }
+
+    fun pauseAttempt(draftId: String, attemptToken: String, nowMillis: Long): Boolean = synchronized(PROCESS_QUEUE_LOCK) {
+        val current = jobs().firstOrNull { it.draftId == draftId } ?: return@synchronized false
+        if (current.status != BottleEnrichmentStatus.RUNNING || current.attemptToken != attemptToken) return@synchronized false
+        update(current.id) { it.copy(status = BottleEnrichmentStatus.PAUSED, updatedAtMillis = nowMillis) }
+    }
+
+    fun finishAttempt(
+        draftId: String,
+        attemptToken: String,
+        status: BottleEnrichmentStatus,
+        resultCode: String,
+        nowMillis: Long,
+    ): Boolean = synchronized(PROCESS_QUEUE_LOCK) {
+        if (status !in setOf(BottleEnrichmentStatus.NEEDS_ATTENTION, BottleEnrichmentStatus.CANCELLED) ||
+            !resultCode.matches(Regex("[A-Z0-9_]{1,80}"))
+        ) return@synchronized false
+        val current = jobs()
+        val active = current.firstOrNull { it.draftId == draftId }
+            ?.takeIf { it.status == BottleEnrichmentStatus.RUNNING && it.attemptToken == attemptToken }
+            ?: return@synchronized false
         write(current.map { job ->
             if (job.id == active.id) job.copy(status = status, resultCode = resultCode, updatedAtMillis = nowMillis) else job
         })
@@ -235,6 +266,7 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
             updatedAtMillis = nowMillis,
             enqueuedElapsedRealtimeMillis = enqueuedElapsedRealtimeMillis ?: existing?.enqueuedElapsedRealtimeMillis,
             enqueuedBootCount = enqueuedBootCount ?: existing?.enqueuedBootCount,
+            attemptToken = UUID.randomUUID().toString().takeIf { status == BottleEnrichmentStatus.QUEUED },
         )
         job.takeIf { write(withoutDraft + it) }
     }
@@ -243,9 +275,11 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
     fun recoverInterrupted(activeWorkDraftIds: Set<String> = emptySet()): List<BottleEnrichmentJob> = synchronized(PROCESS_QUEUE_LOCK) {
         val current = jobs()
         val recovered = current.map { job ->
-            if (job.status == BottleEnrichmentStatus.RUNNING && job.draftId !in activeWorkDraftIds) {
-                job.copy(status = BottleEnrichmentStatus.PAUSED)
-            } else job
+            when {
+                job.status == BottleEnrichmentStatus.RUNNING && job.draftId !in activeWorkDraftIds -> job.copy(status = BottleEnrichmentStatus.PAUSED)
+                job.status == BottleEnrichmentStatus.QUEUED && job.attemptToken == null -> job.copy(attemptToken = UUID.randomUUID().toString())
+                else -> job
+            }
         }
         if (recovered != current) write(recovered)
         recovered
@@ -296,6 +330,7 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
                     put("updatedAtMillis", job.updatedAtMillis)
                     job.enqueuedElapsedRealtimeMillis?.let { put("enqueuedElapsedRealtimeMillis", it) }
                     job.enqueuedBootCount?.let { put("enqueuedBootCount", it) }
+                    job.attemptToken?.let { put("attemptToken", it) }
                 })
             }
         }.toString())
@@ -329,6 +364,7 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
                     updatedAtMillis = obj["updatedAtMillis"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: return@mapNotNull null,
                     enqueuedElapsedRealtimeMillis = obj["enqueuedElapsedRealtimeMillis"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()?.takeIf { it >= 0 },
                     enqueuedBootCount = obj["enqueuedBootCount"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()?.takeIf { it >= 0 },
+                    attemptToken = obj.string("attemptToken")?.takeIf { it.matches(UUID_PATTERN) },
                 )
             }.take(MAX_JOBS)
         }.getOrDefault(emptyList())
@@ -355,6 +391,7 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
         const val MAX_JOBS = 500
         const val MAX_ID_CHARS = 100
         const val MAX_QUEUE_JSON_CHARS = 512 * 1024
+        val UUID_PATTERN = Regex("[0-9a-fA-F-]{36}")
     }
 }
 

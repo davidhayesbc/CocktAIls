@@ -184,7 +184,9 @@ import com.davidhayesbc.cocktails.android.product.BottleEnrichmentWorkScheduler
 import com.davidhayesbc.cocktails.android.product.BottleScanEnrichmentRuntime
 import com.davidhayesbc.cocktails.android.product.BottleCaptureToken
 import com.davidhayesbc.cocktails.android.product.bottleCaptureTempFileName
+import com.davidhayesbc.cocktails.android.product.bottleCaptureDraftIsStillOpen
 import com.davidhayesbc.cocktails.android.product.isCurrentBottleCapture
+import com.davidhayesbc.cocktails.android.product.restoreBottleCaptureToken
 import com.davidhayesbc.cocktails.android.product.BottleLabelCropper
 import com.davidhayesbc.cocktails.android.product.BottleLabelCropEditorState
 import com.davidhayesbc.cocktails.android.product.NormalizedLabelCrop
@@ -541,10 +543,20 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var pendingBottleLabelOriginalPhoto by remember { mutableStateOf<ByteArray?>(null) }
     var pendingBottleLabelCropSuggestion by remember { mutableStateOf<NormalizedLabelCrop?>(null) }
     var bottleLabelCropBusy by remember { mutableStateOf(false) }
-    var bottleCaptureGeneration by remember { mutableStateOf(0L) }
-    var activeBottleCaptureToken by remember { mutableStateOf<BottleCaptureToken?>(null) }
-    var launchedBottleCameraToken by remember { mutableStateOf<BottleCaptureToken?>(null) }
     val pendingLabelPreferences = remember(context) { context.getSharedPreferences("cocktails_pending_label_capture", Context.MODE_PRIVATE) }
+    val restoredBottleCameraToken = remember(context) {
+        restoreBottleCaptureToken(
+            launchPending = pendingLabelPreferences.getBoolean("camera_launch_pending", false),
+            generation = pendingLabelPreferences.getLong("capture_generation", 0),
+            draftId = pendingLabelPreferences.getString("camera_draft_id", null),
+            manualCapture = pendingLabelPreferences.getBoolean("camera_manual_capture", false),
+            fileName = pendingLabelPreferences.getString("camera_file_name", null),
+        )
+    }
+    var bottleCaptureGeneration by remember { mutableStateOf(maxOf(restoredBottleCameraToken?.generation ?: 0, pendingLabelPreferences.getLong("capture_generation", 0))) }
+    var activeBottleCaptureToken by remember { mutableStateOf(restoredBottleCameraToken) }
+    var launchedBottleCameraToken by remember { mutableStateOf(restoredBottleCameraToken) }
+    var processingBottleCameraToken by remember { mutableStateOf<BottleCaptureToken?>(null) }
     var pendingBottleLabelDraftId by remember(context, repository) {
         val captureRequiredIds = bottleEnrichmentQueue.jobs()
             .filter { it.labelCaptureRequired }
@@ -560,16 +572,73 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
 
     fun beginBottleCaptureOperation(draftId: String?): BottleCaptureToken {
         bottleCaptureGeneration += 1
+        pendingLabelPreferences.edit().putLong("capture_generation", bottleCaptureGeneration).apply()
         return BottleCaptureToken(bottleCaptureGeneration, draftId).also { activeBottleCaptureToken = it }
     }
 
+    fun clearPersistedCameraLaunch(token: BottleCaptureToken) {
+        val stored = restoreBottleCaptureToken(
+            launchPending = pendingLabelPreferences.getBoolean("camera_launch_pending", false),
+            generation = pendingLabelPreferences.getLong("capture_generation", 0),
+            draftId = pendingLabelPreferences.getString("camera_draft_id", null),
+            manualCapture = pendingLabelPreferences.getBoolean("camera_manual_capture", false),
+            fileName = pendingLabelPreferences.getString("camera_file_name", null),
+        )
+        if (stored == token) pendingLabelPreferences.edit()
+            .remove("camera_launch_pending")
+            .remove("camera_result_ready")
+            .remove("camera_draft_id")
+            .remove("camera_manual_capture")
+            .remove("camera_file_name")
+            .commit()
+    }
+
+    fun persistCameraLaunch(token: BottleCaptureToken): Boolean = pendingLabelPreferences.edit()
+        .putLong("capture_generation", token.generation)
+        .putBoolean("camera_launch_pending", true)
+        .putBoolean("camera_manual_capture", token.draftId == null)
+        .putString("camera_file_name", bottleCaptureTempFileName(token))
+        .apply { if (token.draftId == null) remove("camera_draft_id") else putString("camera_draft_id", token.draftId) }
+        .commit()
+
+    LaunchedEffect(repository, launchedBottleCameraToken, processingBottleCameraToken, pendingBottleLabelDraftId) {
+        val directory = File(context.cacheDir, "intake-labels")
+        val openIds = repository.openBottleIntakeSession()?.drafts.orEmpty().map { it.id }.toSet()
+        val token = processingBottleCameraToken ?: launchedBottleCameraToken
+        if (token == null && pendingLabelPreferences.getBoolean("camera_launch_pending", false)) {
+            val orphanName = pendingLabelPreferences.getString("camera_file_name", null)
+                ?.takeIf { it.matches(Regex("capture-[0-9]{1,20}-(?:manual|[A-Za-z0-9-]{1,100})\\.jpg")) }
+            orphanName?.let { File(directory, it).delete() }
+            pendingLabelPreferences.edit()
+                .remove("camera_launch_pending")
+                .remove("camera_result_ready")
+                .remove("camera_draft_id")
+                .remove("camera_manual_capture")
+                .remove("camera_file_name")
+                .commit()
+        }
+        if (token != null && !bottleCaptureDraftIsStillOpen(token, openIds)) {
+            File(directory, bottleCaptureTempFileName(token)).delete()
+            clearPersistedCameraLaunch(token)
+            if (launchedBottleCameraToken == token) launchedBottleCameraToken = null
+            if (processingBottleCameraToken == token) processingBottleCameraToken = null
+            if (activeBottleCaptureToken == token) activeBottleCaptureToken = null
+        }
+        val keepFileName = token?.takeIf { bottleCaptureDraftIsStillOpen(it, openIds) }?.let(::bottleCaptureTempFileName)
+        directory.listFiles()
+            ?.filter { it.name.startsWith("capture-") && it.name.endsWith(".jpg") && it.name != keepFileName }
+            ?.forEach(File::delete)
+    }
+
     fun invalidateBottleCaptureOperation() {
-        launchedBottleCameraToken?.let { token ->
+        listOfNotNull(launchedBottleCameraToken, processingBottleCameraToken).distinct().forEach { token ->
             File(File(context.cacheDir, "intake-labels"), bottleCaptureTempFileName(token)).delete()
+            clearPersistedCameraLaunch(token)
         }
         bottleCaptureGeneration += 1
         activeBottleCaptureToken = null
         launchedBottleCameraToken = null
+        processingBottleCameraToken = null
         bottleLabelCropBusy = false
     }
 
@@ -987,6 +1056,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             context = context,
             sessionId = draft.sessionId,
             draftId = draft.id,
+            attemptToken = queued.attemptToken,
             requiresNetwork = plan.openFoodFactsEnabled || plan.firecrawlEnabled,
         )
         bottleWebSearchStates = bottleWebSearchStates + (draft.id to previous.copy(
@@ -1311,23 +1381,44 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         }
     }
 
-    val bottleLabelCaptureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { captured ->
-        val token = launchedBottleCameraToken
-        launchedBottleCameraToken = null
-        if (token == null || !isCurrentBottleCaptureOperation(token)) return@rememberLauncherForActivityResult
+    fun handleBottleLabelCameraResult(token: BottleCaptureToken, captured: Boolean) {
+        if (processingBottleCameraToken == token) return
+        if (!isCurrentBottleCaptureOperation(token)) {
+            File(File(context.cacheDir, "intake-labels"), bottleCaptureTempFileName(token)).delete()
+            clearPersistedCameraLaunch(token)
+            if (launchedBottleCameraToken == token) launchedBottleCameraToken = null
+            return
+        }
         val targetDraftId = token.draftId
         val directory = File(context.cacheDir, "intake-labels")
         val file = File(directory, bottleCaptureTempFileName(token))
+        launchedBottleCameraToken = null
+        if (!captured) {
+            file.delete()
+            clearPersistedCameraLaunch(token)
+            if (activeBottleCaptureToken == token) activeBottleCaptureToken = null
+            bottleLabelCaptureMessage = "Photo capture canceled. Retry the label photo or skip it; this bottle stays in the queue."
+            return
+        }
+        pendingLabelPreferences.edit().putBoolean("camera_result_ready", true).commit()
+        processingBottleCameraToken = token
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-        if (captured) {
-            coroutineScope.launch {
-                val result = runCatching { withContext(Dispatchers.IO) { readAndCompressProductPhoto(context, uri) } }
+        coroutineScope.launch {
+            val result = try {
+                Result.success(withContext(Dispatchers.IO) { readAndCompressProductPhoto(context, uri) })
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                Result.failure(failure)
+            }
                 val originalPhoto = result.getOrNull()
                 val suggestion = originalPhoto?.let { bytes ->
                     withContext(Dispatchers.Default) { runCatching { BottleLabelCropper.suggest(bytes) }.getOrNull() }
                 }
                 if (!isCurrentBottleCaptureOperation(token)) {
                     file.delete()
+                    clearPersistedCameraLaunch(token)
+                    processingBottleCameraToken = null
                     return@launch
                 }
                 val stagedPreview = targetDraftId?.let { File(directory, "pending-$it-${token.generation}.tmp") }
@@ -1344,6 +1435,8 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     stagedPreview?.delete()
                     stagedOriginal?.delete()
                     file.delete()
+                    clearPersistedCameraLaunch(token)
+                    processingBottleCameraToken = null
                     return@launch
                 }
                 val stored = if (staged && targetDraftId != null && stagedPreview != null && stagedOriginal != null) {
@@ -1356,6 +1449,8 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 }
                 if (!isCurrentBottleCaptureOperation(token)) {
                     file.delete()
+                    clearPersistedCameraLaunch(token)
+                    processingBottleCameraToken = null
                     return@launch
                 }
                 pendingBottleLabelOriginalPhoto = originalPhoto
@@ -1367,10 +1462,19 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     else -> "The camera photo could not be prepared. The draft was not changed; try again or skip the photo."
                 }
                 file.delete()
-            }
-        } else {
-            file.delete()
-            if (isCurrentBottleCaptureOperation(token)) bottleLabelCaptureMessage = "Photo capture canceled. Retry the label photo or skip it; this bottle stays in the queue."
+                clearPersistedCameraLaunch(token)
+                processingBottleCameraToken = null
+        }
+    }
+
+    val bottleLabelCaptureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { captured ->
+        launchedBottleCameraToken?.let { handleBottleLabelCameraResult(it, captured) }
+    }
+
+    LaunchedEffect(launchedBottleCameraToken, processingBottleCameraToken) {
+        val token = launchedBottleCameraToken ?: return@LaunchedEffect
+        if (processingBottleCameraToken == null && pendingLabelPreferences.getBoolean("camera_result_ready", false)) {
+            handleBottleLabelCameraResult(token, captured = true)
         }
     }
 
@@ -1597,10 +1701,22 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     val targetId = pendingBottleLabelDraftId?.takeIf { it.matches(Regex("[A-Za-z0-9-]{1,100}")) }
                     val token = beginBottleCaptureOperation(targetId)
                     launchedBottleCameraToken = token
+                    if (!persistCameraLaunch(token)) {
+                        invalidateBottleCaptureOperation()
+                        bottleLabelCaptureMessage = "The camera session could not be saved. The bottle is still queued; try again or skip the photo."
+                        return@BottleIntakeScreen
+                    }
                     val file = File(directory, bottleCaptureTempFileName(token))
                     file.delete()
                     val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                    bottleLabelCaptureLauncher.launch(uri)
+                    try {
+                        bottleLabelCaptureLauncher.launch(uri)
+                    } catch (_: Exception) {
+                        file.delete()
+                        clearPersistedCameraLaunch(token)
+                        invalidateBottleCaptureOperation()
+                        bottleLabelCaptureMessage = "The camera could not be opened. The bottle is still queued; try again or skip the photo."
+                    }
                 },
                 onUsePendingLabel = { draftId -> finishScannedBottleLabel?.invoke(draftId, pendingBottleLabelPhoto) == true },
                 onSkipPendingLabel = { draftId -> finishScannedBottleLabel?.invoke(draftId, null) == true },

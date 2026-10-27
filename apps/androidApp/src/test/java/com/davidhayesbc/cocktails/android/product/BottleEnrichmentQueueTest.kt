@@ -150,19 +150,33 @@ class BottleEnrichmentQueueTest {
     }
 
     @Test
+    fun legacyQueuedJobGetsOneStableWorkerAttemptTokenDuringRecovery() {
+        val storage = MemoryStorage(
+            """[{"id":"job","sessionId":"session","draftId":"draft","operation":"FIRECRAWL_SEARCH","status":"QUEUED","labelCaptureRequired":false,"updatedAtMillis":1}]""",
+        )
+        val queue = BottleEnrichmentQueue(storage)
+
+        val recovered = queue.recoverInterrupted().single()
+        val token = recovered.attemptToken
+
+        assertTrue(token != null)
+        assertEquals(token, BottleEnrichmentQueue(storage).jobs().single().attemptToken)
+    }
+
+    @Test
     fun cancelledQueuedWorkCannotBeClaimedOrAdvancedByALateWorker() {
         val queue = BottleEnrichmentQueue(MemoryStorage())
         val queued = queue.enqueue("session", "draft", nowMillis = 1)!!
         assertTrue(queue.finish("draft", BottleEnrichmentStatus.CANCELLED, "CANCELLED_BY_USER", 2))
         var finalizeCalled = false
 
-        assertNull(queue.beginQueued("session", "draft", BottleEnrichmentOperation.FIRECRAWL_SEARCH, nowMillis = 3))
+        assertNull(queue.beginQueued("session", "draft", BottleEnrichmentOperation.FIRECRAWL_SEARCH, queued.attemptToken!!, nowMillis = 3))
         assertEquals(BottleEnrichmentStatus.CANCELLED, queue.status("draft")!!.status)
         assertNull(queue.updateRunning(
             "session", "draft", BottleEnrichmentOperation.FIRECRAWL_FETCH,
-            sourceUrl = "https://example.com/product", nowMillis = 4,
+            sourceUrl = "https://example.com/product", attemptToken = "stale-attempt", nowMillis = 4,
         ))
-        assertFalse(queue.completeIfRunning("draft", 5) {
+        assertFalse(queue.completeIfRunning("draft", "stale-attempt", 5) {
             finalizeCalled = true
             BottleEnrichmentStatus.READY_FOR_REVIEW to "CANDIDATES_READY"
         })
@@ -170,6 +184,32 @@ class BottleEnrichmentQueueTest {
         assertFalse(queue.pause(queued.id, 6))
         assertEquals(queued.id, queue.status("draft")!!.id)
         assertEquals("CANCELLED_BY_USER", queue.status("draft")!!.resultCode)
+    }
+
+    @Test
+    fun lateAttemptCannotPauseOrFinalizeAnExplicitlyRetriedBottle() {
+        val storage = MemoryStorage()
+        val queue = BottleEnrichmentQueue(storage)
+        queue.enqueue("session", "draft", nowMillis = 1)
+        val first = queue.beginQueued("session", "draft", BottleEnrichmentOperation.FIRECRAWL_SEARCH, queue.status("draft")!!.attemptToken!!, 2)!!
+        val firstAttempt = first.attemptToken!!
+        assertTrue(queue.finish("draft", BottleEnrichmentStatus.CANCELLED, "CANCELLED_BY_USER", 3))
+        val retried = queue.enqueue("session", "draft", nowMillis = 4)!!
+        val second = queue.beginQueued("session", "draft", BottleEnrichmentOperation.FIRECRAWL_SEARCH, retried.attemptToken!!, 5)!!
+        val secondAttempt = second.attemptToken!!
+        assertFalse(firstAttempt == secondAttempt)
+
+        assertNull(queue.updateRunning(
+            "session", "draft", BottleEnrichmentOperation.FIRECRAWL_FETCH,
+            sourceUrl = "https://example.com/product", attemptToken = firstAttempt, nowMillis = 6,
+        ))
+        assertFalse(queue.pauseAttempt("draft", firstAttempt, 7))
+        assertFalse(queue.finishAttempt("draft", firstAttempt, BottleEnrichmentStatus.NEEDS_ATTENTION, "OLD_FAILED", 8))
+        assertFalse(queue.completeIfRunning("draft", firstAttempt, 9) {
+            BottleEnrichmentStatus.READY_FOR_REVIEW to "CANDIDATES_READY"
+        })
+        assertEquals(BottleEnrichmentStatus.RUNNING, queue.status("draft")!!.status)
+        assertEquals(secondAttempt, BottleEnrichmentQueue(storage).status("draft")!!.attemptToken)
     }
 
     @Test

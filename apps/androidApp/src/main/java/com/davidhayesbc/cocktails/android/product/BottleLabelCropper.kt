@@ -24,11 +24,14 @@ internal data class NormalizedLabelCrop(
 ) {
     init {
         require(left in 0f..1f && top in 0f..1f && right in 0f..1f && bottom in 0f..1f)
-        require(right - left >= MIN_CROP_SIDE && bottom - top >= MIN_CROP_SIDE)
+        // Float subtraction can undershoot the nominal 0.08 minimum by one
+        // ULP when the user drags exactly to an image edge.
+        require(right - left >= MIN_CROP_SIDE - CROP_SIZE_EPSILON && bottom - top >= MIN_CROP_SIDE - CROP_SIZE_EPSILON)
     }
 
     companion object {
         const val MIN_CROP_SIDE = 0.08f
+        private const val CROP_SIZE_EPSILON = 0.000001f
         val FULL_IMAGE = NormalizedLabelCrop(0f, 0f, 1f, 1f)
     }
 }
@@ -61,10 +64,10 @@ internal data class BottleLabelCropEditorState(
         var right = crop.right
         var bottom = crop.bottom
         when (handle) {
-            0 -> { left = (left + dx).coerceIn(0f, right - minimum); top = (top + dy).coerceIn(0f, bottom - minimum) }
-            1 -> { right = (right + dx).coerceIn(left + minimum, 1f); top = (top + dy).coerceIn(0f, bottom - minimum) }
-            2 -> { right = (right + dx).coerceIn(left + minimum, 1f); bottom = (bottom + dy).coerceIn(top + minimum, 1f) }
-            3 -> { left = (left + dx).coerceIn(0f, right - minimum); bottom = (bottom + dy).coerceIn(top + minimum, 1f) }
+            0 -> { left = (left + dx).coerceIn(0f, maxOf(left, right - minimum)); top = (top + dy).coerceIn(0f, maxOf(top, bottom - minimum)) }
+            1 -> { right = (right + dx).coerceIn(minOf(right, left + minimum), 1f); top = (top + dy).coerceIn(0f, maxOf(top, bottom - minimum)) }
+            2 -> { right = (right + dx).coerceIn(minOf(right, left + minimum), 1f); bottom = (bottom + dy).coerceIn(minOf(bottom, top + minimum), 1f) }
+            3 -> { left = (left + dx).coerceIn(0f, maxOf(left, right - minimum)); bottom = (bottom + dy).coerceIn(minOf(bottom, top + minimum), 1f) }
             4 -> {
                 val width = right - left
                 val height = bottom - top

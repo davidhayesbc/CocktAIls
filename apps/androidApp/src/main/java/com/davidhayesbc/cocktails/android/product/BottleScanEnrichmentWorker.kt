@@ -15,6 +15,7 @@ import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.davidhayesbc.cocktails.android.LocalDiagnostics
 import com.davidhayesbc.cocktails.android.MainActivity
+import com.davidhayesbc.cocktails.android.R
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -33,15 +34,21 @@ internal class BottleScanEnrichmentWorker(
             ?.takeIf { it.matches(Regex("[A-Za-z0-9-]{1,100}")) } ?: return@withContext Result.failure()
         val draftId = inputData.getString(BottleEnrichmentWorkScheduler.KEY_DRAFT_ID)
             ?.takeIf { it.matches(Regex("[A-Za-z0-9-]{1,100}")) } ?: return@withContext Result.failure()
+        val attemptToken = inputData.getString(BottleEnrichmentWorkScheduler.KEY_ATTEMPT_TOKEN)
+            ?.takeIf { it.matches(Regex("[0-9a-fA-F-]{36}")) } ?: return@withContext Result.failure()
 
         val queue = BottleEnrichmentQueue(SharedPreferencesBottleEnrichmentQueueStorage(applicationContext))
         val queuedJob = queue.status(draftId) ?: return@withContext Result.success()
-        if (isStopped || queuedJob.sessionId != sessionId || queuedJob.status != BottleEnrichmentStatus.QUEUED) {
-            if (queuedJob.sessionId == sessionId && queuedJob.status == BottleEnrichmentStatus.RUNNING) {
-                queue.pause(queuedJob.id, System.currentTimeMillis())
-            }
+        if (queuedJob.sessionId != sessionId || queuedJob.attemptToken != attemptToken) {
             return@withContext Result.success()
         }
+        if (queuedJob.status == BottleEnrichmentStatus.RUNNING) {
+            // WorkManager redelivery after process death must not repeat a request that
+            // may already have reached its provider. The attempt token fences retries.
+            queue.pauseAttempt(draftId, attemptToken, System.currentTimeMillis())
+            return@withContext Result.success()
+        }
+        if (isStopped || queuedJob.status != BottleEnrichmentStatus.QUEUED) return@withContext Result.success()
 
         val runtime = BottleScanEnrichmentRuntime(applicationContext)
         val workerStartedElapsed = SystemClock.elapsedRealtime()
@@ -55,16 +62,16 @@ internal class BottleScanEnrichmentWorker(
             sessionId = sessionId,
             draftId = draftId,
             operation = BottleEnrichmentOperation.FIRECRAWL_SEARCH,
+            attemptToken = attemptToken,
             nowMillis = System.currentTimeMillis(),
         ) ?: return@withContext Result.success()
         val repositories = try {
             runtime.openRepository()
         } catch (cancelled: CancellationException) {
-            queue.status(draftId)?.takeIf { it.status == BottleEnrichmentStatus.RUNNING }
-                ?.let { queue.pause(it.id, System.currentTimeMillis()) }
+            queue.pauseAttempt(draftId, attemptToken, System.currentTimeMillis())
             throw cancelled
         } catch (_: Exception) {
-            queue.finish(draftId, BottleEnrichmentStatus.NEEDS_ATTENTION, "LOCAL_STORAGE_ERROR", System.currentTimeMillis())
+            queue.finishAttempt(draftId, attemptToken, BottleEnrichmentStatus.NEEDS_ATTENTION, "LOCAL_STORAGE_ERROR", System.currentTimeMillis())
             return@withContext Result.success()
         }
         try {
@@ -72,7 +79,7 @@ internal class BottleScanEnrichmentWorker(
                 ?.drafts?.firstOrNull { it.id == draftId }
             val barcode = draft?.barcode?.takeIf(String::isNotBlank)
             if (draft == null || barcode == null) {
-                queue.finish(draftId, BottleEnrichmentStatus.NEEDS_ATTENTION, "DRAFT_NOT_AVAILABLE", System.currentTimeMillis())
+                queue.finishAttempt(draftId, attemptToken, BottleEnrichmentStatus.NEEDS_ATTENTION, "DRAFT_NOT_AVAILABLE", System.currentTimeMillis())
                 return@withContext Result.success()
             }
 
@@ -91,7 +98,7 @@ internal class BottleScanEnrichmentWorker(
             try {
                 finalOutcome = BottleEnrichmentSerialGate.processWide.withSlot {
                     runtime.process(barcode, plan, report) { stage, sourceUrl, _ ->
-                        if (isStopped || queue.status(draftId)?.status != BottleEnrichmentStatus.RUNNING) {
+                        if (isStopped || queue.status(draftId)?.let { it.status == BottleEnrichmentStatus.RUNNING && it.attemptToken == attemptToken } != true) {
                             throw CancellationException("Work was stopped or canceled")
                         }
                         val operation = when (stage) {
@@ -117,19 +124,19 @@ internal class BottleScanEnrichmentWorker(
                                     operation = op,
                                     sourceUrl = sourceUrl,
                                     model = model,
+                                    attemptToken = attemptToken,
                                     nowMillis = System.currentTimeMillis(),
                                 ) == null
                             ) throw IllegalStateException("Could not persist work stage")
                         }
                         if (stage == ScannedBottleStage.DETAIL_EXTRACTION && plan.extractor == AutomaticBottleExtractor.ON_DEVICE) {
-                            setForeground(createForegroundInfo())
+                            setForeground(createBottleProcessingForegroundInfo(applicationContext))
                         }
                         setProgress(androidx.work.workDataOf("stage" to stage.name))
                     }
                 }
             } catch (cancelled: CancellationException) {
-                queue.status(draftId)?.takeIf { it.status == BottleEnrichmentStatus.RUNNING }
-                    ?.let { queue.pause(it.id, System.currentTimeMillis()) }
+                queue.pauseAttempt(draftId, attemptToken, System.currentTimeMillis())
                 report.finish("CANCELLED")
                 report.setWorkerElapsedMillis(SystemClock.elapsedRealtime() - workerStartedElapsed)
                 LocalDiagnostics.recordBottleLookup(report)
@@ -162,7 +169,7 @@ internal class BottleScanEnrichmentWorker(
             var saved = false
             var resultCode = "REVIEW_NEEDED"
             var finalStatus = BottleEnrichmentStatus.NEEDS_ATTENTION
-            val finalized = queue.completeIfRunning(draftId, System.currentTimeMillis()) {
+            val finalized = queue.completeIfRunning(draftId, attemptToken, System.currentTimeMillis()) {
                 saved = candidate?.let {
                     PendingBottleEvidenceStore(SharedPreferencesPendingBottleEvidenceStorage(applicationContext)).save(draftId, it)
                 } == true
@@ -227,40 +234,41 @@ internal class BottleScanEnrichmentWorker(
         LocalDiagnostics.initializeIfNeeded(applicationContext.filesDir, info.versionName ?: "unknown", code)
     }
 
-    private fun createForegroundInfo(): ForegroundInfo {
-        val manager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            manager.createNotificationChannel(NotificationChannel(
-                NOTIFICATION_CHANNEL,
-                "Bottle processing",
-                NotificationManager.IMPORTANCE_LOW,
-            ))
-        }
-        val openAppIntent = Intent(applicationContext, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            applicationContext,
-            0,
-            openAppIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val notification = NotificationCompat.Builder(applicationContext, NOTIFICATION_CHANNEL)
-            .setSmallIcon(applicationContext.applicationInfo.icon)
-            .setContentTitle("Preparing bottle suggestions")
-            .setContentText("On-device extraction is running. Your label photos stay on this phone.")
-            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
-            .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .setContentIntent(pendingIntent)
-            .build()
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ForegroundInfo(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
-            ForegroundInfo(NOTIFICATION_ID, notification)
-        }
-    }
-
     private companion object {
-        const val NOTIFICATION_CHANNEL = "bottle-background-processing"
         const val NOTIFICATION_ID = 8107
     }
 }
+
+internal fun createBottleProcessingForegroundInfo(context: Context): ForegroundInfo {
+    val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        manager.createNotificationChannel(NotificationChannel(
+            BOTTLE_PROCESSING_NOTIFICATION_CHANNEL,
+            "Bottle processing",
+            NotificationManager.IMPORTANCE_LOW,
+        ))
+    }
+    val openAppIntent = Intent(context, MainActivity::class.java)
+    val pendingIntent = PendingIntent.getActivity(
+        context,
+        8107,
+        openAppIntent,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+    val notification = NotificationCompat.Builder(context, BOTTLE_PROCESSING_NOTIFICATION_CHANNEL)
+        .setSmallIcon(R.drawable.ic_stat_bottle)
+        .setContentTitle("Preparing bottle suggestions")
+        .setContentText("On-device extraction is running. Your label photos stay on this phone.")
+        .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+        .setOngoing(true)
+        .setOnlyAlertOnce(true)
+        .setContentIntent(pendingIntent)
+        .build()
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        ForegroundInfo(8107, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+    } else {
+        ForegroundInfo(8107, notification)
+    }
+}
+
+private const val BOTTLE_PROCESSING_NOTIFICATION_CHANNEL = "bottle-background-processing"
