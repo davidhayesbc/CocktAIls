@@ -211,7 +211,11 @@ internal fun BarcodeScannerDialog(
         Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
             Surface(Modifier.fillMaxSize().testTag("barcode-intake-scanner"), color = MaterialTheme.colorScheme.background) {
                 Column(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(if (continuous) "Add bottles" else "Scan the next bottle", style = MaterialTheme.typography.headlineMedium)
+                    Text(
+                        if (continuous) "Add bottles" else "Scan the next bottle",
+                        style = MaterialTheme.typography.headlineMedium,
+                        modifier = Modifier.testTag("barcode-intake-scanner-title"),
+                    )
                     Text(scannerMessage, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Box(Modifier.weight(1f).fillMaxWidth().testTag("barcode-camera-frame")) {
                         AndroidView(

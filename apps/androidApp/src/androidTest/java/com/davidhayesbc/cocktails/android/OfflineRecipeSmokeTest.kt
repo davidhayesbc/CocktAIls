@@ -392,8 +392,11 @@ class OfflineRecipeSmokeTest {
                 }
             }
 
-            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("This page text contains the scanned barcode. Evidence-backed suggestions are filled into this review only; edit or reject them before accepting."))
-            composeRule.onNodeWithText("This page text contains the scanned barcode. Evidence-backed suggestions are filled into this review only; edit or reject them before accepting.").assertIsDisplayed()
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("review-evidence-toggle"))
+            composeRule.onNodeWithTag("review-evidence-toggle").assertIsDisplayed().performClick()
+            val identityEvidenceNote = "This page contains the scanned barcode. Review the quoted evidence before accepting."
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText(identityEvidenceNote))
+            composeRule.onNodeWithText(identityEvidenceNote).assertIsDisplayed()
             val bottleSizeWarning = "Bottle size is unclear in this source. No value was selected; check it manually."
             composeRule.onNodeWithText(bottleSizeWarning).assertExists()
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText(bottleSizeWarning))
@@ -401,6 +404,10 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("bottle-intake-draft-name-0").assert(
                 editableTextIs("Auchentoshan Three Wood"),
             )
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("review-more-details"))
+            composeRule.onNodeWithTag("review-more-details").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-brand-0"))
             composeRule.onNodeWithTag("bottle-intake-draft-brand-0").assert(
                 editableTextIs("Auchentoshan"),
             )
@@ -502,6 +509,10 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("bottle-intake-draft-name-0").assert(
                 editableTextIs("My chosen whisky"),
             )
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("review-more-details"))
+            composeRule.onNodeWithTag("review-more-details").performClick()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-brand-0"))
             composeRule.onNodeWithTag("bottle-intake-draft-brand-0").assert(
                 editableTextIs("Example Brand"),
             )
@@ -527,6 +538,7 @@ class OfflineRecipeSmokeTest {
             // and application is offered only when the source identity matches this barcode.
             webState = webState.copy(automatedScan = false, barcodeVerifiedInPage = false)
             composeRule.waitForIdle()
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("review-evidence-toggle"))
             composeRule.onNodeWithTag("review-evidence-toggle").performClick()
             composeRule.onNodeWithTag("apply-manual-suggestion-product_name-${draft.id}").assertDoesNotExist()
             webState = webState.copy(barcodeVerifiedInPage = true)
@@ -712,7 +724,15 @@ class OfflineRecipeSmokeTest {
         val suggestions = "Suggestions · On-device Qwen3 · Qwen3-0.6B-Q8_0"
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("open-bottle-queue"))
         composeRule.onNodeWithTag("open-bottle-queue").performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            composeRule.onAllNodes(hasTestTag("queue-bottle-$draftId")).fetchSemanticsNodes().isNotEmpty()
+        }
         composeRule.onNodeWithTag("queue-bottle-$draftId").performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            composeRule.onAllNodes(hasTestTag("bottle-review-card-$draftId")).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Review your bottle")
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("review-evidence-toggle"))
         composeRule.onNodeWithTag("review-evidence-toggle").assertIsDisplayed().performClick()
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(
             hasText("Restored the verified source and suggestions for this unaccepted bottle. Review them; no provider request restarted."),
@@ -845,6 +865,7 @@ class OfflineRecipeSmokeTest {
             composeRule.waitForIdle()
             composeRule.onNodeWithTag("label-photo-preview-${first.id}").assertIsDisplayed()
             composeRule.onNodeWithTag("use-label-${first.id}").assertIsDisplayed()
+            // Screenshot helper waits for the UI and compositor before comparing the preview.
             val labelPreviewScreenshotHash = captureOnboardingScreenshot("onboarding-label-preview-simulated.png")
             assertTrue("The captured label preview must render differently from the empty capture step", labelStepScreenshotHash != labelPreviewScreenshotHash)
             composeRule.onNodeWithTag("use-label-${first.id}").assertIsDisplayed().performClick()

@@ -101,7 +101,7 @@ class BarcodeScannerLifecycleTest {
         composeRule.onNodeWithTag("intake-allow-camera").performClick()
         awaitIntakeScanner()
         composeRule.onNodeWithTag("barcode-intake-scanner").assertIsDisplayed()
-        composeRule.onNodeWithText("Scan the next bottle").assertIsDisplayed()
+        composeRule.onNodeWithTag("barcode-intake-scanner-title").assertTextEquals("Scan the next bottle").assertIsDisplayed()
         composeRule.onNodeWithTag("scanner-queue-summary").assertIsDisplayed()
         composeRule.onNodeWithText("0 ready").assertIsDisplayed()
         composeRule.onNodeWithText("0 running").assertIsDisplayed()

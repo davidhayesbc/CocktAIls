@@ -4,6 +4,7 @@ import android.app.Instrumentation
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Log
+import android.os.SystemClock
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
@@ -17,6 +18,11 @@ internal fun saveTestScreenshot(instrumentation: Instrumentation, fileName: Stri
     check(localFile.parentFile?.mkdirs() == true || localFile.parentFile?.isDirectory == true) {
         "Could not create private test screenshot directory"
     }
+    instrumentation.waitForIdleSync()
+    instrumentation.uiAutomation.waitForIdle(500, 5_000)
+    // Accessibility can become idle just before Compose draws an image update. Let one
+    // presentation interval pass before taking the full-screen review artifact.
+    SystemClock.sleep(100)
     val bitmap = instrumentation.uiAutomation.takeScreenshot()
     try {
         check(bitmap.width >= MIN_TEST_SCREENSHOT_WIDTH && bitmap.height >= MIN_TEST_SCREENSHOT_HEIGHT) {
