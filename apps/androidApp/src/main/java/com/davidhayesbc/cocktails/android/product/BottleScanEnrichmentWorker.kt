@@ -136,10 +136,12 @@ internal class BottleScanEnrichmentWorker(
                     }
                 }
             } catch (cancelled: CancellationException) {
-                queue.pauseAttempt(draftId, attemptToken, System.currentTimeMillis())
+                val pausePersisted = queue.pauseAttempt(draftId, attemptToken, System.currentTimeMillis())
                 report.finish("CANCELLED")
                 report.setWorkerElapsedMillis(SystemClock.elapsedRealtime() - workerStartedElapsed)
-                LocalDiagnostics.recordBottleLookup(report)
+                // A barcode correction or replacement attempt may have invalidated this worker.
+                // Never make its old barcode the selected report for the corrected draft.
+                if (pausePersisted) LocalDiagnostics.recordBottleLookup(report, draftId)
                 throw cancelled
             } catch (_: Exception) {
                 report.record(BottleLookupDebugEvent(
@@ -149,7 +151,6 @@ internal class BottleScanEnrichmentWorker(
                     reasonCodes = listOf("UNEXPECTED_EXCEPTION"),
                 ))
                 report.finish("FAILED")
-                LocalDiagnostics.recordBottleLookup(report)
             }
 
             val outcome = finalOutcome
@@ -162,14 +163,19 @@ internal class BottleScanEnrichmentWorker(
                     reasonCodes = listOf("REQUEST_CANCELLED"),
                 ))
                 report.finish("CANCELLED")
-                LocalDiagnostics.recordBottleLookup(report)
                 return@withContext Result.success()
             }
             val candidate = (outcome?.extraction as? BottleDetailExtractionResult.Found)?.suggestions
             var saved = false
             var resultCode = "REVIEW_NEEDED"
             var finalStatus = BottleEnrichmentStatus.NEEDS_ATTENTION
-            val finalized = queue.completeIfRunning(draftId, attemptToken, System.currentTimeMillis()) {
+            val providerOutcomes = bottleProviderOutcomes(plan, outcome, currentJob?.operation)
+            val finalized = queue.completeIfRunning(
+                draftId = draftId,
+                attemptToken = attemptToken,
+                nowMillis = System.currentTimeMillis(),
+                providerOutcomes = providerOutcomes,
+            ) {
                 saved = candidate?.let {
                     PendingBottleEvidenceStore(SharedPreferencesPendingBottleEvidenceStorage(applicationContext)).save(draftId, it)
                 } == true
@@ -196,7 +202,6 @@ internal class BottleScanEnrichmentWorker(
                 ))
                 report.finish("CANCELLED")
                 report.setWorkerElapsedMillis(SystemClock.elapsedRealtime() - workerStartedElapsed)
-                LocalDiagnostics.recordBottleLookup(report)
                 return@withContext Result.success()
             }
             report.record(BottleLookupDebugEvent(
@@ -217,7 +222,7 @@ internal class BottleScanEnrichmentWorker(
                 else -> "PARTIAL"
             })
             report.setWorkerElapsedMillis(SystemClock.elapsedRealtime() - workerStartedElapsed)
-            LocalDiagnostics.recordBottleLookup(report)
+            LocalDiagnostics.recordBottleLookup(report, draftId)
             Result.success()
         } finally {
             repositories.close()

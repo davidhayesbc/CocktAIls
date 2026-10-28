@@ -47,6 +47,8 @@ internal class BottleScanEnrichmentRuntime(context: Context) {
                 ollamaCredentials.readApiKey() != null &&
                 isValidOllamaModelIdentifier(preferences.getString("ollama_cloud_model", "").orEmpty()),
         ),
+        firecrawlRequested = preferences.getBoolean("firecrawl_search_enabled", false),
+        aiRequested = preferences.getBoolean("local_ai_enabled", false) || preferences.getBoolean("ollama_cloud_enabled", false),
     )
 
     fun newDebugReport(barcode: String, localMatch: Boolean, plan: ScannedBottlePlan): BottleLookupDebugReport {

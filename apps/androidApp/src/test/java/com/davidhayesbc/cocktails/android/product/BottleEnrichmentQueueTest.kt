@@ -14,6 +14,69 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class BottleEnrichmentQueueTest {
     @Test
+    fun correctingBarcodeInvalidatesRunningAttemptAndSourceWithoutStartingAnotherRequest() {
+        val storage = MemoryStorage()
+        val queue = BottleEnrichmentQueue(storage)
+        val queued = queue.enqueue("session-correct", "draft-correct", nowMillis = 1)!!
+        val running = queue.beginQueued(
+            sessionId = queued.sessionId,
+            draftId = queued.draftId,
+            operation = BottleEnrichmentOperation.FIRECRAWL_SEARCH,
+            attemptToken = queued.attemptToken!!,
+            nowMillis = 2,
+        )!!
+        val fetching = queue.updateRunning(
+            sessionId = running.sessionId,
+            draftId = running.draftId,
+            operation = BottleEnrichmentOperation.FIRECRAWL_FETCH,
+            sourceUrl = "https://example.com/old-product",
+            attemptToken = running.attemptToken!!,
+            nowMillis = 3,
+        )!!
+
+        assertTrue(queue.resetForBarcodeChange(fetching.draftId, nowMillis = 4))
+        val corrected = queue.status(fetching.draftId)!!
+        assertEquals(BottleEnrichmentStatus.NEEDS_ATTENTION, corrected.status)
+        assertEquals(BottleEnrichmentOperation.FIRECRAWL_SEARCH, corrected.operation)
+        assertEquals("BARCODE_CORRECTED", corrected.resultCode)
+        assertNull(corrected.sourceUrl)
+        assertNull(corrected.attemptToken)
+        assertEquals(BottleProviderOutcome.NOT_RECORDED, corrected.webOutcome)
+        assertEquals(BottleProviderOutcome.NOT_RECORDED, corrected.aiOutcome)
+        assertFalse(queue.completeIfRunning(fetching.draftId, fetching.attemptToken!!, 5) {
+            BottleEnrichmentStatus.READY_FOR_REVIEW to "STALE_RESULT"
+        })
+        assertEquals(BottleEnrichmentStatus.NEEDS_ATTENTION, queue.status(fetching.draftId)!!.status)
+    }
+
+    @Test
+    fun webStatusCompletesWhenBackgroundJobMovesToAiExtraction() {
+        val queue = BottleEnrichmentQueue(MemoryStorage())
+        val queued = queue.enqueue("session-stages", "draft-stages", nowMillis = 1)!!
+        val search = queue.beginQueued(
+            sessionId = queued.sessionId,
+            draftId = queued.draftId,
+            operation = BottleEnrichmentOperation.FIRECRAWL_SEARCH,
+            attemptToken = queued.attemptToken!!,
+            nowMillis = 2,
+        )!!
+        assertEquals(BottleProviderOutcome.RUNNING, search.webOutcome)
+        assertEquals(BottleProviderOutcome.QUEUED, search.aiOutcome)
+
+        val fetch = queue.updateRunning(
+            search.sessionId, search.draftId, BottleEnrichmentOperation.FIRECRAWL_FETCH,
+            sourceUrl = "https://example.com/product", attemptToken = search.attemptToken!!, nowMillis = 3,
+        )!!
+        assertEquals(BottleProviderOutcome.RUNNING, fetch.webOutcome)
+        val extraction = queue.updateRunning(
+            fetch.sessionId, fetch.draftId, BottleEnrichmentOperation.LOCAL_EXTRACTION,
+            sourceUrl = fetch.sourceUrl, model = LOCAL_MODEL_LABEL, attemptToken = fetch.attemptToken!!, nowMillis = 4,
+        )!!
+        assertEquals(BottleProviderOutcome.COMPLETE, extraction.webOutcome)
+        assertEquals(BottleProviderOutcome.RUNNING, extraction.aiOutcome)
+    }
+
+    @Test
     fun interruptedWorkPersistsOnlyBoundedMetadataAndRequiresExplicitResume() {
         val storage = MemoryStorage()
         val queue = BottleEnrichmentQueue(storage)
@@ -119,6 +182,36 @@ class BottleEnrichmentQueueTest {
         assertFalse(storage.raw.orEmpty().contains("page markdown"))
         assertFalse(storage.raw.orEmpty().contains("generated output"))
         assertFalse(storage.raw.orEmpty().contains("api-key-canary"))
+    }
+
+    @Test
+    fun perProviderOutcomesSurviveRestartWithoutSavingResponseText() {
+        val storage = MemoryStorage()
+        val queue = BottleEnrichmentQueue(storage)
+        val queued = queue.enqueue("session-outcomes", "draft-outcomes", nowMillis = 1)!!
+        val running = queue.beginQueued(
+            sessionId = queued.sessionId,
+            draftId = queued.draftId,
+            operation = BottleEnrichmentOperation.FIRECRAWL_SEARCH,
+            attemptToken = queued.attemptToken!!,
+            nowMillis = 2,
+        )!!
+
+        assertTrue(queue.completeIfRunning(
+            draftId = running.draftId,
+            attemptToken = running.attemptToken!!,
+            nowMillis = 3,
+            providerOutcomes = BottleEnrichmentProviderOutcomes(
+                web = BottleProviderOutcome.NO_RESULTS,
+                ai = BottleProviderOutcome.SKIPPED_NO_SOURCE,
+            ),
+        ) { BottleEnrichmentStatus.NEEDS_ATTENTION to "NO_SOURCE_FOUND" })
+
+        val reopened = BottleEnrichmentQueue(storage).status("draft-outcomes")!!
+        assertEquals(BottleProviderOutcome.NO_RESULTS, reopened.webOutcome)
+        assertEquals(BottleProviderOutcome.SKIPPED_NO_SOURCE, reopened.aiOutcome)
+        assertFalse(storage.raw.orEmpty().contains("page markdown"))
+        assertFalse(storage.raw.orEmpty().contains("model output"))
     }
 
     @Test

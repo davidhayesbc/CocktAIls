@@ -48,6 +48,8 @@ import com.davidhayesbc.cocktails.android.product.BottleDetailSuggestions
 import com.davidhayesbc.cocktails.android.product.BottleCaptureToken
 import com.davidhayesbc.cocktails.android.product.BottleEnrichmentJob
 import com.davidhayesbc.cocktails.android.product.BottleEnrichmentOperation
+import com.davidhayesbc.cocktails.android.product.BottleEnrichmentProviderOutcomes
+import com.davidhayesbc.cocktails.android.product.BottleProviderOutcome
 import com.davidhayesbc.cocktails.android.product.BottleEnrichmentQueue
 import com.davidhayesbc.cocktails.android.product.BottleEnrichmentQueueStorage
 import com.davidhayesbc.cocktails.android.product.BottleEnrichmentStatus
@@ -1094,9 +1096,26 @@ class OfflineRecipeSmokeTest {
             assertEquals(BottleEnrichmentStatus.RUNNING, jobs.getValue(second.id).status)
             composeRule.onNodeWithTag("batch-scan-bottles").assertIsEnabled()
 
+            val firstAttempt = jobs.getValue(first.id).attemptToken!!
+            assertTrue(queue.completeIfRunning(
+                first.id,
+                firstAttempt,
+                sequence++,
+                providerOutcomes = BottleEnrichmentProviderOutcomes(
+                    web = BottleProviderOutcome.NO_RESULTS,
+                    ai = BottleProviderOutcome.SKIPPED_NO_SOURCE,
+                ),
+            ) { BottleEnrichmentStatus.NEEDS_ATTENTION to "NO_SOURCE_FOUND" })
+            updateJobs()
+
             composeRule.onNodeWithTag("open-bottle-queue").performClick()
             composeRule.waitForIdle()
             captureOnboardingScreenshot("onboarding-queue-simulated.png")
+            composeRule.onNodeWithTag("queue-label-photo-${first.id}").assertIsDisplayed()
+            composeRule.onNodeWithTag("queue-web-outcome-${first.id}").assertTextEquals("Web · Complete · no results")
+            composeRule.onNodeWithTag("queue-ai-outcome-${first.id}").assertTextEquals("AI · Not run · no verified source")
+            composeRule.onNodeWithTag("queue-label-photo-frame-${second.id}").assertIsDisplayed()
+            composeRule.onNodeWithTag("capture-queue-label-${second.id}").assertIsDisplayed()
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("Resume scanner"))
             composeRule.onNodeWithText("Resume scanner").performClick()
 

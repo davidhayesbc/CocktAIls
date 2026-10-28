@@ -32,6 +32,28 @@ internal enum class BottleEnrichmentStatus {
     CANCELLED,
 }
 
+/** Persisted per-provider outcome; contains only a fixed status, never provider text. */
+internal enum class BottleProviderOutcome {
+    QUEUED,
+    RUNNING,
+    COMPLETE,
+    NO_RESULTS,
+    NO_MATCH,
+    FAILED,
+    QUOTA,
+    AUTHENTICATION_REQUIRED,
+    SKIPPED_NO_SOURCE,
+    NOT_CONFIGURED,
+    DISABLED,
+    PAUSED,
+    NOT_RECORDED,
+}
+
+internal data class BottleEnrichmentProviderOutcomes(
+    val web: BottleProviderOutcome,
+    val ai: BottleProviderOutcome,
+)
+
 internal fun mayPersistBottleEnrichmentResult(workerStopped: Boolean, status: BottleEnrichmentStatus?): Boolean =
     !workerStopped && status == BottleEnrichmentStatus.RUNNING
 
@@ -59,6 +81,8 @@ internal data class BottleEnrichmentJob(
     val enqueuedElapsedRealtimeMillis: Long? = null,
     val enqueuedBootCount: Int? = null,
     val attemptToken: String? = null,
+    val webOutcome: BottleProviderOutcome? = null,
+    val aiOutcome: BottleProviderOutcome? = null,
 )
 
 internal interface BottleEnrichmentQueueStorage {
@@ -110,6 +134,18 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
             enqueuedElapsedRealtimeMillis = existing?.enqueuedElapsedRealtimeMillis,
             enqueuedBootCount = existing?.enqueuedBootCount,
             attemptToken = attemptToken?.takeIf { it.matches(UUID_PATTERN) } ?: UUID.randomUUID().toString(),
+            webOutcome = when (operation) {
+                BottleEnrichmentOperation.FIRECRAWL_SEARCH, BottleEnrichmentOperation.FIRECRAWL_FETCH -> BottleProviderOutcome.RUNNING
+                else -> if (existing?.webOutcome == BottleProviderOutcome.RUNNING) {
+                    BottleProviderOutcome.COMPLETE
+                } else {
+                    existing?.webOutcome ?: BottleProviderOutcome.NOT_RECORDED
+                }
+            },
+            aiOutcome = when (operation) {
+                BottleEnrichmentOperation.LOCAL_EXTRACTION, BottleEnrichmentOperation.OLLAMA_EXTRACTION -> BottleProviderOutcome.RUNNING
+                else -> BottleProviderOutcome.QUEUED
+            },
         )
         job.takeIf { write(withoutDraft + it) }
     }
@@ -182,6 +218,25 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
 
     fun status(draftId: String): BottleEnrichmentJob? = jobs().firstOrNull { it.draftId == draftId }
 
+    /** Invalidates source-bound outcomes after a user changes the bottle identity. */
+    fun resetForBarcodeChange(draftId: String, nowMillis: Long): Boolean = synchronized(PROCESS_QUEUE_LOCK) {
+        val current = jobs()
+        val active = current.firstOrNull { it.draftId == draftId } ?: return@synchronized true
+        write(current.map { job ->
+            if (job.id == active.id) job.copy(
+                operation = BottleEnrichmentOperation.FIRECRAWL_SEARCH,
+                status = BottleEnrichmentStatus.NEEDS_ATTENTION,
+                sourceUrl = null,
+                model = null,
+                resultCode = "BARCODE_CORRECTED",
+                updatedAtMillis = nowMillis,
+                attemptToken = null,
+                webOutcome = BottleProviderOutcome.NOT_RECORDED,
+                aiOutcome = BottleProviderOutcome.NOT_RECORDED,
+            ) else job
+        })
+    }
+
     fun finish(draftId: String, status: BottleEnrichmentStatus, resultCode: String, nowMillis: Long): Boolean {
         require(status in setOf(BottleEnrichmentStatus.READY_FOR_REVIEW, BottleEnrichmentStatus.NEEDS_ATTENTION, BottleEnrichmentStatus.REVIEWED, BottleEnrichmentStatus.CANCELLED))
         if (!resultCode.matches(Regex("[A-Z0-9_]{1,80}"))) return false
@@ -199,6 +254,7 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
         draftId: String,
         attemptToken: String,
         nowMillis: Long,
+        providerOutcomes: BottleEnrichmentProviderOutcomes? = null,
         finalize: () -> Pair<BottleEnrichmentStatus, String>,
     ): Boolean = synchronized(PROCESS_QUEUE_LOCK) {
         val current = jobs()
@@ -209,7 +265,13 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
         if (status !in setOf(BottleEnrichmentStatus.READY_FOR_REVIEW, BottleEnrichmentStatus.NEEDS_ATTENTION)) return@synchronized false
         if (!resultCode.matches(Regex("[A-Z0-9_]{1,80}"))) return@synchronized false
         write(current.map { job ->
-            if (job.id == active.id) job.copy(status = status, resultCode = resultCode, updatedAtMillis = nowMillis) else job
+            if (job.id == active.id) job.copy(
+                status = status,
+                resultCode = resultCode,
+                updatedAtMillis = nowMillis,
+                webOutcome = providerOutcomes?.web ?: job.webOutcome,
+                aiOutcome = providerOutcomes?.ai ?: job.aiOutcome,
+            ) else job
         })
     }
 
@@ -267,6 +329,8 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
             enqueuedElapsedRealtimeMillis = enqueuedElapsedRealtimeMillis ?: existing?.enqueuedElapsedRealtimeMillis,
             enqueuedBootCount = enqueuedBootCount ?: existing?.enqueuedBootCount,
             attemptToken = UUID.randomUUID().toString().takeIf { status == BottleEnrichmentStatus.QUEUED },
+            webOutcome = if (status == BottleEnrichmentStatus.QUEUED) BottleProviderOutcome.QUEUED else existing?.webOutcome,
+            aiOutcome = if (status == BottleEnrichmentStatus.QUEUED) BottleProviderOutcome.QUEUED else existing?.aiOutcome,
         )
         job.takeIf { write(withoutDraft + it) }
     }
@@ -331,6 +395,8 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
                     job.enqueuedElapsedRealtimeMillis?.let { put("enqueuedElapsedRealtimeMillis", it) }
                     job.enqueuedBootCount?.let { put("enqueuedBootCount", it) }
                     job.attemptToken?.let { put("attemptToken", it) }
+                    job.webOutcome?.let { put("webOutcome", it.name) }
+                    job.aiOutcome?.let { put("aiOutcome", it.name) }
                 })
             }
         }.toString())
@@ -365,6 +431,8 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
                     enqueuedElapsedRealtimeMillis = obj["enqueuedElapsedRealtimeMillis"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()?.takeIf { it >= 0 },
                     enqueuedBootCount = obj["enqueuedBootCount"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()?.takeIf { it >= 0 },
                     attemptToken = obj.string("attemptToken")?.takeIf { it.matches(UUID_PATTERN) },
+                    webOutcome = obj.string("webOutcome")?.let { runCatching { BottleProviderOutcome.valueOf(it) }.getOrNull() },
+                    aiOutcome = obj.string("aiOutcome")?.let { runCatching { BottleProviderOutcome.valueOf(it) }.getOrNull() },
                 )
             }.take(MAX_JOBS)
         }.getOrDefault(emptyList())

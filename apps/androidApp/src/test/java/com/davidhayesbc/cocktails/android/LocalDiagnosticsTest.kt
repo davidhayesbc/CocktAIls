@@ -2,6 +2,7 @@ package com.davidhayesbc.cocktails.android
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -209,6 +210,25 @@ class LocalDiagnosticsTest {
         assertTrue(store.latestBottleLookupPreview()!!.contains("5011333150725"))
         assertTrue(store.clear())
         assertFalse(File(dir, "diagnostics.json").exists())
+        dir.deleteRecursively()
+    }
+
+    @Test fun lookupReportsAreSelectedByBottleDraftInsteadOfGlobalLatest() {
+        val (dir, store) = tempStore()
+        val first = BottleLookupDebugReport(1, "preview", 13, "5011333150725", "5011333150725", false, true, true, true, "On-device Qwen3", "Qwen3", null)
+        val second = BottleLookupDebugReport(2, "preview", 13, "5011733110725", "5011733110725", false, true, true, true, "On-device Qwen3", "Qwen3", null)
+        store.recordBottleLookup(first, "draft-first")
+        store.recordBottleLookup(second, "draft-second")
+
+        assertTrue(store.latestBottleLookupPreviewForDraft("draft-first")!!.contains("5011333150725"))
+        assertTrue(store.latestBottleLookupPreviewForDraft("draft-second")!!.contains("5011733110725"))
+        assertTrue(store.latestBottleLookupPreview()!!.contains("5011733110725"))
+        assertNull(store.latestBottleLookupPreviewForDraft("draft-without-report"))
+        assertTrue(store.clearBottleLookupForDraft("draft-first"))
+        assertNull(store.latestBottleLookupPreviewForDraft("draft-first"))
+        assertTrue(store.latestBottleLookupPreviewForDraft("draft-second")!!.contains("5011733110725"))
+        assertTrue(store.clear())
+        assertNull(store.latestBottleLookupPreviewForDraft("draft-second"))
         dir.deleteRecursively()
     }
 

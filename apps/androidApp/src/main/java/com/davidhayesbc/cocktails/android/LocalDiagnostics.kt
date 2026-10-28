@@ -9,7 +9,10 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.File
+import java.io.FileOutputStream
 import java.lang.Thread.UncaughtExceptionHandler
+import java.security.MessageDigest
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.system.exitProcess
 import com.davidhayesbc.cocktails.android.product.BottleLookupDebugReport
@@ -73,13 +76,34 @@ internal class DiagnosticStore(
         write(root.with("crashes", JsonArray(crashes.takeLast(MAX_CRASHES))))
     }
 
-    fun recordBottleLookup(report: BottleLookupDebugReport) = synchronized(lock) {
+    fun recordBottleLookup(report: BottleLookupDebugReport, draftId: String? = null) = synchronized(lock) {
         val safeReport = runCatching { Json.parseToJsonElement(report.toJson()) }.getOrNull() ?: return@synchronized
+        val safeJson = Json { prettyPrint = true }.encodeToString(JsonElement.serializer(), safeReport)
+        if (safeJson.toByteArray(StandardCharsets.UTF_8).size > MAX_BYTES) return@synchronized
         write(JsonObject(read().toMutableMap().apply { put("latestBottleLookup", safeReport) }))
+        draftId?.takeIf { it.matches(DRAFT_ID_PATTERN) }?.let { id ->
+            writeBottleLookupForDraft(id, safeJson)
+        }
     }
 
     fun latestBottleLookupPreview(): String? = synchronized(lock) {
         read()["latestBottleLookup"]?.let { Json { prettyPrint = true }.encodeToString(JsonElement.serializer(), it) }
+    }
+
+    fun latestBottleLookupPreviewForDraft(draftId: String): String? = synchronized(lock) {
+        if (!draftId.matches(DRAFT_ID_PATTERN)) return@synchronized null
+        val report = draftLookupFile(draftId)
+        report.takeIf { it.isFile && it.length() in 1..MAX_BYTES.toLong() }
+            ?.let { runCatching { it.readText(StandardCharsets.UTF_8) }.getOrNull() }
+    }
+
+    fun clearBottleLookupForDraft(draftId: String): Boolean = synchronized(lock) {
+        if (!draftId.matches(DRAFT_ID_PATTERN)) return@synchronized false
+        val report = draftLookupFile(draftId)
+        val temporary = File(report.parentFile, "${report.name}.tmp")
+        val reportDeleted = !report.exists() || (runCatching { deleteFile(report) }.getOrDefault(false) && !report.exists())
+        val temporaryDeleted = !temporary.exists() || (runCatching { deleteFile(temporary) }.getOrDefault(false) && !temporary.exists())
+        reportDeleted && temporaryDeleted
     }
 
     fun preview(): String = export()
@@ -93,7 +117,39 @@ internal class DiagnosticStore(
         val temp = File(file.parentFile, "${file.name}.tmp")
         val dataDeleted = !file.exists() || runCatching { deleteFile(file) }.getOrDefault(false)
         val tempDeleted = !temp.exists() || runCatching { deleteFile(temp) }.getOrDefault(false)
-        dataDeleted && tempDeleted && !file.exists() && !temp.exists()
+        val reports = File(file.parentFile, DRAFT_LOOKUP_DIR)
+        val reportFiles = reports.listFiles().orEmpty()
+        val reportsDeleted = reportFiles.all { !it.exists() || runCatching { deleteFile(it) }.getOrDefault(false) } &&
+            reportFiles.none(File::exists)
+        val directoryDeleted = !reports.exists() || runCatching { deleteFile(reports) }.getOrDefault(false)
+        dataDeleted && tempDeleted && reportsDeleted && directoryDeleted && !file.exists() && !temp.exists() && !reports.exists()
+    }
+
+    private fun writeBottleLookupForDraft(draftId: String, json: String) {
+        val directory = File(file.parentFile, DRAFT_LOOKUP_DIR)
+        if (!directory.isDirectory && !directory.mkdirs()) return
+        val destination = draftLookupFile(draftId)
+        val temporary = File(directory, "${destination.name}.tmp")
+        runCatching {
+            FileOutputStream(temporary).use { stream ->
+                stream.write(json.toByteArray(StandardCharsets.UTF_8))
+                stream.fd.sync()
+            }
+            if (destination.exists() && !deleteFile(destination)) return
+            if (!temporary.renameTo(destination)) return
+        }
+        directory.listFiles()
+            ?.filter { it.isFile && it.name.startsWith("lookup-") && it.name.endsWith(".json") }
+            ?.sortedByDescending(File::lastModified)
+            ?.drop(MAX_DRAFT_LOOKUP_REPORTS)
+            ?.forEach { runCatching { deleteFile(it) } }
+    }
+
+    private fun draftLookupFile(draftId: String): File {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(draftId.toByteArray(StandardCharsets.UTF_8))
+            .joinToString("") { byte -> "%02x".format(byte) }
+        return File(File(file.parentFile, DRAFT_LOOKUP_DIR), "lookup-$digest.json")
     }
 
     private fun read(): JsonObject = runCatching {
@@ -147,6 +203,9 @@ internal class DiagnosticStore(
     companion object {
         const val MAX_BYTES = 64 * 1024
         const val MAX_EVENTS = 80
+        private const val DRAFT_LOOKUP_DIR = "bottle-lookup-reports"
+        private const val MAX_DRAFT_LOOKUP_REPORTS = 12
+        private val DRAFT_ID_PATTERN = Regex("[A-Za-z0-9-]{1,100}")
         const val MAX_SCANNER_ERRORS = 20
         const val MAX_CRASHES = 5
         const val MAX_FRAMES = 30
@@ -214,8 +273,14 @@ internal object LocalDiagnostics {
 
     fun recordEvent(category: String) { runCatching { store?.recordEvent(category) } }
     fun recordScannerFailure(category: String, error: Throwable? = null) { runCatching { store?.recordScannerFailure(category, error) } }
-    fun recordBottleLookup(report: BottleLookupDebugReport) { runCatching { store?.recordBottleLookup(report) } }
+    fun recordBottleLookup(report: BottleLookupDebugReport, draftId: String? = null) {
+        runCatching { store?.recordBottleLookup(report, draftId) }
+    }
     fun latestBottleLookupPreview(): String? = runCatching { store?.latestBottleLookupPreview() }.getOrNull()
+    fun latestBottleLookupPreviewForDraft(draftId: String): String? =
+        runCatching { store?.latestBottleLookupPreviewForDraft(draftId) }.getOrNull()
+    fun clearBottleLookupForDraft(draftId: String): Boolean =
+        runCatching { store?.clearBottleLookupForDraft(draftId) ?: false }.getOrDefault(false)
     fun preview(): String = runCatching { store?.preview().orEmpty() }.getOrDefault("Diagnostics are unavailable.")
     fun export(): String = runCatching { store?.export().orEmpty() }.getOrDefault("{}")
     fun clear(): Boolean = runCatching { store?.clear() == true }.getOrDefault(false)

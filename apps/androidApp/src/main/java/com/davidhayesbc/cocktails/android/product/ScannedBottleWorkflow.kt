@@ -298,6 +298,9 @@ internal data class ScannedBottlePlan(
     val openFoodFactsEnabled: Boolean,
     val firecrawlEnabled: Boolean,
     val extractor: AutomaticBottleExtractor?,
+    /** User opt-in can be true while a provider is not configured or its model is unavailable. */
+    val firecrawlRequested: Boolean = firecrawlEnabled,
+    val aiRequested: Boolean = extractor != null,
 )
 
 internal data class ScannedBottleOutcome(
@@ -310,6 +313,71 @@ internal data class ScannedBottleOutcome(
     val barcodeVerifiedByStructuredProduct: Boolean = false,
     val extraction: BottleDetailExtractionResult? = null,
 )
+
+/** Converts one completed scan into fixed, resumable Web/AI indicators for that bottle only. */
+internal fun bottleProviderOutcomes(
+    plan: ScannedBottlePlan,
+    outcome: ScannedBottleOutcome?,
+    lastOperation: BottleEnrichmentOperation? = null,
+): BottleEnrichmentProviderOutcomes {
+    val web = when {
+        plan.firecrawlEnabled -> when (val search = outcome?.search) {
+            is WebSearchResult.Found -> when {
+                search.hits.isEmpty() -> BottleProviderOutcome.NO_RESULTS
+                outcome.barcodeVerifiedInPage || outcome.barcodeVerifiedByStructuredProduct -> BottleProviderOutcome.COMPLETE
+                outcome.page is WebPageResult.QuotaExceeded -> BottleProviderOutcome.QUOTA
+                outcome.page is WebPageResult.AuthenticationRequired -> BottleProviderOutcome.AUTHENTICATION_REQUIRED
+                outcome.page is WebPageResult.SetupRequired -> BottleProviderOutcome.NOT_CONFIGURED
+                outcome.page is WebPageResult.Unavailable || outcome.page is WebPageResult.InvalidResponse -> BottleProviderOutcome.FAILED
+                else -> BottleProviderOutcome.NO_MATCH
+            }
+            WebSearchResult.QuotaExceeded -> BottleProviderOutcome.QUOTA
+            WebSearchResult.AuthenticationRequired -> BottleProviderOutcome.AUTHENTICATION_REQUIRED
+            WebSearchResult.SetupRequired -> BottleProviderOutcome.NOT_CONFIGURED
+            WebSearchResult.RateLimited -> BottleProviderOutcome.QUOTA
+            WebSearchResult.Unavailable, WebSearchResult.InvalidResponse -> BottleProviderOutcome.FAILED
+            WebSearchResult.InvalidQuery -> BottleProviderOutcome.NO_MATCH
+            null -> when (lastOperation) {
+                BottleEnrichmentOperation.FIRECRAWL_SEARCH, BottleEnrichmentOperation.FIRECRAWL_FETCH -> BottleProviderOutcome.FAILED
+                else -> BottleProviderOutcome.NOT_RECORDED
+            }
+        }
+        plan.openFoodFactsEnabled -> when (outcome?.openFoodFacts) {
+            is OpenFoodFactsLookupResult.Found -> BottleProviderOutcome.COMPLETE
+            OpenFoodFactsLookupResult.NotFound, OpenFoodFactsLookupResult.DifferentProductType -> BottleProviderOutcome.NO_RESULTS
+            OpenFoodFactsLookupResult.ProviderRateLimited, OpenFoodFactsLookupResult.LocallyThrottled -> BottleProviderOutcome.QUOTA
+            OpenFoodFactsLookupResult.Unavailable, OpenFoodFactsLookupResult.InvalidResponse -> BottleProviderOutcome.FAILED
+            OpenFoodFactsLookupResult.InvalidBarcode -> BottleProviderOutcome.NO_MATCH
+            null -> BottleProviderOutcome.NOT_RECORDED
+        }
+        plan.firecrawlRequested -> BottleProviderOutcome.NOT_CONFIGURED
+        else -> BottleProviderOutcome.DISABLED
+    }
+
+    val ai = when (val extraction = outcome?.extraction) {
+        is BottleDetailExtractionResult.Found -> BottleProviderOutcome.COMPLETE
+        is BottleDetailExtractionResult.Rejected, BottleDetailExtractionResult.InvalidResponse -> BottleProviderOutcome.FAILED
+        BottleDetailExtractionResult.SetupRequired, BottleDetailExtractionResult.InvalidModel -> BottleProviderOutcome.NOT_CONFIGURED
+        BottleDetailExtractionResult.AuthenticationRequired -> BottleProviderOutcome.AUTHENTICATION_REQUIRED
+        BottleDetailExtractionResult.QuotaOrRateLimited -> BottleProviderOutcome.QUOTA
+        BottleDetailExtractionResult.Unavailable -> BottleProviderOutcome.FAILED
+        is BottleDetailExtractionResult.LocalFailure -> when (extraction.code) {
+            LocalInferenceFailureCode.MODEL_FILE_UNREADABLE,
+            LocalInferenceFailureCode.MODEL_FILE_INVALID,
+            LocalInferenceFailureCode.MODEL_ARCHITECTURE_UNSUPPORTED -> BottleProviderOutcome.NOT_CONFIGURED
+            else -> BottleProviderOutcome.FAILED
+        }
+        null -> when {
+            outcome == null && lastOperation in setOf(BottleEnrichmentOperation.LOCAL_EXTRACTION, BottleEnrichmentOperation.OLLAMA_EXTRACTION) -> BottleProviderOutcome.FAILED
+            !plan.aiRequested -> BottleProviderOutcome.DISABLED
+            outcome?.barcodeVerifiedInPage != true && outcome?.barcodeVerifiedByStructuredProduct != true -> BottleProviderOutcome.SKIPPED_NO_SOURCE
+            plan.extractor == null -> BottleProviderOutcome.NOT_CONFIGURED
+            lastOperation in setOf(BottleEnrichmentOperation.LOCAL_EXTRACTION, BottleEnrichmentOperation.OLLAMA_EXTRACTION) -> BottleProviderOutcome.FAILED
+            else -> BottleProviderOutcome.NOT_RECORDED
+        }
+    }
+    return BottleEnrichmentProviderOutcomes(web, ai)
+}
 
 internal data class ScannedBottleDebugStageEvent(
     val event: BottleLookupDebugEvent,

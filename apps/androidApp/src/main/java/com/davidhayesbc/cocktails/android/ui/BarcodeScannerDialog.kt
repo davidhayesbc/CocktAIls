@@ -58,9 +58,85 @@ import com.google.zxing.MultiFormatReader
 import com.google.zxing.ReaderException
 import com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup
 import com.davidhayesbc.cocktails.android.LocalDiagnostics
+import android.os.SystemClock
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+
+internal sealed interface BarcodeConsensusResult {
+    data object Pending : BarcodeConsensusResult
+    data object Invalid : BarcodeConsensusResult
+    data class Accepted(val rawValue: String, val normalizedValue: String) : BarcodeConsensusResult
+}
+
+/** Requires multiple separated, checksum-valid frames before a barcode can create a draft. */
+internal class BarcodeFrameConsensus(
+    private val requiredFrames: Int = 3,
+    private val minimumFrameSpacingMillis: Long = 65,
+    private val maximumFrameGapMillis: Long = 800,
+    private val minimumConsensusSpanMillis: Long = 130,
+) {
+    private var candidateNormalized: String? = null
+    private var candidateRaw: String? = null
+    private var candidateStartedAt: Long? = null
+    private var lastCountedFrameAt: Long? = null
+    private var stableFrames = 0
+
+    init {
+        require(requiredFrames >= 2)
+        require(minimumFrameSpacingMillis >= 0 && maximumFrameGapMillis > 0 && minimumConsensusSpanMillis >= 0)
+    }
+
+    @Synchronized
+    fun observe(rawValue: String?, elapsedRealtimeMillis: Long): BarcodeConsensusResult {
+        if (elapsedRealtimeMillis < 0) {
+            reset()
+            return BarcodeConsensusResult.Invalid
+        }
+        if (rawValue == null) {
+            reset()
+            return BarcodeConsensusResult.Pending
+        }
+        val normalized = normalizeGtinForLookup(rawValue)
+        if (normalized == null) {
+            reset()
+            return BarcodeConsensusResult.Invalid
+        }
+
+        val previousCandidate = candidateNormalized
+        val previousFrameAt = lastCountedFrameAt
+        if (previousCandidate != normalized || previousFrameAt == null || elapsedRealtimeMillis < previousFrameAt ||
+            elapsedRealtimeMillis - previousFrameAt > maximumFrameGapMillis
+        ) {
+            candidateNormalized = normalized
+            candidateRaw = rawValue
+            candidateStartedAt = elapsedRealtimeMillis
+            lastCountedFrameAt = elapsedRealtimeMillis
+            stableFrames = 1
+            return BarcodeConsensusResult.Pending
+        }
+
+        candidateRaw = rawValue
+        if (elapsedRealtimeMillis - previousFrameAt >= minimumFrameSpacingMillis) {
+            lastCountedFrameAt = elapsedRealtimeMillis
+            stableFrames += 1
+        }
+        val startedAt = candidateStartedAt ?: elapsedRealtimeMillis
+        if (stableFrames >= requiredFrames && elapsedRealtimeMillis - startedAt >= minimumConsensusSpanMillis) {
+            return BarcodeConsensusResult.Accepted(candidateRaw ?: rawValue, normalized)
+        }
+        return BarcodeConsensusResult.Pending
+    }
+
+    @Synchronized
+    fun reset() {
+        candidateNormalized = null
+        candidateRaw = null
+        candidateStartedAt = null
+        lastCountedFrameAt = null
+        stableFrames = 0
+    }
+}
 
 @Composable
 internal fun BarcodeScannerDialog(
@@ -99,6 +175,7 @@ internal fun BarcodeScannerDialog(
         var provider: ProcessCameraProvider? = null
         var analysis: ImageAnalysis? = null
         val disposed = AtomicBoolean(false)
+        val barcodeConsensus = BarcodeFrameConsensus()
         fun publishReadiness() {
             ContextCompat.getMainExecutor(context).execute {
                 if (!disposed.get()) scannerMessage = readiness.message()
@@ -143,15 +220,27 @@ internal fun BarcodeScannerDialog(
                             )
                             runCatching { decodeBarcodeFrame(reader, frame, imageProxy.imageInfo.rotationDegrees) }
                                 .onSuccess { value ->
-                                    if (normalizeGtinForLookup(value) == null) {
+                                    val normalizedValue = normalizeGtinForLookup(value)
+                                    if (normalizedValue == null) {
+                                        barcodeConsensus.reset()
                                         ContextCompat.getMainExecutor(context).execute {
                                             if (!disposed.get()) scannerMessage = "That code isn't a valid UPC/EAN barcode. Keep scanning or enter it manually."
                                         }
-                                    } else if (!continuous && completed.compareAndSet(false, true)) {
-                                        ContextCompat.getMainExecutor(context).execute {
-                                            if (!disposed.get()) {
-                                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                                currentOnDetected(value)
+                                    } else if (!continuous) {
+                                        when (val consensus = barcodeConsensus.observe(value, SystemClock.elapsedRealtime())) {
+                                            BarcodeConsensusResult.Invalid -> ContextCompat.getMainExecutor(context).execute {
+                                                if (!disposed.get()) scannerMessage = "That code isn't a valid UPC/EAN barcode. Keep scanning or enter it manually."
+                                            }
+                                            BarcodeConsensusResult.Pending -> ContextCompat.getMainExecutor(context).execute {
+                                                if (!disposed.get() && !completed.get()) scannerMessage = "Hold the barcode steady while we confirm the read."
+                                            }
+                                            is BarcodeConsensusResult.Accepted -> if (completed.compareAndSet(false, true)) {
+                                                ContextCompat.getMainExecutor(context).execute {
+                                                    if (!disposed.get()) {
+                                                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                        currentOnDetected(consensus.rawValue)
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -172,6 +261,9 @@ internal fun BarcodeScannerDialog(
                                     Unit
                                 }
                                 .onFailure { error ->
+                                    if (!continuous && error is ReaderException) {
+                                        barcodeConsensus.observe(null, SystemClock.elapsedRealtime())
+                                    }
                                     if (continuous && error is ReaderException && absentFrames.incrementAndGet() >= 8) {
                                         armed.set(true)
                                     }
