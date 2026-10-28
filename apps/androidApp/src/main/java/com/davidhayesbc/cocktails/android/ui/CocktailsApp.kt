@@ -445,7 +445,13 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
 
     LaunchedEffect(showDiagnostics, showDiagnosticsForDraftId) {
         while (showDiagnostics) {
-            detailedCaptureStatus = showDiagnosticsForDraftId?.let { detailedLookupCaptureStore.statusForDraft(it) }
+            val draftId = showDiagnosticsForDraftId
+            detailedCaptureStatus = draftId?.let { detailedLookupCaptureStore.statusForDraft(it) }
+            val reviewedPreview = detailedCapturePreview
+            if (reviewedPreview != null && (draftId == null || !detailedLookupCaptureStore.isReviewedPreviewCurrent(draftId, reviewedPreview))) {
+                detailedCapturePreview = null
+                detailedCaptureMessage = "This detailed capture expired or was deleted. Preview it again after a lookup."
+            }
             delay(500)
         }
         detailedCaptureStatus = null
@@ -2436,7 +2442,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                         when (detailedLookupCaptureStore.arm(draftId, token, "pending")) {
                             DetailedCaptureArmResult.ARMED -> {
                                 detailedCaptureStatus = detailedLookupCaptureStore.statusForDraft(draftId)
-                                detailedCaptureMessage = "One lookup attempt is armed for this bottle. It expires in 24 hours."
+                                detailedCaptureMessage = "One lookup attempt is armed for this bottle. The opt-in expires after 24 hours."
                             }
                             DetailedCaptureArmResult.ALREADY_ARMED -> detailedCaptureMessage = "A detailed capture is already armed for this bottle."
                             DetailedCaptureArmResult.CAPTURE_EXISTS -> detailedCaptureMessage = "Delete the existing detailed capture before arming another one."
@@ -2455,8 +2461,15 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         DetailedLookupCapturePreviewDialog(
             preview = content,
             onCopy = {
-                copyDetailedLookupCaptureToClipboard(context, content)
-                detailedCaptureMessage = "Detailed capture copied. Review it before sharing."
+                val draftId = showDiagnosticsForDraftId
+                val copied = draftId != null && detailedLookupCaptureStore.copyReviewedPreviewForDraft(draftId, content) {
+                    copyDetailedLookupCaptureToClipboard(context, it)
+                }
+                detailedCaptureMessage = if (copied) {
+                    "Detailed capture copied. Review it before sharing."
+                } else {
+                    "This detailed capture expired or was deleted before it could be copied."
+                }
                 detailedCapturePreview = null
             },
             onShare = {
@@ -2465,6 +2478,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     detailedLookupCaptureStore.exportReviewedCopyForDraft(it, content, context.cacheDir)
                 }
                 if (file == null) {
+                    detailedCapturePreview = null
                     detailedCaptureMessage = "The detailed capture could not be prepared for sharing."
                 } else {
                     try {
@@ -5499,7 +5513,7 @@ internal fun DiagnosticsDialog(
                 if (lookupSubject == "Lookup report for this bottle") {
                     Spacer(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
                 Text("One-attempt detailed capture", style = MaterialTheme.typography.titleSmall)
-                Text("Optional. Captures the bounded source text actually checked, model reply, barcode/structured identity checks, search-result title/snippet selection details, and app/model version for this bottle's next lookup attempt. Stored only in private no-backup app storage for up to 24 hours. Public page, search, and model text can contain unexpected content. Best-effort secret-like text redaction is marked in the capture and can affect exact replay. It does not include API keys, request headers, prompts, photos, household data, or notes. Nothing is sent automatically. Preview the capture before copying or sharing it. A share copy is kept in temporary app cache for up to one hour.", style = MaterialTheme.typography.bodySmall)
+                Text("Optional. Captures the bounded source text actually checked, model reply, barcode/structured identity checks, search-result title/snippet selection details, and app/model version for this bottle's next lookup attempt. The capture is available for up to 24 hours in private no-backup app storage. The app attempts cleanup at launch, on access, and periodically; Android may defer cleanup while the app is stopped. Public page, search, and model text can contain unexpected content. Best-effort secret-like text redaction is marked in the capture and can affect exact replay. It does not include API keys, request headers, prompts, photos, household data, or notes. Nothing is sent automatically. Preview the capture before copying or sharing it. A share copy expires at the earlier of one hour or the capture expiry; cleanup may be delayed while the app is stopped.", style = MaterialTheme.typography.bodySmall)
                     detailedCaptureStatus?.let { status ->
                         Text(
                             "Capture ${status.state.lowercase().replace('_', ' ')} · expires ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(status.expiresAtMillis))}",
@@ -5533,6 +5547,9 @@ internal fun DiagnosticsDialog(
                         }
                     } else if (detailedCaptureStatus.state == "ARMED") {
                         Text("Capture is armed for this bottle's next lookup attempt.", style = MaterialTheme.typography.bodySmall)
+                        TextButton(onClick = onDeleteDetailedCapture, modifier = Modifier.testTag("delete-detailed-lookup-capture")) {
+                            Text("Cancel capture")
+                        }
                     } else {
                         OutlinedButton(onClick = onPreviewDetailedCapture, modifier = Modifier.fillMaxWidth().testTag("preview-detailed-lookup-capture")) {
                             Text("Preview detailed capture")
@@ -5569,7 +5586,7 @@ internal fun DetailedLookupCaptureConsentDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text("For the selected bottle only, the next lookup attempt will save the exact bounded validator text and model response, plus source selection and structured barcode/name inputs used by that attempt.")
-                Text("The capture stays in this app's private no-backup storage and expires after 24 hours. It may include unexpected text from public web pages or the model. Best-effort secret-like text redaction is applied and marked, so some captures may not replay byte-for-byte.")
+                Text("The capture stays in this app's private no-backup storage and is available for up to 24 hours. The app attempts cleanup at launch, on access, and periodically; Android may defer cleanup while the app is stopped. It may include unexpected text from public web pages or the model. Best-effort secret-like text redaction is applied and marked, so some captures may not replay byte-for-byte.")
                 Text("No prompts, API keys, request headers, photos, household records, member data, location, or private notes are captured. Nothing is uploaded. You must preview before copying or sharing; sharing uses Android's file permission and happens only when you tap Share.")
                 Text("Only one attempt is captured. Retry the selected bottle after arming. Delete the capture from its preview or clear diagnostics.")
             }

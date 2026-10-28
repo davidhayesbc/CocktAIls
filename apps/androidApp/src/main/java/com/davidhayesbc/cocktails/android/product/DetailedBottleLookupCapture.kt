@@ -63,8 +63,10 @@ internal class DetailedBottleLookupCaptureStore(
     private val shareCacheDirectory: File? = null,
     private val processSessionId: String = PROCESS_SESSION_ID,
 ) {
+    private val reviewedPreviews = mutableMapOf<String, String>()
+
     init {
-        synchronized(LOCK) { cleanupExpiredShareCopies(nowMillis()) }
+        synchronized(LOCK) { cleanupExpired(nowMillis()) }
     }
 
     fun arm(draftId: String, expectedAttemptToken: String?, appVersion: String, now: Long = nowMillis()): DetailedCaptureArmResult = synchronized(LOCK) {
@@ -156,8 +158,30 @@ internal class DetailedBottleLookupCaptureStore(
     fun previewForDraft(draftId: String, now: Long = nowMillis()): String? = synchronized(LOCK) {
         if (!safeDraftId(draftId)) return@synchronized null
         var root = readLive(now)?.takeIf { it.string("draftId") == draftId } ?: return@synchronized null
+        if (root.string("state") == ARMED) return@synchronized null
         root = markInterruptedAfterProcessRestart(root, now)
-        Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), root)
+        val preview = Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), root)
+        root.string("captureId")?.let { reviewedPreviews[it] = digest(preview) }
+        preview
+    }
+
+    /** Rejects a preview as soon as its capture expires, is deleted, or is replaced. */
+    fun isReviewedPreviewCurrent(draftId: String, reviewedPreview: String, now: Long = nowMillis()): Boolean = synchronized(LOCK) {
+        val current = readLive(now)?.takeIf { it.string("draftId") == draftId } ?: return@synchronized false
+        reviewedSnapshotMatches(current, draftId, reviewedPreview)
+    }
+
+    /** Performs an explicit copy only while the preview still belongs to the live capture. */
+    fun copyReviewedPreviewForDraft(
+        draftId: String,
+        reviewedPreview: String,
+        now: Long = nowMillis(),
+        copy: (String) -> Unit,
+    ): Boolean = synchronized(LOCK) {
+        val current = readLive(now)?.takeIf { it.string("draftId") == draftId } ?: return@synchronized false
+        if (!reviewedSnapshotMatches(current, draftId, reviewedPreview)) return@synchronized false
+        copy(reviewedPreview)
+        true
     }
 
     fun exportCopyForDraft(draftId: String, cacheDirectory: File, now: Long = nowMillis()): File? = synchronized(LOCK) {
@@ -167,38 +191,70 @@ internal class DetailedBottleLookupCaptureStore(
 
     /** Writes exactly the content the user saw, so sharing cannot include newer unreviewed data. */
     fun exportReviewedCopyForDraft(draftId: String, reviewedPreview: String, cacheDirectory: File, now: Long = nowMillis()): File? = synchronized(LOCK) {
-        if (!safeDraftId(draftId) || reviewedPreview.isBlank() || reviewedPreview.length > MAX_CAPTURE_BYTES) return@synchronized null
+        val current = readLive(now)?.takeIf { it.string("draftId") == draftId } ?: return@synchronized null
+        if (!reviewedSnapshotMatches(current, draftId, reviewedPreview) || reviewedPreview.isBlank()) return@synchronized null
+        val reviewedBytes = reviewedPreview.toByteArray(Charsets.UTF_8)
+        if (reviewedBytes.size > MAX_CAPTURE_BYTES) return@synchronized null
         val directory = File(cacheDirectory, SHARE_DIRECTORY)
         if (!directory.isDirectory && !directory.mkdirs()) return@synchronized null
-        directory.listFiles().orEmpty().forEach { old ->
-            if (now - old.lastModified() > SHARE_RETENTION_MILLIS) runCatching { deleteFile(old) }
-        }
-        val output = File(directory, "lookup-${draftDigest(draftId).take(12)}-${UUID.randomUUID()}.json")
+        cleanupExpiredShareCopies(now)
+        val shareExpiry = minOf(now + SHARE_RETENTION_MILLIS, current.number("expiresAtMillis") ?: now)
+        val output = File(directory, "lookup-${draftDigest(draftId).take(12)}-$shareExpiry-${UUID.randomUUID()}.json")
         val temporary = File(directory, "${output.name}.tmp")
         runCatching {
             FileOutputStream(temporary).use { stream ->
-                stream.write(reviewedPreview.toByteArray(Charsets.UTF_8))
+                stream.write(reviewedBytes)
                 stream.fd.sync()
             }
             if (!temporary.renameTo(output)) return@synchronized null
+            // The capture's own expiry may be sooner than the one-hour share-cache limit.
+            val captureExpiry = current.number("expiresAtMillis") ?: now
+            output.setLastModified(minOf(System.currentTimeMillis(), captureExpiry))
             output
         }.getOrNull()
     }
 
     fun deleteForDraft(draftId: String): Boolean = synchronized(LOCK) {
-        val current = readLive(nowMillis()) ?: return@synchronized true
-        if (current.string("draftId") != draftId) return@synchronized false
-        val captureDeleted = runCatching { deleteFile(file) }.getOrDefault(false) || !file.exists()
-        removeShareCopies(draftId)
-        captureDeleted
+        if (!safeDraftId(draftId)) return@synchronized false
+        val current = readStoredObject(file)
+        val temporary = temporaryCaptureFile()
+        val temporaryObject = readStoredObject(temporary)
+        val currentOwner = current?.string("draftId")
+        val temporaryOwner = temporaryObject?.string("draftId")
+        val primaryDeleted = if (currentOwner == draftId) deleteIfPresent(file) else true
+        val canDeleteTemporary = temporaryOwner == draftId || currentOwner == draftId || !file.exists() && temporaryObject == null
+        val temporaryDeleted = if (canDeleteTemporary) deleteIfPresent(temporary) else true
+        val sharesDeleted = removeShareCopies(draftId)
+        current?.string("captureId")?.let(reviewedPreviews::remove)
+        temporaryObject?.string("captureId")?.let(reviewedPreviews::remove)
+        primaryDeleted && temporaryDeleted && sharesDeleted
     }
 
     fun deleteAll(): Boolean = synchronized(LOCK) {
-        val captureDeleted = runCatching { deleteFile(file) }.getOrDefault(false) || !file.exists()
-        val temporaryDeleted = runCatching { deleteFile(File(file.parentFile, "${file.name}.tmp")) }.getOrDefault(false) || !File(file.parentFile, "${file.name}.tmp").exists()
+        val captureDeleted = deleteIfPresent(file)
+        val temporaryFile = temporaryCaptureFile()
+        val temporaryDeleted = deleteIfPresent(temporaryFile)
         val shares = shareCacheDirectory?.let { File(it, SHARE_DIRECTORY) }
-        val sharesDeleted = shares?.listFiles().orEmpty().all { runCatching { deleteFile(it) }.getOrDefault(false) || !it.exists() }
+        val sharesDeleted = deleteDirectoryContents(shares)
+        reviewedPreviews.clear()
         captureDeleted && temporaryDeleted && sharesDeleted
+    }
+
+    /** Best-effort scheduled/startup cleanup. Android may defer it while this app is stopped. */
+    fun cleanupExpired(now: Long = nowMillis()): Boolean = synchronized(LOCK) {
+        val current = readStoredObject(file)
+        val expiry = current?.number("expiresAtMillis")
+        var success = true
+        if (file.exists() && (current == null || expiry == null || expiry <= now)) {
+            success = deleteIfPresent(file) && success
+            current?.string("draftId")?.let { success = removeShareCopies(it) && success }
+            current?.string("captureId")?.let(reviewedPreviews::remove)
+        }
+        // A .tmp file can only remain after a crashed or failed atomic write: every
+        // active write is protected by LOCK, so removing it here cannot race a writer.
+        success = deleteIfPresent(temporaryCaptureFile()) && success
+        success = cleanupExpiredShareCopies(now) && success
+        success
     }
 
     private fun append(captureId: String, draftId: String, attemptToken: String, key: String, value: JsonElementBuilder): Boolean = synchronized(LOCK) {
@@ -356,19 +412,59 @@ internal class DetailedBottleLookupCaptureStore(
     }
 
     private fun readLive(now: Long): JsonObject? {
-        val current = runCatching {
-            if (!file.isFile || file.length() !in 1..MAX_CAPTURE_BYTES.toLong()) null
-            else Json.parseToJsonElement(file.readText(Charsets.UTF_8)) as? JsonObject
-        }.getOrNull() ?: run {
-            if (file.exists()) runCatching { deleteFile(file) }
+        val current = readStoredObject(file) ?: run {
+            if (file.exists()) deleteIfPresent(file)
+            deleteIfPresent(temporaryCaptureFile())
             return null
         }
-        val expiry = current.number("expiresAtMillis") ?: return null
+        val expiry = current.number("expiresAtMillis") ?: run {
+            deleteIfPresent(file)
+            deleteIfPresent(temporaryCaptureFile())
+            current.string("draftId")?.let(::removeShareCopies)
+            return null
+        }
         if (expiry <= now || current.string("draftId")?.let(::safeDraftId) != true) {
-            runCatching { deleteFile(file) }
+            deleteIfPresent(file)
+            deleteIfPresent(temporaryCaptureFile())
+            current.string("draftId")?.let(::removeShareCopies)
+            current.string("captureId")?.let(reviewedPreviews::remove)
             return null
         }
+        // Remove remnants from a prior interrupted atomic write before exposing data.
+        deleteIfPresent(temporaryCaptureFile())
         return current
+    }
+
+    private fun reviewedSnapshotMatches(current: JsonObject, draftId: String, preview: String): Boolean {
+        if (!safeDraftId(draftId) || preview.isBlank() || preview.toByteArray(Charsets.UTF_8).size > MAX_CAPTURE_BYTES) return false
+        val snapshot = readStoredObject(preview) ?: return false
+        val captureId = current.string("captureId") ?: return false
+        return snapshot.string("draftId") == draftId &&
+            snapshot.string("captureId") == captureId &&
+            snapshot.string("attemptToken") == current.string("attemptToken") &&
+            reviewedPreviews[captureId] == digest(preview)
+    }
+
+    private fun readStoredObject(source: File): JsonObject? = runCatching {
+        if (!source.isFile || source.length() !in 1..MAX_CAPTURE_BYTES.toLong()) null
+        else Json.parseToJsonElement(source.readText(Charsets.UTF_8)) as? JsonObject
+    }.getOrNull()
+
+    private fun readStoredObject(serialized: String): JsonObject? = runCatching {
+        Json.parseToJsonElement(serialized) as? JsonObject
+    }.getOrNull()
+
+    private fun temporaryCaptureFile() = File(file.parentFile, "${file.name}.tmp")
+
+    private fun deleteIfPresent(target: File): Boolean =
+        !target.exists() || runCatching { deleteFile(target) }.getOrDefault(false) && !target.exists()
+
+    private fun deleteDirectoryContents(directory: File?): Boolean {
+        if (directory == null || !directory.exists()) return true
+        val files = directory.listFiles() ?: return false
+        var success = true
+        files.forEach { if (!deleteIfPresent(it)) success = false }
+        return success
     }
 
     private fun write(value: JsonObject): Boolean {
@@ -393,21 +489,30 @@ internal class DetailedBottleLookupCaptureStore(
         return interrupted
     }
 
-    private fun removeShareCopies(draftId: String) {
+    private fun removeShareCopies(draftId: String): Boolean {
+        val directory = shareCacheDirectory?.let { File(it, SHARE_DIRECTORY) } ?: return true
+        if (!directory.exists()) return true
+        val files = directory.listFiles() ?: return false
         val prefix = "lookup-${draftDigest(draftId).take(12)}-"
-        File(shareCacheDirectory, SHARE_DIRECTORY).listFiles().orEmpty()
-            .filter { it.name.startsWith(prefix) }
-            .forEach { runCatching { deleteFile(it) } }
+        var success = true
+        files.filter { it.name.startsWith(prefix) }.forEach { if (!deleteIfPresent(it)) success = false }
+        return success
     }
 
-    private fun cleanupExpiredShareCopies(now: Long) {
-        val directory = shareCacheDirectory?.let { File(it, SHARE_DIRECTORY) } ?: return
-        directory.listFiles().orEmpty().forEach { file ->
-            if (now - file.lastModified() > SHARE_RETENTION_MILLIS || file.name.endsWith(".tmp")) {
-                runCatching { deleteFile(file) }
-            }
+    private fun cleanupExpiredShareCopies(now: Long): Boolean {
+        val directory = shareCacheDirectory?.let { File(it, SHARE_DIRECTORY) } ?: return true
+        if (!directory.exists()) return true
+        val files = directory.listFiles() ?: return false
+        val expired = files.filter { old ->
+            old.name.endsWith(".tmp") || (shareExpiryFromName(old.name)?.let { it <= now } ?: (now - old.lastModified() > SHARE_RETENTION_MILLIS))
         }
+        var success = true
+        expired.forEach { if (!deleteIfPresent(it)) success = false }
+        return success
     }
+
+    private fun shareExpiryFromName(name: String): Long? = Regex("^lookup-[0-9a-f]{12}-(\\d+)-[0-9a-fA-F-]{36}\\.json$")
+        .matchEntire(name)?.groupValues?.getOrNull(1)?.toLongOrNull()
 
     private class Recorder(
         private val store: DetailedBottleLookupCaptureStore,
@@ -505,6 +610,9 @@ internal class DetailedBottleLookupCaptureStore(
         private fun JsonObject.number(key: String): Long? = this[key]?.jsonPrimitive?.longOrNull
         private fun draftDigest(draftId: String): String = MessageDigest.getInstance("SHA-256")
             .digest(draftId.toByteArray(Charsets.UTF_8))
+            .joinToString("") { byte -> "%02x".format(byte) }
+        private fun digest(value: String): String = MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray(Charsets.UTF_8))
             .joinToString("") { byte -> "%02x".format(byte) }
         private fun JsonObject.withString(key: String, value: String): JsonObject = JsonObject(toMutableMap().apply { put(key, JsonPrimitive(value)) })
         private fun JsonObject.withNumber(key: String, value: Long): JsonObject = JsonObject(toMutableMap().apply { put(key, JsonPrimitive(value)) })

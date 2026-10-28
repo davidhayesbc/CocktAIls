@@ -60,6 +60,10 @@ class DetailedBottleLookupCaptureTest {
         capture.recordModelResponse("On-device Qwen3", "Qwen3-0.6B-Q8_0", "{\"facts\":[],\"note\":\"api_key=superSecretValue123\"}")
         capture.finish("COMPLETE")
 
+        val reviewedShare = store.exportReviewedCopyForDraft("draft-a", reviewedPreview, File(root, "cache"), now)!!
+        assertEquals(reviewedPreview, reviewedShare.readText())
+        assertFalse(reviewedShare.readText().contains("modelResponse"))
+
         val reopened = DetailedBottleLookupCaptureStore(captureFile, { now }, processSessionId = "process-b")
         val preview = reopened.previewForDraft("draft-a", now)!!
         assertTrue(preview.contains("0.1.0-preview.19+abcdef0"))
@@ -75,9 +79,6 @@ class DetailedBottleLookupCaptureTest {
         assertFalse(preview.contains("user=private"))
         assertEquals("COMPLETE", reopened.statusForDraft("draft-a", now)?.state)
         assertNull(reopened.statusForDraft("draft-b", now))
-        val reviewedShare = reopened.exportReviewedCopyForDraft("draft-a", reviewedPreview, File(root, "cache"), now)!!
-        assertEquals(reviewedPreview, reviewedShare.readText())
-        assertFalse(reviewedShare.readText().contains("modelResponse"))
         root.deleteRecursively()
     }
 
@@ -114,6 +115,9 @@ class DetailedBottleLookupCaptureTest {
         val share = store.exportCopyForDraft("draft-a", cache, now)!!
         assertTrue(share.exists())
         assertTrue(share.readText().contains("draft-a"))
+        val shareExpiry = Regex("^lookup-[0-9a-f]{12}-(\\d+)-[0-9a-fA-F-]{36}\\.json$")
+            .matchEntire(share.name)?.groupValues?.get(1)?.toLong()
+        assertEquals(now + 60 * 60 * 1000L, shareExpiry)
         assertTrue(share.setLastModified(1L))
         now = 3_700_000L
         DetailedBottleLookupCaptureStore(file, { now }, shareCacheDirectory = cache, processSessionId = "cleanup")
@@ -166,6 +170,122 @@ class DetailedBottleLookupCaptureTest {
         assertTrue(preview.contains("\"sourceTextTruncated\": true"))
         assertTrue(preview.contains("\"responseTruncated\": true"))
         assertTrue(file.length() <= DetailedBottleLookupCaptureStore.MAX_CAPTURE_BYTES)
+        root.deleteRecursively()
+    }
+
+    @Test
+    fun deletedOrExpiredCaptureCannotReuseAnAlreadyOpenPreviewForCopyOrShare() {
+        val root = Files.createTempDirectory("detailed-capture-revocation").toFile()
+        var now = 50_000L
+        val file = File(root, "capture.json")
+        val cache = File(root, "cache")
+        val store = DetailedBottleLookupCaptureStore(file, { now }, shareCacheDirectory = cache, processSessionId = "test")
+        val token = "00000000-0000-0000-0000-000000000040"
+        store.arm("draft-a", token, "preview", now)
+        store.claim("draft-a", token, "5011333150725", "preview", 22, "Qwen", now)!!.finish("COMPLETE")
+        val reviewed = store.previewForDraft("draft-a", now)!!
+        assertTrue(store.isReviewedPreviewCurrent("draft-a", reviewed, now))
+
+        now += DetailedBottleLookupCaptureStore.RETENTION_MILLIS + 1
+        var copied = false
+        assertFalse(store.isReviewedPreviewCurrent("draft-a", reviewed, now))
+        assertNull(store.previewForDraft("draft-a", now))
+        assertFalse(store.copyReviewedPreviewForDraft("draft-a", reviewed, now) { copied = true })
+        assertFalse(copied)
+        assertNull(store.exportReviewedCopyForDraft("draft-a", reviewed, cache, now))
+        assertFalse(file.exists())
+        root.deleteRecursively()
+    }
+
+    @Test
+    fun deletingDraftRemovesItsShareAndTemporaryFilesAndReportsDeletionFailures() {
+        val root = Files.createTempDirectory("detailed-capture-delete-files").toFile()
+        var failedShareName: String? = null
+        val file = File(root, "capture.json")
+        val cache = File(root, "cache")
+        val store = DetailedBottleLookupCaptureStore(
+            file,
+            { 80_000L },
+            deleteFile = { target -> if (target.name == failedShareName) false else target.delete() },
+            shareCacheDirectory = cache,
+            processSessionId = "test",
+        )
+        val token = "00000000-0000-0000-0000-000000000041"
+        store.arm("draft-a", token, "preview", 80_000L)
+        store.claim("draft-a", token, "5011333150725", "preview", 22, "Qwen", 80_000L)!!.finish("COMPLETE")
+        val preview = store.previewForDraft("draft-a", 80_000L)!!
+        val share = store.exportReviewedCopyForDraft("draft-a", preview, cache, 80_000L)!!
+        val otherShare = store.exportReviewedCopyForDraft("draft-a", preview, cache, 80_000L)!!
+        failedShareName = share.name
+        val temporary = File(root, "capture.json.tmp")
+        assertTrue(temporary.writeText("partial sensitive bytes").let { temporary.exists() })
+        assertFalse(store.deleteForDraft("draft-a"))
+        assertFalse(file.exists())
+        assertFalse(temporary.exists())
+        assertTrue(share.exists())
+        assertFalse("deletion continues after one share file cannot be removed", otherShare.exists())
+
+        failedShareName = null
+        assertTrue(store.deleteForDraft("draft-a"))
+        assertFalse(share.exists())
+        assertFalse(store.isReviewedPreviewCurrent("draft-a", preview, 80_000L))
+        root.deleteRecursively()
+    }
+
+    @Test
+    fun cleanupExpiredRemovesExpiredCaptureTemporaryAndShareFilesAndReportsFailures() {
+        val root = Files.createTempDirectory("detailed-capture-expired-cleanup").toFile()
+        var now = 100_000L
+        var failNextDelete = false
+        var failedTarget: File? = null
+        val file = File(root, "capture.json")
+        val cache = File(root, "cache")
+        val store = DetailedBottleLookupCaptureStore(
+            file,
+            { now },
+            deleteFile = { target ->
+                if (failNextDelete && target == failedTarget) false else target.delete()
+            },
+            shareCacheDirectory = cache,
+            processSessionId = "test",
+        )
+        val token = "00000000-0000-0000-0000-000000000042"
+        store.arm("draft-a", token, "preview", now)
+        store.claim("draft-a", token, "5011333150725", "preview", 22, "Qwen", now)!!.finish("COMPLETE")
+        val preview = store.previewForDraft("draft-a", now)!!
+        val share = store.exportReviewedCopyForDraft("draft-a", preview, cache, now)!!
+        val temporary = File(root, "capture.json.tmp").apply { writeText("partial capture") }
+        failedTarget = share
+        failNextDelete = true
+
+        now += DetailedBottleLookupCaptureStore.RETENTION_MILLIS + 1
+        assertFalse(store.cleanupExpired(now))
+        assertFalse(file.exists())
+        assertFalse(temporary.exists())
+        assertTrue("a failed share deletion remains available for a later cleanup", share.exists())
+        assertNull(store.previewForDraft("draft-a", now))
+
+        failNextDelete = false
+        assertTrue(store.cleanupExpired(now))
+        assertFalse(share.exists())
+        root.deleteRecursively()
+    }
+
+    @Test
+    fun deleteDraftCleansItsTemporaryCaptureWhenPrimaryIsAlreadyMissing() {
+        val root = Files.createTempDirectory("detailed-capture-missing-primary").toFile()
+        val file = File(root, "capture.json")
+        val store = DetailedBottleLookupCaptureStore(file, { 200_000L }, processSessionId = "test")
+        val token = "00000000-0000-0000-0000-000000000043"
+        store.arm("draft-a", token, "preview", 200_000L)
+        store.claim("draft-a", token, "5011333150725", "preview", 22, "Qwen", 200_000L)!!.finish("COMPLETE")
+        val temporary = File(root, "capture.json.tmp").apply {
+            writeText(file.readText())
+        }
+        assertTrue(file.delete())
+
+        assertTrue(store.deleteForDraft("draft-a"))
+        assertFalse(temporary.exists())
         root.deleteRecursively()
     }
 }

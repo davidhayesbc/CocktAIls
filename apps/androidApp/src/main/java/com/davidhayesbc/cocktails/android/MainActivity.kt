@@ -10,12 +10,14 @@ import androidx.compose.ui.Modifier
 import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import com.davidhayesbc.cocktails.android.ui.CocktailsApp
 import com.davidhayesbc.cocktails.android.ui.theme.CocktailsTheme
+import com.davidhayesbc.cocktails.android.product.DetailedBottleLookupCaptureCleanupScheduler
 import com.davidhayesbc.cocktails.core.data.LocalCocktailRepository
 import com.davidhayesbc.cocktails.shared.db.CocktailsDatabase
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        DetailedBottleLookupCaptureCleanupScheduler.schedule(applicationContext)
         val appInfo = packageManager.getPackageInfo(packageName, 0)
         @Suppress("DEPRECATION")
         LocalDiagnostics.initialize(filesDir, appInfo.versionName ?: "unknown", appInfo.versionCode.toLong())
