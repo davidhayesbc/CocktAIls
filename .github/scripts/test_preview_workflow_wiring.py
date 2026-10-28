@@ -47,11 +47,13 @@ class PreviewWorkflowWiringTest(unittest.TestCase):
         self.assertIn("readonly required_visual_screenshots=(", collector)
         self.assertIn("onboarding-integrated-setup.png", collector)
         self.assertIn("onboarding-barcode-scanner.png", collector)
+        self.assertIn("onboarding-label-photo-preview.png", collector)
         self.assertIn("onboarding-label-crop-dialog.png", collector)
         self.assertIn("onboarding-review-real-route.png", collector)
         self.assertIn("onboarding-review-simulated.png", collector)
         required_visuals = collector.split("readonly required_visual_screenshots=(", 1)[1].split(")", 1)[0]
         self.assertIn("onboarding-label-crop-dialog.png", required_visuals)
+        self.assertIn("onboarding-label-photo-preview.png", required_visuals)
         self.assertIn("onboarding-review-real-route.png", required_visuals)
         self.assertIn("${{ runner.temp }}/onboarding-*.png", workflow)
         self.assertIn('shell cmd uimode night yes', ANDROID_WORKFLOW.read_text())

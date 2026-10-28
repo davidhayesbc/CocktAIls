@@ -836,6 +836,7 @@ class OfflineRecipeSmokeTest {
             assertEquals("CameraX must deliver exactly one saved-image callback", 1, callbackCount)
             assertEquals(BottleCaptureToken(1, initialDraft.id), savedCallbackToken)
             composeRule.onNodeWithTag("label-photo-preview-${initialDraft.id}").assertIsDisplayed()
+            captureOnboardingScreenshot("onboarding-label-photo-preview.png")
             composeRule.onAllNodesWithTag("capture-live-label").assertCountEquals(0)
             composeRule.onNodeWithTag("use-label-${initialDraft.id}").assertIsDisplayed().performClick()
             composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Scan the next bottle")

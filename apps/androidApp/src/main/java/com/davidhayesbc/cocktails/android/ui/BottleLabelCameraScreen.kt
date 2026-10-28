@@ -142,7 +142,9 @@ internal fun BottleLabelCameraScreen(
                                     boundaryGeometryGeneration = -1L
                                     val viewPort = view.viewPort
                                     if (viewPort == null) {
-                                        cameraMessage = "The camera preview could not be aligned. You can still capture and crop by hand."
+                                        if (!captureErrorVisible.get()) {
+                                            cameraMessage = "The camera preview could not be aligned. You can still capture and crop by hand."
+                                        }
                                     } else {
                                         capture.targetRotation = rotation
                                         analysisUseCase.targetRotation = rotation
@@ -156,11 +158,15 @@ internal fun BottleLabelCameraScreen(
                                         provider?.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, group)
                                         lastBoundGeometry = geometry
                                         lastBoundRotation = rotation
-                                        cameraMessage = "No clear label edge yet. Center it in the guide; you can crop by hand after capture."
+                                        if (!captureErrorVisible.get()) {
+                                            cameraMessage = "No clear label edge yet. Center it in the guide; you can crop by hand after capture."
+                                        }
                                         LocalDiagnostics.recordEvent("LABEL_CAMERA_READY")
                                     }
                                 }.onFailure {
-                                    cameraMessage = "Camera preview alignment failed. You can still capture and crop by hand."
+                                    if (!captureErrorVisible.get()) {
+                                        cameraMessage = "Camera preview alignment failed. You can still capture and crop by hand."
+                                    }
                                 }
                             }
                         }
@@ -363,6 +369,7 @@ internal fun BottleLabelCameraScreen(
                     }?.crop
                     val parent = output.parentFile
                     if (parent == null || (!parent.isDirectory && !parent.mkdirs()) || (output.exists() && !output.delete())) {
+                        captureErrorVisible.set(true)
                         LocalDiagnostics.recordEvent("LABEL_CAMERA_STORAGE_FAILED")
                         cameraMessage = "The label photo could not be prepared in local storage. Retry or cancel the photo; the bottle draft is safe."
                         return@Button

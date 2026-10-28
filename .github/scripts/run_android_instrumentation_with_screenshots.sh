@@ -13,6 +13,7 @@ readonly screenshot_names=(
   onboarding-barcode-scanner.png
   onboarding-label-step-simulated.png
   onboarding-label-preview-simulated.png
+  onboarding-label-photo-preview.png
   onboarding-label-crop-dialog.png
   onboarding-label-camera-layout-simulated.png
   onboarding-queue-simulated.png
@@ -23,6 +24,7 @@ readonly screenshot_names=(
 readonly required_visual_screenshots=(
   onboarding-integrated-setup.png
   onboarding-barcode-scanner.png
+  onboarding-label-photo-preview.png
   onboarding-label-crop-dialog.png
   onboarding-review-real-route.png
   onboarding-review-simulated.png
