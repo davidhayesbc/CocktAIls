@@ -178,17 +178,18 @@ class LocalBottleDetailExtractorTest {
         )
         val events = mutableListOf<BottleLookupDebugEvent>()
         val result = LocalBottleDetailExtractor({ "/model.gguf" }, LocalInferenceRunner { _, _, _, _ ->
-            """{"facts":[{"field":"abv_percent","value":"46%","evidence":"Auchentoshan Three Wood 43% ABV"}]}"""
+            """{"facts":[{"field":"product_name","value":"Other Reserve","evidence":"Auchentoshan Three Wood 43% ABV"},{"field":"abv_percent","value":"46%","evidence":"Auchentoshan Three Wood 43% ABV"}]}"""
         }).extractWithDiagnostics(page, LOCAL_MODEL_LABEL, barcode, events::add)
 
         assertTrue(result is BottleDetailExtractionResult.Found)
         val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
         assertEquals("Structured product data", suggestions.provider)
         assertEquals("Auchentoshan Three Wood", suggestions.facts.single().value)
+        assertFalse(BottleFactField.PRODUCT_NAME in suggestions.unresolvedFields)
         assertTrue(BottleFactField.ABV_PERCENT in suggestions.unresolvedFields)
         val parseEvent = events.single { it.stage == BottleLookupDebugStage.LOCAL_RESPONSE_PARSING && it.result == "REJECTED" }
         assertEquals(listOf("VALUE_NOT_IN_EVIDENCE"), parseEvent.reasonCodes)
-        assertEquals(listOf("abv_percent"), parseEvent.factFields)
+        assertEquals(listOf("product_name", "abv_percent"), parseEvent.factFields)
         assertTrue(events.any { "STRUCTURED_FACTS_FALLBACK_AFTER_MODEL_REJECTION" in it.reasonCodes })
 
         val debugReport = newDebugReport().also { events.forEach(it::record); it.finish("PARTIAL") }.toJson()
@@ -216,7 +217,26 @@ class LocalBottleDetailExtractorTest {
 
         assertEquals("Auchentoshan Three Wood", bound.suggestions.facts.first { it.field == BottleFactField.PRODUCT_NAME }.value)
         assertEquals("750ml", bound.suggestions.facts.first { it.field == BottleFactField.QUANTITY }.value)
+        assertFalse(BottleFactField.PRODUCT_NAME in bound.suggestions.unresolvedFields)
         assertTrue(BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE in bound.rejectedCandidates)
+    }
+
+    @Test
+    fun rejectedModelProductNameDoesNotMarkVerifiedStructuredNameUnresolved() = runBlocking {
+        val barcode = "5011333150725"
+        val identity = StructuredBottleIdentity(barcode, "Auchentoshan Three Wood", "barcode $barcode; product Auchentoshan Three Wood")
+        val page = WebPageText(
+            "Auchentoshan Three Wood", "https://shop.example/three-wood",
+            "Auchentoshan Three Wood bottle size 750 mL.", "Firecrawl", listOf(identity),
+        )
+        val result = LocalBottleDetailExtractor({ "/model.gguf" }, LocalInferenceRunner { _, _, _, _ ->
+            """{"facts":[{"field":"product_name","value":"Other Reserve","evidence":"Auchentoshan Three Wood bottle size 750 mL"},{"field":"quantity","value":"750 mL","evidence":"Auchentoshan Three Wood bottle size 750 mL"}]}"""
+        }).extract(page, LOCAL_MODEL_LABEL, barcode) as BottleDetailExtractionResult.Found
+
+        assertEquals("Auchentoshan Three Wood", result.suggestions.facts.first { it.field == BottleFactField.PRODUCT_NAME }.value)
+        assertEquals("750 mL", result.suggestions.facts.first { it.field == BottleFactField.QUANTITY }.value)
+        assertFalse(BottleFactField.PRODUCT_NAME in result.suggestions.unresolvedFields)
+        assertTrue(BottleExtractionRejectionReason.VALUE_NOT_IN_EVIDENCE in result.rejectedCandidates)
     }
 
     @Test

@@ -339,7 +339,10 @@ internal fun bindStructuredProductIdentity(
     val unboundFacts = result.suggestions.facts.filter { fact ->
         fact.field != BottleFactField.PRODUCT_NAME && !factQuoteIsBoundToProductIdentity(fact, identity.productName)
     }
-    val unresolvedFields = result.suggestions.unresolvedFields + unboundFacts.map(BottleFactEvidence::field)
+    // A locally verified barcode/name pair resolves PRODUCT_NAME even when the model's own
+    // proposal for that field was rejected. Keep the rejection in diagnostics, not in review state.
+    val unresolvedFields = (result.suggestions.unresolvedFields - BottleFactField.PRODUCT_NAME) +
+        unboundFacts.map(BottleFactEvidence::field)
     val acceptedFacts = (listOf(structuredNameFact) + result.suggestions.facts.filter { fact ->
         fact.field != BottleFactField.PRODUCT_NAME && fact !in unboundFacts
     }).filterNot { it.field in unresolvedFields }

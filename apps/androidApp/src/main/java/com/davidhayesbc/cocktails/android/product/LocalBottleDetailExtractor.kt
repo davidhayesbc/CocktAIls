@@ -174,7 +174,8 @@ internal class LocalBottleDetailExtractor(
         if (parsed is BottleDetailExtractionResult.Rejected && structuredFallback != null) {
             val fallback = structuredFallback.copy(
                 suggestions = structuredFallback.suggestions.copy(
-                    unresolvedFields = structuredFallback.suggestions.unresolvedFields + parsed.rejectedFields,
+                    unresolvedFields = (structuredFallback.suggestions.unresolvedFields + parsed.rejectedFields) -
+                        BottleFactField.PRODUCT_NAME,
                 ),
                 rejectedCandidates = setOf(parsed.reason),
             )
