@@ -227,7 +227,12 @@ internal fun BarcodeScannerDialog(
                     Text(scannerMessage, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Box(Modifier.weight(1f).fillMaxWidth().testTag("barcode-camera-frame")) {
                         AndroidView(
-                            factory = { viewContext -> PreviewView(viewContext).also { previewView = it } },
+                            factory = { viewContext -> PreviewView(viewContext).also {
+                                // Use TextureView-backed rendering so the camera preview stays
+                                // inside its weighted Box instead of covering the Compose header.
+                                it.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                                previewView = it
+                            } },
                             modifier = Modifier.fillMaxSize().testTag("barcode-camera-preview"),
                         )
                         Canvas(Modifier.align(Alignment.Center).fillMaxWidth(0.84f).height(152.dp)) {

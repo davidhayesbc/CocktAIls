@@ -25,6 +25,7 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
@@ -188,12 +189,11 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("intake-manual-start").performClick()
         composeRule.onNodeWithTag("batch-manual-name").performTextInput(bottleName)
         composeRule.onNodeWithTag("batch-manual-name").assert(editableTextIs(bottleName))
+        composeRule.onNodeWithTag("batch-manual-name").performImeAction()
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-add-manual-bottle"))
-        composeRule.onNodeWithTag("batch-add-manual-bottle").assertIsDisplayed().performClick()
-        composeRule.waitUntil(timeoutMillis = 5_000) {
-            composeRule.onAllNodesWithText("Scan the next bottle").fetchSemanticsNodes().isNotEmpty() ||
-                composeRule.onAllNodesWithTag("batch-manual-error").fetchSemanticsNodes().isNotEmpty()
-        }
+        composeRule.onNodeWithTag("batch-add-manual-bottle").assertIsDisplayed().assertIsEnabled().performClick()
+        composeRule.waitForIdle()
+        captureOnboardingScreenshot("batch-manual-add-result.png")
         val routeTitle = composeRule.onNodeWithTag("bottle-intake-route-title")
             .fetchSemanticsNode().config[SemanticsProperties.Text].joinToString { it.text }
         val submitError = composeRule.onAllNodesWithTag("batch-manual-error").fetchSemanticsNodes()
@@ -943,8 +943,9 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("review-label-photo-${first.id}").assertIsDisplayed()
             composeRule.onNodeWithTag("bottle-intake-draft-name-0").assert(editableTextIs(sampleName))
             composeRule.onNodeWithTag("bottle-intake-draft-category-0").assert(editableTextIs("Spirit"))
-            composeRule.onNodeWithText("Web · AI · View evidence").assertIsDisplayed()
             captureOnboardingScreenshot("onboarding-review-simulated.png")
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("review-evidence-toggle"))
+            composeRule.onNodeWithTag("review-evidence-toggle").assertIsDisplayed()
             composeRule.onNodeWithTag("accept-scanned-bottle-${first.id}").assertIsDisplayed()
             route = BottleIntakeRoute.PAUSE
             composeRule.waitForIdle()
