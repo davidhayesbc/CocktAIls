@@ -205,7 +205,7 @@ class LocalBottleDetailExtractorTest {
                 provider = "On-device Qwen3", model = LOCAL_MODEL_LABEL, sourceUrl = "https://shop.example/item",
                 facts = listOf(
                     BottleFactEvidence(BottleFactField.PRODUCT_NAME, "Other Reserve", "Other Reserve 700 mL"),
-                    BottleFactEvidence(BottleFactField.QUANTITY, "750 mL", "Auchentoshan Three Wood bottle size 750 mL"),
+                    BottleFactEvidence(BottleFactField.QUANTITY, "750ml", "Auchentoshan Three Wood bottle size 750 mL"),
                 ),
             ),
         )
@@ -215,7 +215,7 @@ class LocalBottleDetailExtractorTest {
         ) as BottleDetailExtractionResult.Found
 
         assertEquals("Auchentoshan Three Wood", bound.suggestions.facts.first { it.field == BottleFactField.PRODUCT_NAME }.value)
-        assertEquals("750 mL", bound.suggestions.facts.first { it.field == BottleFactField.QUANTITY }.value)
+        assertEquals("750ml", bound.suggestions.facts.first { it.field == BottleFactField.QUANTITY }.value)
         assertTrue(BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE in bound.rejectedCandidates)
     }
 
