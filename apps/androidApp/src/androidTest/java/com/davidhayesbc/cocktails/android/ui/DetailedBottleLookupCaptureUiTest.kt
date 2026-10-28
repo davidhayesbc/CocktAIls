@@ -94,6 +94,7 @@ class DetailedBottleLookupCaptureUiTest {
         val sharedFile = store.exportReviewedCopyForDraft(draftId, reviewed, context.cacheDir, now)
             ?: error("The reviewed capture should export to the configured share cache")
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", sharedFile)
+        assertEquals("detailed_lookup_share", uri.pathSegments.firstOrNull())
 
         assertEquals("application/json", context.contentResolver.getType(uri))
         context.contentResolver.query(uri, null, null, null, null)?.use { cursor -> assertTrue(cursor.moveToFirst()) }

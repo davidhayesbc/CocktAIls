@@ -44,13 +44,11 @@ class DetailedLookupCaptureFileProvider : FileProvider() {
 
     private fun enforceShareCopyAccess(uri: Uri, metadataRequest: Boolean) {
         val segments = uri.pathSegments
-        val shareDirectoryIndex = segments.indexOf(SHARE_DIRECTORY)
-        if (shareDirectoryIndex < 0) return
-        val filename = segments.getOrNull(shareDirectoryIndex + 1)
+        val shareRootIndex = segments.indexOf(SHARE_ROOT_NAME)
+        if (shareRootIndex < 0) return
+        if (shareRootIndex != 0 || segments.size != 2) unavailable(metadataRequest)
+        val filename = segments.getOrNull(1)
             ?: unavailable(metadataRequest)
-        if (shareDirectoryIndex != segments.lastIndex - 1) {
-            unavailable(metadataRequest)
-        }
         val expiresAt = SHARE_FILENAME.matchEntire(filename)?.groupValues?.getOrNull(1)?.toLongOrNull()
             ?: unavailable(metadataRequest)
         if (System.currentTimeMillis() >= expiresAt) {
@@ -65,7 +63,8 @@ class DetailedLookupCaptureFileProvider : FileProvider() {
     }
 
     private companion object {
-        const val SHARE_DIRECTORY = "detailed-lookup-share"
+        // FileProvider URIs use the <cache-path name="..."> alias, not the directory name.
+        const val SHARE_ROOT_NAME = "detailed_lookup_share"
         val SHARE_FILENAME = Regex("^lookup-[0-9a-f]{12}-(\\d+)-[0-9a-fA-F-]{36}\\.json$")
     }
 }
