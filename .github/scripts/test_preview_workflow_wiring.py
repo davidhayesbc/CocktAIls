@@ -47,6 +47,7 @@ class PreviewWorkflowWiringTest(unittest.TestCase):
         self.assertIn("readonly required_visual_screenshots=(", collector)
         self.assertIn("onboarding-integrated-setup.png", collector)
         self.assertIn("onboarding-barcode-scanner.png", collector)
+        self.assertIn("onboarding-review-simulated.png", collector)
         self.assertIn("${{ runner.temp }}/onboarding-*.png", workflow)
         self.assertIn('shell cmd uimode night yes', ANDROID_WORKFLOW.read_text())
 

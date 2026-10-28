@@ -9,6 +9,7 @@ import android.view.KeyEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -99,7 +100,12 @@ class BarcodeScannerLifecycleTest {
         )
         composeRule.onNodeWithTag("intake-allow-camera").performClick()
         awaitIntakeScanner()
+        composeRule.onNodeWithTag("barcode-intake-scanner").assertIsDisplayed()
         composeRule.onNodeWithText("Scan the next bottle").assertIsDisplayed()
+        composeRule.onNodeWithTag("scanner-queue-summary").assertIsDisplayed()
+        composeRule.onNodeWithText("0 ready").assertIsDisplayed()
+        composeRule.onNodeWithText("0 running").assertIsDisplayed()
+        composeRule.onNodeWithText("0 pending").assertIsDisplayed()
         awaitCameraPermissionGranted()
         composeRule.onNodeWithTag("barcode-camera-preview").assertIsDisplayed()
         composeRule.waitUntil(timeoutMillis = 30_000) {

@@ -21,6 +21,7 @@ readonly screenshot_names=(
 readonly required_visual_screenshots=(
   onboarding-integrated-setup.png
   onboarding-barcode-scanner.png
+  onboarding-review-simulated.png
 )
 
 readonly test_log="$RUNNER_TEMP/cocktails-instrumentation.log"
@@ -50,10 +51,49 @@ collect_screenshots() {
       if python3 - "$destination" <<'PY'
 from pathlib import Path
 import sys
+import struct
+import zlib
 
 path = Path(sys.argv[1])
 data = path.read_bytes()
 if len(data) > 8 * 1024 * 1024 or not data.startswith(b"\x89PNG\r\n\x1a\n"):
+    raise SystemExit(1)
+
+offset = 8
+width = height = bit_depth = color_type = None
+idat = bytearray()
+seen_iend = False
+while offset + 12 <= len(data):
+    length = struct.unpack_from(">I", data, offset)[0]
+    chunk_end = offset + 12 + length
+    if chunk_end > len(data):
+        raise SystemExit(1)
+    kind = data[offset + 4:offset + 8]
+    content = data[offset + 8:offset + 8 + length]
+    crc = struct.unpack_from(">I", data, offset + 8 + length)[0]
+    if zlib.crc32(kind + content) & 0xFFFFFFFF != crc:
+        raise SystemExit(1)
+    if kind == b"IHDR":
+        if length != 13:
+            raise SystemExit(1)
+        width, height, bit_depth, color_type = struct.unpack_from(">IIBB", content)
+        if width < 320 or height < 480 or bit_depth != 8:
+            raise SystemExit(1)
+    elif kind == b"IDAT":
+        idat.extend(content)
+    elif kind == b"IEND":
+        if length != 0:
+            raise SystemExit(1)
+        seen_iend = True
+        offset = chunk_end
+        break
+    offset = chunk_end
+
+channels = {0: 1, 2: 3, 4: 2, 6: 4}.get(color_type)
+if not seen_iend or offset != len(data) or channels is None or not idat:
+    raise SystemExit(1)
+pixels = zlib.decompress(bytes(idat))
+if len(pixels) != (width * channels + 1) * height:
     raise SystemExit(1)
 PY
       then

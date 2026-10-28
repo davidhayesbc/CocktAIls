@@ -209,7 +209,7 @@ internal fun BarcodeScannerDialog(
 
     if (fullScreen) {
         Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Surface(Modifier.fillMaxSize().testTag("barcode-intake-scanner"), color = MaterialTheme.colorScheme.background) {
                 Column(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(if (continuous) "Add bottles" else "Scan the next bottle", style = MaterialTheme.typography.headlineMedium)
                     Text(scannerMessage, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -229,7 +229,10 @@ internal fun BarcodeScannerDialog(
                             )
                         }
                     }
-                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                    Card(
+                        modifier = Modifier.testTag("scanner-queue-summary"),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    ) {
                         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 Text("$readyCount ready", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)

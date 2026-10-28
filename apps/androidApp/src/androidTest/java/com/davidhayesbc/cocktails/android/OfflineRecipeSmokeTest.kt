@@ -77,6 +77,7 @@ import java.io.File
 import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import com.davidhayesbc.cocktails.core.data.CatalogInstallResult
 import com.davidhayesbc.cocktails.core.data.LocalCocktailRepository
+import com.davidhayesbc.cocktails.core.interchange.photoSha256
 import com.davidhayesbc.cocktails.core.matching.countMissingRequiredIngredients
 import com.davidhayesbc.cocktails.core.model.InventoryLevel
 import com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult
@@ -186,10 +187,10 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("batch-manual-name").performTextInput(bottleName)
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-add-manual-bottle"))
         composeRule.onNodeWithTag("batch-add-manual-bottle").performClick()
-        composeRule.onNodeWithText("Scan the next bottle").assertIsDisplayed()
+        composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Scan the next bottle")
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-manual-entry"))
         composeRule.onNodeWithTag("batch-manual-entry").assertIsDisplayed().performClick()
-        composeRule.onNodeWithText("Add a bottle manually").assertIsDisplayed()
+        composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Add a bottle manually")
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-manual-name"))
         composeRule.onNodeWithTag("batch-manual-name").performTextInput(bottleName)
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-add-manual-bottle"))
@@ -200,18 +201,24 @@ class OfflineRecipeSmokeTest {
         composeRule.activityRule.scenario.recreate()
         composeRule.onNodeWithText("My Bar").performClick()
         composeRule.onNodeWithTag("start-bottle-intake").performClick()
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("open-bottle-queue"))
+        composeRule.onNodeWithTag("open-bottle-queue").assertIsDisplayed()
         composeRule.onNodeWithTag("open-bottle-queue").performClick()
+        composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Your bottle queue")
         composeRule.onNodeWithText("0 reviewed · 2 draft bottles").assertIsDisplayed()
         composeRule.onNodeWithText("Bottle 1 · $bottleName · Manual").performClick()
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-name-0"))
         composeRule.onNodeWithTag("bottle-intake-draft-name-0").performTextClearance()
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-error-0"))
-        composeRule.onNodeWithTag("bottle-intake-draft-error-0").assertTextEquals("Enter a bottle name before confirming this batch.")
+        composeRule.onNodeWithTag("bottle-intake-draft-error-0").assertTextEquals("Enter a bottle name before accepting this bottle.")
         composeRule.onNodeWithTag("bottle-intake-draft-error-0").assertIsDisplayed()
-        composeRule.onNodeWithText("Accept bottle details").assertIsNotEnabled()
+        composeRule.onNodeWithText("Accept & review next").assertIsNotEnabled()
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-name-0"))
         composeRule.onNodeWithTag("bottle-intake-draft-name-0").performTextInput(bottleName)
-        composeRule.onNodeWithText("Keep draft & return to queue").performClick()
+        composeRule.onNodeWithTag("keep-bottle-review-draft").assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Scan the next bottle")
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("open-bottle-queue"))
+        composeRule.onNodeWithTag("open-bottle-queue").performClick()
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-confirm"))
         composeRule.onNodeWithTag("batch-confirm").assertIsEnabled()
         composeRule.onNodeWithTag("batch-confirm").performClick()
@@ -661,8 +668,10 @@ class OfflineRecipeSmokeTest {
 
     private fun assertRestoredBottleEvidenceVisible(draftId: String) {
         val suggestions = "Suggestions · On-device Qwen3 · Qwen3-0.6B-Q8_0"
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("open-bottle-queue"))
         composeRule.onNodeWithTag("open-bottle-queue").performClick()
         composeRule.onNodeWithTag("queue-bottle-$draftId").performClick()
+        composeRule.onNodeWithTag("review-evidence-toggle").assertIsDisplayed().performClick()
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(
             hasText("Restored the verified source and suggestions for this unaccepted bottle. Review them; no provider request restarted."),
         )
@@ -672,13 +681,9 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithText(suggestions).assertExists()
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText(suggestions))
         composeRule.onNodeWithText(suggestions).assertIsDisplayed()
-        // Restoring the source does not require a label capture; lookup and
-        // capture are independent, so another bottle remains scannable.
-        composeRule.onNodeWithText("Keep draft & return to queue").performClick()
-        composeRule.onNodeWithText("Your bottle queue").assertIsDisplayed()
-        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("Resume scanner"))
-        composeRule.onNodeWithText("Resume scanner").assertIsDisplayed().performClick()
-        composeRule.onNodeWithText("Scan the next bottle").assertIsDisplayed()
+        // Keep returns directly to scanning without retrying or interrupting lookup.
+        composeRule.onNodeWithTag("keep-bottle-review-draft").assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Scan the next bottle")
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-scan-bottles"))
         composeRule.onNodeWithTag("batch-scan-bottles").assertIsDisplayed().assertIsEnabled()
     }
@@ -705,6 +710,7 @@ class OfflineRecipeSmokeTest {
         var pendingLabelId by mutableStateOf<String?>(null)
         var capturedLabel by mutableStateOf<ByteArray?>(null)
         var activeReviewId by mutableStateOf<String?>(null)
+        var webStates by mutableStateOf<Map<String, BottleWebSearchState>>(emptyMap())
         var route by mutableStateOf(BottleIntakeRoute.SETUP)
         var sequence = 10L
         val barcode = "5011333150725"
@@ -730,12 +736,18 @@ class OfflineRecipeSmokeTest {
                         modifier = Modifier.fillMaxSize(), session = activeSession, route = route, onRouteChange = { route = it }, homes = listOf(home),
                         capturePhoto = capturedLabel, captureMessage = null, permissionMessage = null,
                         pendingLabelDraftId = pendingLabelId,
-                        webSearchEnabled = false, webSearchStates = emptyMap(), pendingEnrichmentJobs = jobs,
+                        webSearchEnabled = false, webSearchStates = webStates, pendingEnrichmentJobs = jobs,
                         activeReviewDraftId = activeReviewId, ollamaCloudEnabled = false, localAiEnabled = false,
                         onSearchDraft = {}, onFetchDraftSource = { _, _ -> }, onExtractDraftDetails = {},
                         onExtractDraftDetailsOnDevice = {}, onResumeEnrichment = { _, _ -> }, onCancelDraftSearch = {},
                         onCaptureLabel = { capturedLabel = testLabelPhoto },
                         onUsePendingLabel = { draftId ->
+                            val photo = capturedLabel
+                            val draft = activeSession.drafts.firstOrNull { it.id == draftId }
+                            if (photo != null && draft != null) {
+                                assertTrue(repository.updateBottleIntakeDraft(draft.copy(photoData = photo, photoSha256 = photoSha256(photo))))
+                                activeSession = repository.openBottleIntakeSession()!!
+                            }
                             queue.completeLabelCapture(draftId, sequence++)
                             pendingLabelId = null
                             capturedLabel = null
@@ -785,11 +797,14 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("capture-label-${first.id}").assertIsDisplayed()
             composeRule.onAllNodes(hasTestTag("batch-scan-bottles")).assertCountEquals(0)
             composeRule.waitForIdle()
-            captureOnboardingScreenshot("onboarding-label-step-simulated.png")
+            val labelStepScreenshotHash = captureOnboardingScreenshot("onboarding-label-step-simulated.png")
 
             composeRule.onNodeWithTag("capture-label-${first.id}").performClick()
             composeRule.waitForIdle()
-            captureOnboardingScreenshot("onboarding-label-preview-simulated.png")
+            composeRule.onNodeWithTag("label-photo-preview-${first.id}").assertIsDisplayed()
+            composeRule.onNodeWithTag("use-label-${first.id}").assertIsDisplayed()
+            val labelPreviewScreenshotHash = captureOnboardingScreenshot("onboarding-label-preview-simulated.png")
+            assertTrue("The captured label preview must render differently from the empty capture step", labelStepScreenshotHash != labelPreviewScreenshotHash)
             composeRule.onNodeWithTag("use-label-${first.id}").assertIsDisplayed().performClick()
             assertEquals(BottleEnrichmentStatus.RUNNING, jobs.getValue(first.id).status)
             assertFalse(jobs.getValue(first.id).labelCaptureRequired)
@@ -814,15 +829,48 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("Resume scanner"))
             composeRule.onNodeWithText("Resume scanner").performClick()
 
+            val previewDraft = activeSession.drafts.first { it.id == first.id }
+            val sampleUrl = "https://example.invalid/sample-bottle"
+            val sampleName = "Garden Sample Gin"
+            assertTrue(repository.updateBottleIntakeDraft(previewDraft.copy(
+                ingredientName = sampleName,
+                category = "Spirit",
+                brand = "Juniper House",
+                productName = sampleName,
+                quantity = "700 mL",
+                abvPercent = "40%",
+            )))
+            activeSession = repository.openBottleIntakeSession()!!
+            webStates = webStates + (first.id to BottleWebSearchState(
+                automatedScan = true,
+                barcodeVerifiedInPage = true,
+                page = WebPageText("Sample bottle reference", sampleUrl, "Sample code $barcode · Garden Sample Gin · Juniper House · 700 mL · 40% ABV", "Fixture"),
+                extractedSuggestions = BottleDetailSuggestions(
+                    provider = "Sample fixture",
+                    model = "UI review sample",
+                    sourceUrl = sampleUrl,
+                    facts = listOf(
+                        BottleFactEvidence(BottleFactField.PRODUCT_NAME, sampleName, "Garden Sample Gin"),
+                        BottleFactEvidence(BottleFactField.BRAND, "Juniper House", "Juniper House"),
+                        BottleFactEvidence(BottleFactField.QUANTITY, "700 mL", "700 mL"),
+                        BottleFactEvidence(BottleFactField.ABV_PERCENT, "40%", "40% ABV"),
+                    ),
+                    targetBarcode = barcode,
+                    identityEvidence = "Sample code $barcode · Garden Sample Gin",
+                ),
+            ))
             assertTrue(queue.finish(first.id, BottleEnrichmentStatus.READY_FOR_REVIEW, "CANDIDATES_READY", sequence++))
             updateJobs()
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("review-ready-bottles"))
             composeRule.onNodeWithTag("review-ready-bottles").performClick()
             assertEquals(first.id, activeReviewId)
             composeRule.waitForIdle()
+            composeRule.onNodeWithTag("review-label-photo-${first.id}").assertIsDisplayed()
+            composeRule.onNodeWithTag("bottle-intake-draft-name-0").assert(editableTextIs(sampleName))
+            composeRule.onNodeWithTag("bottle-intake-draft-category-0").assert(editableTextIs("Spirit"))
+            composeRule.onNodeWithText("Web · AI · View evidence").assertIsDisplayed()
             captureOnboardingScreenshot("onboarding-review-simulated.png")
-            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("accept-scanned-bottle-${first.id}"))
-            composeRule.onNodeWithTag("accept-scanned-bottle-${first.id}").assertExists()
+            composeRule.onNodeWithTag("accept-scanned-bottle-${first.id}").assertIsDisplayed()
             route = BottleIntakeRoute.PAUSE
             composeRule.waitForIdle()
             captureOnboardingScreenshot("onboarding-pause-simulated.png")
@@ -856,9 +904,10 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithText("Keep drafts & exit").performClick()
     }
 
-    private fun captureOnboardingScreenshot(fileName: String) {
-        saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), fileName)
+    private fun captureOnboardingScreenshot(fileName: String): String {
+        val digest = saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), fileName)
         Log.i("CocktAIlsOnboardingScreenshot", "$fileName captured in app-private test storage for CI collection")
+        return digest
     }
 
     /** Generated, fictional label used only to make the review preview legible in screenshots. */
