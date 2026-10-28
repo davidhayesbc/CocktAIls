@@ -3180,7 +3180,11 @@ private fun BottleIntakeFlowScreen(
 
 @Composable
 private fun IntakeCountPill(label: String) {
-    Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+    Surface(
+        shape = RoundedCornerShape(28.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    ) {
         Text(label, Modifier.padding(horizontal = 12.dp, vertical = 8.dp), style = MaterialTheme.typography.labelLarge)
     }
 }
@@ -3235,6 +3239,10 @@ private fun BottleLabelCropEditorDialog(
                 Modifier.fillMaxWidth().widthIn(max = 560.dp)
                     .heightIn(max = dialogMaxHeight)
                     .testTag("bottle-label-crop-dialog"),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                ),
             ) {
                 Column(Modifier.fillMaxWidth().heightIn(max = dialogMaxHeight)) {
                     Column(
