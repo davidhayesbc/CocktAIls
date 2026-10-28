@@ -10,9 +10,28 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 class BottleEnrichmentQueueTest {
+    @Test
+    fun legacyRunningProviderStatusIsRenderedAsPausedOrCancelledAfterInterruption() {
+        assertEquals(
+            BottleProviderOutcome.PAUSED,
+            effectiveBottleProviderOutcome(BottleProviderOutcome.RUNNING, BottleEnrichmentStatus.PAUSED),
+        )
+        assertEquals(
+            BottleProviderOutcome.CANCELLED,
+            effectiveBottleProviderOutcome(BottleProviderOutcome.QUEUED, BottleEnrichmentStatus.CANCELLED),
+        )
+        assertEquals(
+            BottleProviderOutcome.COMPLETE,
+            effectiveBottleProviderOutcome(BottleProviderOutcome.COMPLETE, BottleEnrichmentStatus.PAUSED),
+        )
+    }
+
     @Test
     fun correctingBarcodeInvalidatesRunningAttemptAndSourceWithoutStartingAnotherRequest() {
         val storage = MemoryStorage()
@@ -43,10 +62,65 @@ class BottleEnrichmentQueueTest {
         assertNull(corrected.attemptToken)
         assertEquals(BottleProviderOutcome.NOT_RECORDED, corrected.webOutcome)
         assertEquals(BottleProviderOutcome.NOT_RECORDED, corrected.aiOutcome)
-        assertFalse(queue.completeIfRunning(fetching.draftId, fetching.attemptToken!!, 5) {
+        var staleReportPublished = false
+        assertFalse(queue.completeIfRunning(fetching.draftId, fetching.attemptToken!!, 5, afterPersist = {
+            staleReportPublished = true
+        }) {
             BottleEnrichmentStatus.READY_FOR_REVIEW to "STALE_RESULT"
         })
+        assertFalse(staleReportPublished)
         assertEquals(BottleEnrichmentStatus.NEEDS_ATTENTION, queue.status(fetching.draftId)!!.status)
+    }
+
+    @Test
+    fun correctedBarcodeCannotBeFollowedByLateReportPublicationFromTheOldAttempt() {
+        val queue = BottleEnrichmentQueue(MemoryStorage())
+        val queued = queue.enqueue("session-report-race", "draft-report-race", nowMillis = 1)!!
+        val running = queue.beginQueued(
+            queued.sessionId, queued.draftId, BottleEnrichmentOperation.FIRECRAWL_SEARCH,
+            queued.attemptToken!!, nowMillis = 2,
+        )!!
+        val callbackEntered = CountDownLatch(1)
+        val releaseCallback = CountDownLatch(1)
+        val correctionStarted = CountDownLatch(1)
+        val correctionFinished = CountDownLatch(1)
+        val selectedReport = AtomicReference<String?>(null)
+        val completed = AtomicInteger(0)
+
+        val worker = Thread {
+            val didComplete = queue.completeIfRunning(
+                running.draftId,
+                running.attemptToken!!,
+                nowMillis = 3,
+                afterPersist = {
+                    check(queue.status(running.draftId)?.status == BottleEnrichmentStatus.NEEDS_ATTENTION)
+                    selectedReport.set("old barcode report")
+                    callbackEntered.countDown()
+                    check(releaseCallback.await(2, TimeUnit.SECONDS))
+                },
+            ) { BottleEnrichmentStatus.NEEDS_ATTENTION to "NO_MATCH" }
+            if (didComplete) completed.incrementAndGet()
+        }
+        worker.start()
+        assertTrue(callbackEntered.await(2, TimeUnit.SECONDS))
+
+        val correction = Thread {
+            correctionStarted.countDown()
+            queue.resetForBarcodeChange(running.draftId, nowMillis = 4)
+            selectedReport.set(null)
+            correctionFinished.countDown()
+        }
+        correction.start()
+        assertTrue(correctionStarted.await(2, TimeUnit.SECONDS))
+        assertFalse("Barcode correction must wait for the attempt-fenced report commit", correctionFinished.await(50, TimeUnit.MILLISECONDS))
+        releaseCallback.countDown()
+        assertTrue(correctionFinished.await(2, TimeUnit.SECONDS))
+        worker.join(2_000)
+        correction.join(2_000)
+
+        assertEquals(1, completed.get())
+        assertNull(selectedReport.get())
+        assertEquals("BARCODE_CORRECTED", queue.status(running.draftId)!!.resultCode)
     }
 
     @Test
@@ -74,6 +148,42 @@ class BottleEnrichmentQueueTest {
         )!!
         assertEquals(BottleProviderOutcome.COMPLETE, extraction.webOutcome)
         assertEquals(BottleProviderOutcome.RUNNING, extraction.aiOutcome)
+    }
+
+    @Test
+    fun pausingAndCancellingReplaceOnlyPendingProviderStatuses() {
+        val queue = BottleEnrichmentQueue(MemoryStorage())
+        val queued = queue.enqueue("session-interrupt", "draft-interrupt", nowMillis = 1)!!
+        val searching = queue.beginQueued(
+            queued.sessionId, queued.draftId, BottleEnrichmentOperation.FIRECRAWL_SEARCH,
+            queued.attemptToken!!, nowMillis = 2,
+        )!!
+        val running = queue.updateRunning(
+            searching.sessionId,
+            searching.draftId,
+            BottleEnrichmentOperation.LOCAL_EXTRACTION,
+            sourceUrl = "https://example.com/product",
+            model = LOCAL_MODEL_LABEL,
+            attemptToken = searching.attemptToken!!,
+            nowMillis = 3,
+        )!!
+        assertTrue(queue.pauseAttempt(running.draftId, running.attemptToken!!, nowMillis = 4))
+        val paused = queue.status(running.draftId)!!
+        assertEquals(BottleEnrichmentStatus.PAUSED, paused.status)
+        assertEquals(BottleProviderOutcome.COMPLETE, paused.webOutcome)
+        assertEquals(BottleProviderOutcome.PAUSED, paused.aiOutcome)
+
+        val retry = queue.enqueue(queued.sessionId, queued.draftId, nowMillis = 5)!!
+        val retryRunning = queue.beginQueued(
+            retry.sessionId, retry.draftId, BottleEnrichmentOperation.FIRECRAWL_SEARCH,
+            retry.attemptToken!!, nowMillis = 6,
+        )!!
+        assertTrue(queue.finish(running.draftId, BottleEnrichmentStatus.CANCELLED, "CANCELLED_BY_USER", 7))
+        val cancelled = queue.status(running.draftId)!!
+        assertEquals(BottleEnrichmentStatus.CANCELLED, cancelled.status)
+        assertEquals(BottleProviderOutcome.CANCELLED, cancelled.webOutcome)
+        assertEquals(BottleProviderOutcome.CANCELLED, cancelled.aiOutcome)
+        assertFalse(queue.pauseAttempt(running.draftId, retryRunning.attemptToken!!, nowMillis = 8))
     }
 
     @Test

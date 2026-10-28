@@ -12,6 +12,91 @@ import com.davidhayesbc.cocktails.core.model.InventoryLevel
 
 class ScannedBottleWorkflowTest {
     @Test
+    fun correctingBarcodeKeepsEveryExplicitlyEditedManualFieldAndPhoto() {
+        val photo = byteArrayOf(1, 2, 3)
+        val draft = BottleIntakeDraft(
+            id = "draft-manual-correction",
+            sessionId = "session-manual-correction",
+            position = 0,
+            barcode = "5011733110725",
+            productId = "old-product",
+            ingredientName = "My hand-entered bottle",
+            category = "Whisky",
+            brand = "My hand-entered brand",
+            productName = "My hand-entered product",
+            photoData = photo,
+            photoSha256 = "local-hash",
+            quantity = "700 mL",
+            abvPercent = "40%",
+            quantityEdited = true,
+            abvPercentEdited = true,
+            locationId = "home-1",
+            level = InventoryLevel.FULL,
+            createdAt = 1,
+        )
+
+        val corrected = draft.correctedForBarcode(
+            "5011333150725",
+            setOf(
+                BottleDraftField.INGREDIENT_NAME,
+                BottleDraftField.BRAND,
+                BottleDraftField.PRODUCT_NAME,
+                BottleDraftField.QUANTITY,
+                BottleDraftField.ABV_PERCENT,
+            ),
+        )
+
+        assertEquals("5011333150725", corrected.barcode)
+        assertNull(corrected.productId)
+        assertEquals(draft.ingredientName, corrected.ingredientName)
+        assertEquals(draft.brand, corrected.brand)
+        assertEquals(draft.productName, corrected.productName)
+        assertEquals(draft.quantity, corrected.quantity)
+        assertEquals(draft.abvPercent, corrected.abvPercent)
+        assertTrue(corrected.quantityEdited)
+        assertTrue(corrected.abvPercentEdited)
+        assertTrue(corrected.photoData === photo)
+    }
+
+    @Test
+    fun manualBottleCorrectionInfersFieldsFromExistingDraftWhenOlderEditMarkersAreAbsent() {
+        val draft = BottleIntakeDraft(
+            id = "draft-older-manual",
+            sessionId = "session-older-manual",
+            position = 0,
+            barcode = "5011733110725",
+            productId = null,
+            ingredientName = "Manual bottle name",
+            category = "Whisky",
+            brand = "Manual brand",
+            productName = "Manual expression",
+            photoData = null,
+            photoSha256 = null,
+            quantity = "700 mL",
+            abvPercent = "40%",
+            locationId = "home-1",
+            level = InventoryLevel.FULL,
+            createdAt = 1,
+        )
+
+        val edited = bottleFieldsToPreserveOnBarcodeCorrection(draft, emptySet(), isAutomatedScan = false)
+        val corrected = draft.correctedForBarcode("5011333150725", edited)
+
+        assertEquals(setOf(
+            BottleDraftField.INGREDIENT_NAME,
+            BottleDraftField.BRAND,
+            BottleDraftField.PRODUCT_NAME,
+            BottleDraftField.QUANTITY,
+            BottleDraftField.ABV_PERCENT,
+        ), edited)
+        assertEquals("Manual bottle name", corrected.ingredientName)
+        assertEquals("Manual brand", corrected.brand)
+        assertEquals("Manual expression", corrected.productName)
+        assertEquals("700 mL", corrected.quantity)
+        assertEquals("40%", corrected.abvPercent)
+    }
+
+    @Test
     fun barcodeSearchQueryIncludesExactScannedCodeAndDoesNotNeedUnverifiedProductText() {
         assertEquals("\"5011333150725\"", scannedBottleSearchQuery("5011333150725"))
         assertEquals("\"088352109084\"", scannedBottleSearchQuery("088352109084"))

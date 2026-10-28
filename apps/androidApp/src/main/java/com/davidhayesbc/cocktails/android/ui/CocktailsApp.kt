@@ -193,6 +193,7 @@ import com.davidhayesbc.cocktails.android.product.BottleEnrichmentQueue
 import com.davidhayesbc.cocktails.android.product.BottleEnrichmentSerialGate
 import com.davidhayesbc.cocktails.android.product.BottleEnrichmentStatus
 import com.davidhayesbc.cocktails.android.product.BottleProviderOutcome
+import com.davidhayesbc.cocktails.android.product.effectiveBottleProviderOutcome
 import com.davidhayesbc.cocktails.android.product.BottleEnrichmentWorkScheduler
 import com.davidhayesbc.cocktails.android.product.BottleScanEnrichmentRuntime
 import com.davidhayesbc.cocktails.android.product.BottleCaptureToken
@@ -203,6 +204,10 @@ import com.davidhayesbc.cocktails.android.product.pendingBottlePhotoAfterCapture
 import com.davidhayesbc.cocktails.android.product.processingBottleCaptureAfterCompletion
 import com.davidhayesbc.cocktails.android.product.isCurrentBottleCapture
 import com.davidhayesbc.cocktails.android.product.restoreBottleCaptureToken
+import com.davidhayesbc.cocktails.android.product.retainPendingBottleValueForOwner
+import com.davidhayesbc.cocktails.android.product.bottleLabelRestoreBelongsToCurrentDraft
+import com.davidhayesbc.cocktails.android.product.correctedForBarcode
+import com.davidhayesbc.cocktails.android.product.bottleFieldsToPreserveOnBarcodeCorrection
 import com.davidhayesbc.cocktails.android.product.BottleLabelCropper
 import com.davidhayesbc.cocktails.android.product.stripJpegMetadata
 import com.davidhayesbc.cocktails.android.product.BottleLabelCropEditorState
@@ -575,6 +580,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var pendingBottleLabelOriginalPhoto by remember { mutableStateOf<ByteArray?>(null) }
     var pendingBottleLabelCropSuggestion by remember { mutableStateOf<NormalizedLabelCrop?>(null) }
     var bottleLabelCropBusy by remember { mutableStateOf(false) }
+    var bottleLabelCaptureMessage by remember { mutableStateOf<String?>(null) }
     val pendingLabelPreferences = remember(context) { context.getSharedPreferences("cocktails_pending_label_capture", Context.MODE_PRIVATE) }
     val restoredBottleCameraToken = remember(context) {
         restoreBottleCaptureToken(
@@ -681,7 +687,16 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     ) && activeBottleCaptureToken == token
 
     fun setPendingBottleLabelDraftId(draftId: String?): Boolean {
-        if (pendingBottleLabelDraftId != draftId) invalidateBottleCaptureOperation()
+        if (pendingBottleLabelDraftId != draftId) {
+            invalidateBottleCaptureOperation()
+            // The in-memory preview belongs to the old draft. Clear it before the
+            // keyed restore effect loads the selected draft's own private photo.
+            pendingBottleLabelPhoto = retainPendingBottleValueForOwner(pendingBottleLabelDraftId, draftId, pendingBottleLabelPhoto)
+            pendingBottleLabelOriginalPhoto = retainPendingBottleValueForOwner(pendingBottleLabelDraftId, draftId, pendingBottleLabelOriginalPhoto)
+            pendingBottleLabelCropSuggestion = retainPendingBottleValueForOwner(pendingBottleLabelDraftId, draftId, pendingBottleLabelCropSuggestion)
+            bottleLabelCropBusy = false
+            bottleLabelCaptureMessage = null
+        }
         pendingBottleLabelDraftId = draftId
         return pendingLabelPreferences.edit().apply {
             if (draftId == null) remove("draft_id") else putString("draft_id", draftId)
@@ -696,18 +711,39 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         val preview = File(directory, "pending-$draftId.jpg")
         val original = File(directory, "original-$draftId.jpg")
         if (preview.isFile && preview.length() in 1..MAX_PRODUCT_PHOTO_BYTES.toLong()) {
-            val selectedBytes = runCatching { withContext(Dispatchers.IO) { preview.readBytes() } }.getOrNull()
+            val selectedBytes = try {
+                withContext(Dispatchers.IO) { preview.readBytes() }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            }
+            if (!bottleLabelRestoreBelongsToCurrentDraft(draftId, pendingBottleLabelDraftId)) return@LaunchedEffect
             val originalBytes = if (original.isFile && original.length() in 1..MAX_PRODUCT_PHOTO_BYTES.toLong()) {
-                runCatching { withContext(Dispatchers.IO) { original.readBytes() } }.getOrNull()
+                try {
+                    withContext(Dispatchers.IO) { original.readBytes() }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    null
+                }
             } else selectedBytes
+            if (!bottleLabelRestoreBelongsToCurrentDraft(draftId, pendingBottleLabelDraftId)) return@LaunchedEffect
+            val crop = originalBytes?.let { bytes ->
+                try {
+                    withContext(Dispatchers.Default) { BottleLabelCropper.suggest(bytes) }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            if (!bottleLabelRestoreBelongsToCurrentDraft(draftId, pendingBottleLabelDraftId)) return@LaunchedEffect
             pendingBottleLabelOriginalPhoto = originalBytes
             pendingBottleLabelPhoto = selectedBytes
-            pendingBottleLabelCropSuggestion = originalBytes?.let { bytes ->
-                withContext(Dispatchers.Default) { runCatching { BottleLabelCropper.suggest(bytes) }.getOrNull() }
-            }
+            pendingBottleLabelCropSuggestion = crop
         }
     }
-    var bottleLabelCaptureMessage by remember { mutableStateOf<String?>(null) }
     var barcodeInput by remember { mutableStateOf("") }
     var barcodePermissionMessage by remember { mutableStateOf<String?>(null) }
     var localProductMatch by remember { mutableStateOf<LocalProductBarcodeMatch?>(null) }
@@ -1944,7 +1980,12 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     } else {
                         // Invalidate the attempt before changing identity. If queue persistence
                         // fails, keep the saved barcode and source evidence untouched.
-                        val edited = pendingBottleEvidenceStore.editedFields(draftId)
+                        val edited = bottleFieldsToPreserveOnBarcodeCorrection(
+                            draft = draft,
+                            persistedEditedFields = pendingBottleEvidenceStore.editedFields(draftId) +
+                                bottleWebSearchStates[draftId]?.userEditedFields.orEmpty(),
+                            isAutomatedScan = bottleWebSearchStates[draftId]?.automatedScan == true,
+                        )
                         cancelBottleSourceSearch(draftId)
                         if (!bottleEnrichmentQueue.resetForBarcodeChange(draftId, System.currentTimeMillis())) {
                             bottleWebSearchStates = bottleWebSearchStates + (draftId to (bottleWebSearchStates[draftId] ?: BottleWebSearchState()).copy(
@@ -1953,17 +1994,9 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                             refreshPendingBottleEnrichmentJobs()
                             return@barcodeUpdate false
                         }
-                        val saved = repository.updateBottleIntakeDraft(draft.copy(
-                            barcode = cleaned,
-                            productId = null,
-                            ingredientName = draft.ingredientName.takeIf { BottleDraftField.INGREDIENT_NAME in edited } ?: "Unidentified bottle",
-                            brand = draft.brand.takeIf { BottleDraftField.BRAND in edited },
-                            productName = draft.productName.takeIf { BottleDraftField.PRODUCT_NAME in edited },
-                            quantity = draft.quantity.takeIf { BottleDraftField.QUANTITY in edited },
-                            quantityEdited = draft.quantityEdited && BottleDraftField.QUANTITY in edited,
-                            abvPercent = draft.abvPercent.takeIf { BottleDraftField.ABV_PERCENT in edited },
-                            abvPercentEdited = draft.abvPercentEdited && BottleDraftField.ABV_PERCENT in edited,
-                        ))
+                        val saved = repository.updateBottleIntakeDraft(
+                            draft.correctedForBarcode(cleaned, edited),
+                        )
                         if (saved) {
                             pendingBottleEvidenceStore.remove(draftId)
                             edited.forEach { pendingBottleEvidenceStore.markEdited(draftId, it) }
@@ -1986,9 +2019,11 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 },
                 onFieldEdited = { draftId, field ->
                     val state = bottleWebSearchStates[draftId]
-                    if (state?.automatedScan == true && field !in state.userEditedFields) {
+                    if (field !in state?.userEditedFields.orEmpty()) {
                         pendingBottleEvidenceStore.markEdited(draftId, field)
-                        bottleWebSearchStates = bottleWebSearchStates + (draftId to state.copy(userEditedFields = state.userEditedFields + field))
+                        if (state != null) {
+                            bottleWebSearchStates = bottleWebSearchStates + (draftId to state.copy(userEditedFields = state.userEditedFields + field))
+                        }
                     }
                 },
                 onHomeChanged = { home -> repository.setBottleIntakeHome(bottleIntakeSession!!.id, home, System.currentTimeMillis()); bottleIntakeSession = repository.openBottleIntakeSession() },
@@ -3346,7 +3381,7 @@ private fun IntakeCountPill(label: String) {
 }
 
 private fun providerOutcomeLabel(job: BottleEnrichmentJob?, web: Boolean): String {
-    val stored = if (web) job?.webOutcome else job?.aiOutcome
+    val stored = effectiveBottleProviderOutcome(if (web) job?.webOutcome else job?.aiOutcome, job?.status)
     if (stored != null) return when (stored) {
         BottleProviderOutcome.QUEUED -> "Queued"
         BottleProviderOutcome.RUNNING -> "Running"
@@ -3360,6 +3395,7 @@ private fun providerOutcomeLabel(job: BottleEnrichmentJob?, web: Boolean): Strin
         BottleProviderOutcome.NOT_CONFIGURED -> "Not run · not configured"
         BottleProviderOutcome.DISABLED -> "Off"
         BottleProviderOutcome.PAUSED -> "Paused"
+        BottleProviderOutcome.CANCELLED -> "Canceled"
         BottleProviderOutcome.NOT_RECORDED -> "Not recorded"
     }
     val status = job?.status ?: return "Not run · manual bottle"

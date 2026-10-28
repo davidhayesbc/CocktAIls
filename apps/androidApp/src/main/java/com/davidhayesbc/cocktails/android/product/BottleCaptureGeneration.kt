@@ -9,6 +9,16 @@ internal data class PendingBottlePhoto(
     val suggestedCrop: NormalizedLabelCrop?,
 )
 
+/** A preview may be reused only while its owning draft remains selected. */
+internal fun <T> retainPendingBottleValueForOwner(
+    previousOwnerDraftId: String?,
+    selectedDraftId: String?,
+    value: T?,
+): T? = value.takeIf { previousOwnerDraftId == selectedDraftId }
+
+internal fun bottleLabelRestoreBelongsToCurrentDraft(restoredDraftId: String, currentDraftId: String?): Boolean =
+    restoredDraftId == currentDraftId
+
 internal fun cameraGeometryChanged(
     previousSize: Pair<Int, Int>?,
     currentSize: Pair<Int, Int>,

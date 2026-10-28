@@ -136,12 +136,13 @@ internal class BottleScanEnrichmentWorker(
                     }
                 }
             } catch (cancelled: CancellationException) {
-                val pausePersisted = queue.pauseAttempt(draftId, attemptToken, System.currentTimeMillis())
                 report.finish("CANCELLED")
                 report.setWorkerElapsedMillis(SystemClock.elapsedRealtime() - workerStartedElapsed)
-                // A barcode correction or replacement attempt may have invalidated this worker.
-                // Never make its old barcode the selected report for the corrected draft.
-                if (pausePersisted) LocalDiagnostics.recordBottleLookup(report, draftId)
+                // Publish under the same queue lock that fences correction/retry. A
+                // stale attempt cannot restore its old barcode report after correction.
+                queue.pauseAttempt(draftId, attemptToken, System.currentTimeMillis()) {
+                    LocalDiagnostics.recordBottleLookup(report, draftId)
+                }
                 throw cancelled
             } catch (_: Exception) {
                 report.record(BottleLookupDebugEvent(
@@ -175,24 +176,46 @@ internal class BottleScanEnrichmentWorker(
                 attemptToken = attemptToken,
                 nowMillis = System.currentTimeMillis(),
                 providerOutcomes = providerOutcomes,
-            ) {
-                saved = candidate?.let {
-                    PendingBottleEvidenceStore(SharedPreferencesPendingBottleEvidenceStorage(applicationContext)).save(draftId, it)
-                } == true
-                resultCode = when {
-                    saved -> "CANDIDATES_READY"
-                    outcome == null -> "UNEXPECTED_EXCEPTION"
-                    outcome.search == WebSearchResult.QuotaExceeded || outcome.page == WebPageResult.QuotaExceeded -> "PROVIDER_QUOTA_EXCEEDED"
-                    outcome.search == WebSearchResult.AuthenticationRequired || outcome.page == WebPageResult.AuthenticationRequired -> "PROVIDER_AUTH_REQUIRED"
-                    outcome.search == WebSearchResult.RateLimited || outcome.page == WebPageResult.RateLimited -> "PROVIDER_RATE_LIMITED"
-                    outcome.search is WebSearchResult.Found && outcome.selectedHit == null -> "NO_SOURCE_FOUND"
-                    outcome.extraction is BottleDetailExtractionResult.LocalFailure -> outcome.extraction.code.wireValue
-                    !plan.openFoodFactsEnabled && !plan.firecrawlEnabled -> "PROVIDERS_DISABLED"
-                    else -> "REVIEW_NEEDED"
-                }
-                finalStatus = if (saved) BottleEnrichmentStatus.READY_FOR_REVIEW else BottleEnrichmentStatus.NEEDS_ATTENTION
-                finalStatus to resultCode
-            }
+                finalize = {
+                    saved = candidate?.let {
+                        PendingBottleEvidenceStore(SharedPreferencesPendingBottleEvidenceStorage(applicationContext)).save(draftId, it)
+                    } == true
+                    resultCode = when {
+                        saved -> "CANDIDATES_READY"
+                        outcome == null -> "UNEXPECTED_EXCEPTION"
+                        outcome.search == WebSearchResult.QuotaExceeded || outcome.page == WebPageResult.QuotaExceeded -> "PROVIDER_QUOTA_EXCEEDED"
+                        outcome.search == WebSearchResult.AuthenticationRequired || outcome.page == WebPageResult.AuthenticationRequired -> "PROVIDER_AUTH_REQUIRED"
+                        outcome.search == WebSearchResult.RateLimited || outcome.page == WebPageResult.RateLimited -> "PROVIDER_RATE_LIMITED"
+                        outcome.search is WebSearchResult.Found && outcome.selectedHit == null -> "NO_SOURCE_FOUND"
+                        outcome.extraction is BottleDetailExtractionResult.LocalFailure -> outcome.extraction.code.wireValue
+                        !plan.openFoodFactsEnabled && !plan.firecrawlEnabled -> "PROVIDERS_DISABLED"
+                        else -> "REVIEW_NEEDED"
+                    }
+                    finalStatus = if (saved) BottleEnrichmentStatus.READY_FOR_REVIEW else BottleEnrichmentStatus.NEEDS_ATTENTION
+                    finalStatus to resultCode
+                },
+                afterPersist = {
+                    report.record(BottleLookupDebugEvent(
+                        stage = BottleLookupDebugStage.REVIEW_PERSISTENCE,
+                        provider = "APP",
+                        result = when {
+                            candidate == null -> "SKIPPED"
+                            saved -> "PERSISTED"
+                            else -> "PERSISTENCE_FAILED"
+                        },
+                        reasonCodes = if (candidate != null && !saved) listOf("OTHER") else emptyList(),
+                    ))
+                    report.finish(when {
+                        saved -> "SUCCESS"
+                        outcome == null -> "FAILED"
+                        resultCode == "NO_SOURCE_FOUND" -> "NOT_FOUND"
+                        resultCode == "PROVIDERS_DISABLED" -> "DISABLED"
+                        else -> "PARTIAL"
+                    })
+                    report.setWorkerElapsedMillis(SystemClock.elapsedRealtime() - workerStartedElapsed)
+                    LocalDiagnostics.recordBottleLookup(report, draftId)
+                },
+            )
             if (!finalized) {
                 report.record(BottleLookupDebugEvent(
                     stage = BottleLookupDebugStage.REVIEW_PERSISTENCE,
@@ -204,25 +227,6 @@ internal class BottleScanEnrichmentWorker(
                 report.setWorkerElapsedMillis(SystemClock.elapsedRealtime() - workerStartedElapsed)
                 return@withContext Result.success()
             }
-            report.record(BottleLookupDebugEvent(
-                stage = BottleLookupDebugStage.REVIEW_PERSISTENCE,
-                provider = "APP",
-                result = when {
-                    candidate == null -> "SKIPPED"
-                    saved -> "PERSISTED"
-                    else -> "PERSISTENCE_FAILED"
-                },
-                reasonCodes = if (candidate != null && !saved) listOf("OTHER") else emptyList(),
-            ))
-            report.finish(when {
-                saved -> "SUCCESS"
-                outcome == null -> "FAILED"
-                resultCode == "NO_SOURCE_FOUND" -> "NOT_FOUND"
-                resultCode == "PROVIDERS_DISABLED" -> "DISABLED"
-                else -> "PARTIAL"
-            })
-            report.setWorkerElapsedMillis(SystemClock.elapsedRealtime() - workerStartedElapsed)
-            LocalDiagnostics.recordBottleLookup(report, draftId)
             Result.success()
         } finally {
             repositories.close()

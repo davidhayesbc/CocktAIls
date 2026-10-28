@@ -5,6 +5,39 @@ import com.davidhayesbc.cocktails.core.model.BottleIntakeDraft
 import com.davidhayesbc.cocktails.core.model.ProductFactSourceDraft
 import kotlinx.coroutines.CancellationException
 
+/** Changes barcode identity while keeping fields the user explicitly entered. */
+internal fun BottleIntakeDraft.correctedForBarcode(
+    barcode: String,
+    editedFields: Set<BottleDraftField>,
+): BottleIntakeDraft = copy(
+    barcode = barcode,
+    productId = null,
+    ingredientName = ingredientName.takeIf { BottleDraftField.INGREDIENT_NAME in editedFields } ?: "Unidentified bottle",
+    brand = brand.takeIf { BottleDraftField.BRAND in editedFields },
+    productName = productName.takeIf { BottleDraftField.PRODUCT_NAME in editedFields },
+    quantity = quantity.takeIf { BottleDraftField.QUANTITY in editedFields },
+    quantityEdited = BottleDraftField.QUANTITY in editedFields,
+    abvPercent = abvPercent.takeIf { BottleDraftField.ABV_PERCENT in editedFields },
+    abvPercentEdited = BottleDraftField.ABV_PERCENT in editedFields,
+)
+
+internal fun bottleFieldsToPreserveOnBarcodeCorrection(
+    draft: BottleIntakeDraft,
+    persistedEditedFields: Set<BottleDraftField>,
+    isAutomatedScan: Boolean,
+): Set<BottleDraftField> = buildSet {
+    addAll(persistedEditedFields)
+    if (!isAutomatedScan) {
+        if (draft.ingredientName.isNotBlank() && draft.ingredientName != "Unidentified bottle") add(BottleDraftField.INGREDIENT_NAME)
+        if (!draft.brand.isNullOrBlank()) add(BottleDraftField.BRAND)
+        if (!draft.productName.isNullOrBlank()) add(BottleDraftField.PRODUCT_NAME)
+        if (!draft.quantity.isNullOrBlank() || draft.quantityEdited) add(BottleDraftField.QUANTITY)
+        if (!draft.abvPercent.isNullOrBlank() || draft.abvPercentEdited) add(BottleDraftField.ABV_PERCENT)
+    }
+    if (draft.quantityEdited) add(BottleDraftField.QUANTITY)
+    if (draft.abvPercentEdited) add(BottleDraftField.ABV_PERCENT)
+}
+
 /** A deliberately narrow search string: exact barcode text avoids encouraging generic lookup pages. */
 internal fun scannedBottleSearchQuery(barcode: String): String? {
     val digits = barcode.filter(Char::isDigit)

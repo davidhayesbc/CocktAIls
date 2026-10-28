@@ -254,9 +254,14 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("open-bottle-queue").performClick()
         composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Your bottle queue")
         composeRule.onNodeWithText("0 reviewed · 2 draft bottles").assertIsDisplayed()
-        val firstQueueTag = composeRule.onNodeWithText("Bottle 1 · $bottleName · Manual")
-            .fetchSemanticsNode().config[SemanticsProperties.TestTag]
-        assertTrue(firstQueueTag.startsWith("queue-bottle-"))
+        val firstQueueNode = composeRule.onAllNodes(SemanticsMatcher("bottle queue item") { node ->
+            node.config.contains(SemanticsProperties.TestTag) &&
+                node.config[SemanticsProperties.TestTag].startsWith("queue-bottle-")
+        }).fetchSemanticsNodes().first()
+        val firstQueueTag = firstQueueNode.config[SemanticsProperties.TestTag]
+        val firstQueueText = firstQueueNode.config[SemanticsProperties.Text]
+            .joinToString(separator = "") { it.text }
+        assertTrue(firstQueueText.contains("Bottle 1 · $bottleName"))
         val firstDraftId = firstQueueTag.removePrefix("queue-bottle-")
         composeRule.onNodeWithTag(firstQueueTag).performClick()
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-name-0"))
@@ -1111,11 +1116,15 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("open-bottle-queue").performClick()
             composeRule.waitForIdle()
             captureOnboardingScreenshot("onboarding-queue-simulated.png")
-            composeRule.onNodeWithTag("queue-label-photo-${first.id}").assertIsDisplayed()
+            composeRule.onNodeWithTag("bottle-intake-scroll")
+                .performScrollToNode(hasTestTag("queue-bottle-${first.id}"))
+            composeRule.onNodeWithTag("queue-label-photo-${first.id}", useUnmergedTree = true).assertIsDisplayed()
             composeRule.onNodeWithTag("queue-web-outcome-${first.id}").assertTextEquals("Web · Complete · no results")
             composeRule.onNodeWithTag("queue-ai-outcome-${first.id}").assertTextEquals("AI · Not run · no verified source")
-            composeRule.onNodeWithTag("queue-label-photo-frame-${second.id}").assertIsDisplayed()
-            composeRule.onNodeWithTag("capture-queue-label-${second.id}").assertIsDisplayed()
+            composeRule.onNodeWithTag("bottle-intake-scroll")
+                .performScrollToNode(hasTestTag("queue-bottle-${second.id}"))
+            composeRule.onNodeWithTag("queue-label-photo-frame-${second.id}", useUnmergedTree = true).assertIsDisplayed()
+            composeRule.onNodeWithTag("capture-queue-label-${second.id}", useUnmergedTree = true).assertIsDisplayed()
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("Resume scanner"))
             composeRule.onNodeWithText("Resume scanner").performClick()
 

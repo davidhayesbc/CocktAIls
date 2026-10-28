@@ -9,6 +9,23 @@ import org.junit.Test
 
 class BottleCaptureGenerationTest {
     @Test
+    fun changingQueueLabelOwnerCannotReuseThePreviousBottlesPreview() {
+        val firstPhoto = byteArrayOf(1, 2, 3)
+        val firstCrop = NormalizedLabelCrop(0.1f, 0.1f, 0.9f, 0.9f)
+
+        assertNull(retainPendingBottleValueForOwner("draft-a", "draft-b", firstPhoto))
+        assertNull(retainPendingBottleValueForOwner("draft-a", "draft-b", firstCrop))
+        assertArrayEquals(firstPhoto, retainPendingBottleValueForOwner("draft-a", "draft-a", firstPhoto))
+    }
+
+    @Test
+    fun delayedPrivatePhotoRestoreCannotPopulateADifferentDraft() {
+        assertFalse(bottleLabelRestoreBelongsToCurrentDraft("draft-a", "draft-b"))
+        assertFalse(bottleLabelRestoreBelongsToCurrentDraft("draft-a", null))
+        assertTrue(bottleLabelRestoreBelongsToCurrentDraft("draft-b", "draft-b"))
+    }
+
+    @Test
     fun lateCropFromSkippedBottleCannotAttachToTheNextBottle() {
         val first = BottleCaptureToken(10, "draft-first")
         val second = BottleCaptureToken(12, "draft-second")

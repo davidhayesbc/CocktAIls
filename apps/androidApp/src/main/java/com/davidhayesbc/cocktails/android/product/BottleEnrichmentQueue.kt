@@ -46,6 +46,7 @@ internal enum class BottleProviderOutcome {
     NOT_CONFIGURED,
     DISABLED,
     PAUSED,
+    CANCELLED,
     NOT_RECORDED,
 }
 
@@ -53,6 +54,16 @@ internal data class BottleEnrichmentProviderOutcomes(
     val web: BottleProviderOutcome,
     val ai: BottleProviderOutcome,
 )
+
+internal fun effectiveBottleProviderOutcome(
+    outcome: BottleProviderOutcome?,
+    status: BottleEnrichmentStatus?,
+): BottleProviderOutcome? = when {
+    outcome !in setOf(BottleProviderOutcome.QUEUED, BottleProviderOutcome.RUNNING) -> outcome
+    status == BottleEnrichmentStatus.PAUSED -> BottleProviderOutcome.PAUSED
+    status == BottleEnrichmentStatus.CANCELLED -> BottleProviderOutcome.CANCELLED
+    else -> outcome
+}
 
 internal fun mayPersistBottleEnrichmentResult(workerStopped: Boolean, status: BottleEnrichmentStatus?): Boolean =
     !workerStopped && status == BottleEnrichmentStatus.RUNNING
@@ -244,7 +255,21 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
             val current = jobs()
             val match = current.firstOrNull { it.draftId == draftId } ?: return@synchronized false
             write(current.map { job ->
-                if (job.draftId == draftId) job.copy(status = status, resultCode = resultCode, updatedAtMillis = nowMillis) else job
+                if (job.draftId == draftId) {
+                    val pendingOutcome = when (status) {
+                        BottleEnrichmentStatus.PAUSED -> BottleProviderOutcome.PAUSED
+                        BottleEnrichmentStatus.CANCELLED -> BottleProviderOutcome.CANCELLED
+                        BottleEnrichmentStatus.NEEDS_ATTENTION -> BottleProviderOutcome.NOT_RECORDED
+                        else -> null
+                    }
+                    job.copy(
+                        status = status,
+                        resultCode = resultCode,
+                        updatedAtMillis = nowMillis,
+                        webOutcome = pendingOutcome?.let { job.webOutcome.interruptPending(it) } ?: job.webOutcome,
+                        aiOutcome = pendingOutcome?.let { job.aiOutcome.interruptPending(it) } ?: job.aiOutcome,
+                    )
+                } else job
             })
         }
     }
@@ -255,6 +280,7 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
         attemptToken: String,
         nowMillis: Long,
         providerOutcomes: BottleEnrichmentProviderOutcomes? = null,
+        afterPersist: () -> Unit = {},
         finalize: () -> Pair<BottleEnrichmentStatus, String>,
     ): Boolean = synchronized(PROCESS_QUEUE_LOCK) {
         val current = jobs()
@@ -264,7 +290,7 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
         val (status, resultCode) = finalize()
         if (status !in setOf(BottleEnrichmentStatus.READY_FOR_REVIEW, BottleEnrichmentStatus.NEEDS_ATTENTION)) return@synchronized false
         if (!resultCode.matches(Regex("[A-Z0-9_]{1,80}"))) return@synchronized false
-        write(current.map { job ->
+        val persisted = write(current.map { job ->
             if (job.id == active.id) job.copy(
                 status = status,
                 resultCode = resultCode,
@@ -273,12 +299,29 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
                 aiOutcome = providerOutcomes?.ai ?: job.aiOutcome,
             ) else job
         })
+        if (persisted) afterPersist()
+        persisted
     }
 
-    fun pauseAttempt(draftId: String, attemptToken: String, nowMillis: Long): Boolean = synchronized(PROCESS_QUEUE_LOCK) {
-        val current = jobs().firstOrNull { it.draftId == draftId } ?: return@synchronized false
-        if (current.status != BottleEnrichmentStatus.RUNNING || current.attemptToken != attemptToken) return@synchronized false
-        update(current.id) { it.copy(status = BottleEnrichmentStatus.PAUSED, updatedAtMillis = nowMillis) }
+    fun pauseAttempt(
+        draftId: String,
+        attemptToken: String,
+        nowMillis: Long,
+        afterPersist: () -> Unit = {},
+    ): Boolean = synchronized(PROCESS_QUEUE_LOCK) {
+        val current = jobs()
+        val active = current.firstOrNull { it.draftId == draftId } ?: return@synchronized false
+        if (active.status != BottleEnrichmentStatus.RUNNING || active.attemptToken != attemptToken) return@synchronized false
+        val persisted = write(current.map { job ->
+            if (job.id == active.id) job.copy(
+                status = BottleEnrichmentStatus.PAUSED,
+                updatedAtMillis = nowMillis,
+                webOutcome = job.webOutcome.interruptPending(BottleProviderOutcome.PAUSED),
+                aiOutcome = job.aiOutcome.interruptPending(BottleProviderOutcome.PAUSED),
+            ) else job
+        })
+        if (persisted) afterPersist()
+        persisted
     }
 
     fun finishAttempt(
@@ -287,6 +330,7 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
         status: BottleEnrichmentStatus,
         resultCode: String,
         nowMillis: Long,
+        afterPersist: () -> Unit = {},
     ): Boolean = synchronized(PROCESS_QUEUE_LOCK) {
         if (status !in setOf(BottleEnrichmentStatus.NEEDS_ATTENTION, BottleEnrichmentStatus.CANCELLED) ||
             !resultCode.matches(Regex("[A-Z0-9_]{1,80}"))
@@ -295,9 +339,19 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
         val active = current.firstOrNull { it.draftId == draftId }
             ?.takeIf { it.status == BottleEnrichmentStatus.RUNNING && it.attemptToken == attemptToken }
             ?: return@synchronized false
-        write(current.map { job ->
-            if (job.id == active.id) job.copy(status = status, resultCode = resultCode, updatedAtMillis = nowMillis) else job
+        val pendingOutcome = if (status == BottleEnrichmentStatus.CANCELLED) BottleProviderOutcome.CANCELLED
+            else BottleProviderOutcome.NOT_RECORDED
+        val persisted = write(current.map { job ->
+            if (job.id == active.id) job.copy(
+                status = status,
+                resultCode = resultCode,
+                updatedAtMillis = nowMillis,
+                webOutcome = job.webOutcome.interruptPending(pendingOutcome),
+                aiOutcome = job.aiOutcome.interruptPending(pendingOutcome),
+            ) else job
         })
+        if (persisted) afterPersist()
+        persisted
     }
 
     private fun putState(
@@ -340,7 +394,11 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
         val current = jobs()
         val recovered = current.map { job ->
             when {
-                job.status == BottleEnrichmentStatus.RUNNING && job.draftId !in activeWorkDraftIds -> job.copy(status = BottleEnrichmentStatus.PAUSED)
+                job.status == BottleEnrichmentStatus.RUNNING && job.draftId !in activeWorkDraftIds -> job.copy(
+                    status = BottleEnrichmentStatus.PAUSED,
+                    webOutcome = job.webOutcome.interruptPending(BottleProviderOutcome.PAUSED),
+                    aiOutcome = job.aiOutcome.interruptPending(BottleProviderOutcome.PAUSED),
+                )
                 job.status == BottleEnrichmentStatus.QUEUED && job.attemptToken == null -> job.copy(attemptToken = UUID.randomUUID().toString())
                 else -> job
             }
@@ -352,7 +410,12 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
     fun pause(jobId: String, nowMillis: Long): Boolean = synchronized(PROCESS_QUEUE_LOCK) {
         val current = jobs().firstOrNull { it.id == jobId } ?: return@synchronized false
         if (current.status !in setOf(BottleEnrichmentStatus.RUNNING, BottleEnrichmentStatus.QUEUED)) return@synchronized false
-        update(jobId) { it.copy(status = BottleEnrichmentStatus.PAUSED, updatedAtMillis = nowMillis) }
+        update(jobId) { it.copy(
+            status = BottleEnrichmentStatus.PAUSED,
+            updatedAtMillis = nowMillis,
+            webOutcome = it.webOutcome.interruptPending(BottleProviderOutcome.PAUSED),
+            aiOutcome = it.aiOutcome.interruptPending(BottleProviderOutcome.PAUSED),
+        ) }
     }
 
     fun remove(jobId: String): Boolean = synchronized(PROCESS_QUEUE_LOCK) {
@@ -464,6 +527,9 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
 }
 
 private fun JsonObject.string(field: String): String? = this[field]?.jsonPrimitive?.contentOrNull
+
+private fun BottleProviderOutcome?.interruptPending(replacement: BottleProviderOutcome): BottleProviderOutcome? =
+    if (this == BottleProviderOutcome.QUEUED || this == BottleProviderOutcome.RUNNING) replacement else this
 
 private fun JsonArray?.orEmpty(): List<kotlinx.serialization.json.JsonElement> = this?.toList().orEmpty()
 
