@@ -3052,9 +3052,9 @@ private fun BottleIntakeFlowScreen(
                             )
                         }
                         error?.let { Text(it, Modifier.fillMaxWidth().padding(horizontal = 24.dp), color = MaterialTheme.colorScheme.error) }
-                        Row(
+                        Column(
                             Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             Button(
                                 onClick = {
@@ -3067,12 +3067,12 @@ private fun BottleIntakeFlowScreen(
                                 enabled = draft.ingredientName.isNotBlank() && draft.ingredientName != "Unidentified bottle" &&
                                     !webState.searching && webState.fetchingUrl == null && !webState.extracting && webState.automaticStage == null,
                                 shape = RoundedCornerShape(28.dp),
-                                modifier = Modifier.weight(1f).heightIn(min = 56.dp).testTag("accept-scanned-bottle-${draft.id}"),
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("accept-scanned-bottle-${draft.id}"),
                             ) { Text(if (hasAnotherReadyBottle) "Accept & review next" else "Accept & scan next") }
                             OutlinedButton(
                                 onClick = { onRouteChange(BottleIntakeRoute.SCANNING) },
                                 shape = RoundedCornerShape(28.dp),
-                                modifier = Modifier.weight(1f).heightIn(min = 56.dp).testTag("keep-bottle-review-draft"),
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("keep-bottle-review-draft"),
                             ) { Text("Keep draft & return to scanner") }
                         }
                     }
@@ -3148,7 +3148,7 @@ private fun BottleIntakeFlowScreen(
                         else -> { name = ""; barcode = ""; brand = ""; productName = ""; error = null; onRouteChange(BottleIntakeRoute.SCANNING) }
                     }
                 }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("batch-add-manual-bottle")) { Text("Add bottle to draft") }
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("batch-manual-error")) }
                 TextButton(onClick = { onRouteChange(BottleIntakeRoute.SCANNING) }, modifier = Modifier.fillMaxWidth()) { Text("Return to scanner") }
             }
         }
@@ -3550,9 +3550,9 @@ private fun BottleReviewCard(
             ) {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp)) {
                     TextButton(onClick = { evidenceExpanded = !evidenceExpanded }, modifier = Modifier.fillMaxWidth().testTag("review-evidence-toggle")) {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text("Web · AI · View evidence", style = MaterialTheme.typography.titleSmall)
-                            Text(sourceSummary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("Web · AI · ${if (evidenceExpanded) "Hide evidence" else "View evidence"}", style = MaterialTheme.typography.titleSmall)
+                            Text(sourceSummary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
                         }
                     }
                     if (evidenceExpanded) {

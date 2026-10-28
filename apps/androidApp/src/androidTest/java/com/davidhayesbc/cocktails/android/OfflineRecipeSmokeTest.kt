@@ -23,6 +23,7 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.printToLog
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextClearance
@@ -186,9 +187,18 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("start-bottle-intake").performClick()
         composeRule.onNodeWithTag("intake-manual-start").performClick()
         composeRule.onNodeWithTag("batch-manual-name").performTextInput(bottleName)
+        composeRule.onNodeWithTag("batch-manual-name").assert(editableTextIs(bottleName))
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-add-manual-bottle"))
-        composeRule.onNodeWithTag("batch-add-manual-bottle").performClick()
-        composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Scan the next bottle")
+        composeRule.onNodeWithTag("batch-add-manual-bottle").assertIsDisplayed().performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            composeRule.onAllNodesWithText("Scan the next bottle").fetchSemanticsNodes().isNotEmpty() ||
+                composeRule.onAllNodesWithTag("batch-manual-error").fetchSemanticsNodes().isNotEmpty()
+        }
+        val routeTitle = composeRule.onNodeWithTag("bottle-intake-route-title")
+            .fetchSemanticsNode().config[SemanticsProperties.Text].joinToString { it.text }
+        val submitError = composeRule.onAllNodesWithTag("batch-manual-error").fetchSemanticsNodes()
+            .joinToString { it.config[SemanticsProperties.Text].joinToString { text -> text.text } }
+        assertEquals("Manual add should return to scanning after save; inline error=$submitError", "Scan the next bottle", routeTitle)
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-manual-entry"))
         composeRule.onNodeWithTag("batch-manual-entry").assertIsDisplayed().performClick()
         composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Add a bottle manually")
@@ -738,6 +748,7 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Review your bottle")
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("review-evidence-toggle"))
         composeRule.onNodeWithTag("review-evidence-toggle").assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("review-evidence-message-$draftId"))
         composeRule.onNodeWithTag("review-evidence-message-$draftId").assertIsDisplayed()
         // The suggestion card follows the restoration message and can be below the viewport.
         // Assert it exists in the source UI, then scroll it into view before checking visibility.

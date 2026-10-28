@@ -35,6 +35,9 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.Canvas
@@ -210,7 +213,12 @@ internal fun BarcodeScannerDialog(
     if (fullScreen) {
         Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
             Surface(Modifier.fillMaxSize().testTag("barcode-intake-scanner"), color = MaterialTheme.colorScheme.background) {
-                Column(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(
+                    Modifier.fillMaxSize()
+                        .windowInsetsPadding(WindowInsets.safeDrawing)
+                        .padding(horizontal = 24.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
                     Text(
                         if (continuous) "Add bottles" else "Scan the next bottle",
                         style = MaterialTheme.typography.headlineMedium,
@@ -237,17 +245,20 @@ internal fun BarcodeScannerDialog(
                         modifier = Modifier.testTag("scanner-queue-summary"),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                     ) {
-                        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text("$readyCount ready", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.testTag("scanner-ready-count"))
                                 Text("$runningCount running", style = MaterialTheme.typography.labelLarge, modifier = Modifier.testTag("scanner-running-count"))
                                 Text("$pendingCount pending", style = MaterialTheme.typography.labelLarge, modifier = Modifier.testTag("scanner-pending-count"))
                             }
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                Text("${batchBottleCount ?: acceptedCount} bottles in this batch", style = MaterialTheme.typography.bodySmall)
-                                if (readyCount > 0) TextButton(onClick = onReviewReady, modifier = Modifier.testTag("scanner-review-ready")) { Text("Review ready") }
-                                else TextButton(onClick = onDismiss) { Text("Enter manually") }
-                                TextButton(onClick = onPause, modifier = Modifier.testTag("scanner-pause")) { Text("Pause") }
+                            Text("${batchBottleCount ?: acceptedCount} bottles in this batch", style = MaterialTheme.typography.bodySmall)
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (readyCount > 0) {
+                                    TextButton(onClick = onReviewReady, modifier = Modifier.weight(1f).testTag("scanner-review-ready")) { Text("Review ready") }
+                                } else {
+                                    TextButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("Enter manually") }
+                                }
+                                TextButton(onClick = onPause, modifier = Modifier.weight(1f).testTag("scanner-pause")) { Text("Pause") }
                             }
                         }
                     }
