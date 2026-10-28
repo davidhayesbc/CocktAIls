@@ -204,8 +204,21 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Add a bottle manually")
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-manual-name"))
         composeRule.onNodeWithTag("batch-manual-name").performTextInput(bottleName)
+        composeRule.onNodeWithTag("batch-manual-name").assert(editableTextIs(bottleName))
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        composeRule.onNodeWithTag("batch-manual-name").assert(editableTextIs(bottleName))
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-add-manual-bottle"))
-        composeRule.onNodeWithTag("batch-add-manual-bottle").performClick()
+        composeRule.onNodeWithTag("batch-add-manual-bottle").assertIsDisplayed().assertIsEnabled().performClick()
+        composeRule.waitForIdle()
+        val secondRouteTitle = composeRule.onNodeWithTag("bottle-intake-route-title")
+            .fetchSemanticsNode().config[SemanticsProperties.Text].joinToString { it.text }
+        val secondSubmitError = composeRule.onAllNodesWithTag("batch-manual-error").fetchSemanticsNodes()
+            .joinToString { it.config[SemanticsProperties.Text].joinToString { text -> text.text } }
+        assertEquals(
+            "Second manual add should return to scanning after save; inline error=$secondSubmitError",
+            "Scan the next bottle",
+            secondRouteTitle,
+        )
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("open-bottle-queue"))
         assertBatchCountVisibleWithDiagnostics()
 

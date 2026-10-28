@@ -29,6 +29,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -178,6 +179,7 @@ import com.davidhayesbc.cocktails.android.product.BottleLookupDebugReport
 import com.davidhayesbc.cocktails.android.product.BottleLookupDebugEvent
 import com.davidhayesbc.cocktails.android.product.BottleLookupDebugStage
 import com.davidhayesbc.cocktails.android.product.BottleProviderCall
+import com.davidhayesbc.cocktails.android.ui.theme.CocktailsTheme
 import com.davidhayesbc.cocktails.android.product.AutomaticBottleExtractor
 import com.davidhayesbc.cocktails.android.product.automaticBottleExtractor
 import com.davidhayesbc.cocktails.android.product.scannedBottleSearchQuery
@@ -1701,7 +1703,8 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     ) { contentPadding ->
         if (showBottleIntake && bottleIntakeSession != null) {
             val cameraTokenForScreen = launchedBottleCameraToken
-            BottleIntakeScreen(
+            CocktailsTheme(darkTheme = true) {
+                BottleIntakeScreen(
                 modifier = Modifier.fillMaxSize(),
                 session = bottleIntakeSession!!,
                 route = bottleIntakeRoute,
@@ -1961,7 +1964,8 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     pendingBottleLabelCropSuggestion = null
                     bottleLabelCaptureMessage = null
                 },
-            )
+                )
+            }
         } else {
             when {
             showShop -> ShopScreen(
@@ -2830,7 +2834,12 @@ private fun BottleIntakeFlowScreen(
     var barcode by remember(session.id) { mutableStateOf("") }
     var brand by remember(session.id) { mutableStateOf("") }
     var productName by remember(session.id) { mutableStateOf("") }
-    Column(modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).imePadding()) {
+    Column(
+        modifier.fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .imePadding(),
+    ) {
         if (route == BottleIntakeRoute.SETUP && labelCameraOutputFile == null) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 10.dp),
@@ -3220,18 +3229,25 @@ private fun BottleLabelCropEditorDialog(
     }
 
     Dialog(onDismissRequest = onDismiss) {
-        Card(Modifier.fillMaxWidth().widthIn(max = 560.dp).testTag("bottle-label-crop-dialog")) {
-            Column(
-                Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+        BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            val dialogMaxHeight = maxHeight * 0.92f
+            Card(
+                Modifier.fillMaxWidth().widthIn(max = 560.dp)
+                    .heightIn(max = dialogMaxHeight)
+                    .testTag("bottle-label-crop-dialog"),
             ) {
+                Column(Modifier.fillMaxWidth().heightIn(max = dialogMaxHeight)) {
+                    Column(
+                        Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
                 Text("Adjust label crop", style = MaterialTheme.typography.titleLarge)
                 Text("Drag a corner to resize the crop or drag inside it to move. This stays on your phone; the original remains available until you use the label.", style = MaterialTheme.typography.bodySmall)
                 if (display != null) {
                     val imageBitmap = remember(display) { display.asImageBitmap() }
                     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
                     Canvas(
-                        Modifier.fillMaxWidth().height(300.dp).onSizeChanged { canvasSize = it }
+                        Modifier.fillMaxWidth().height(240.dp).onSizeChanged { canvasSize = it }
                             .pointerInput(display, canvasSize) {
                                 var dragHandle = -1
                                 var currentEditorState = latestEditorState.value
@@ -3293,6 +3309,11 @@ private fun BottleLabelCropEditorDialog(
                     OutlinedButton(onClick = { editorState = editorState.rotateClockwise() }, modifier = Modifier.weight(1f)) { Text("Rotate 90°") }
                     TextButton(onClick = { editorState = editorState.reset(suggestedCrop) }, modifier = Modifier.weight(1f)) { Text("Reset crop and rotation") }
                 }
+                    }
+                    Column(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = { onKeepOriginal(); onDismiss() }, modifier = Modifier.weight(1f)) { Text("Keep original") }
                     TextButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("Cancel") }
@@ -3302,6 +3323,8 @@ private fun BottleLabelCropEditorDialog(
                     enabled = display != null,
                     modifier = Modifier.fillMaxWidth().testTag("apply-bottle-label-crop"),
                 ) { Text("Use this crop") }
+                    }
+                }
             }
         }
     }
