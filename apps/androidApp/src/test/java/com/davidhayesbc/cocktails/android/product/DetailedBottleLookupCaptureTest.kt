@@ -288,4 +288,18 @@ class DetailedBottleLookupCaptureTest {
         assertFalse(temporary.exists())
         root.deleteRecursively()
     }
+
+    @Test
+    fun deletingAnUnreadablePrimaryCaptureDoesNotClaimItWasDeleted() {
+        val root = Files.createTempDirectory("detailed-capture-unreadable-primary").toFile()
+        val file = File(root, "capture.json")
+        val store = DetailedBottleLookupCaptureStore(file, { 300_000L }, processSessionId = "test")
+        file.writeText("not a valid capture")
+
+        assertFalse(store.deleteForDraft("draft-a"))
+        assertTrue(file.exists())
+        assertTrue(store.deleteAll())
+        assertFalse(file.exists())
+        root.deleteRecursively()
+    }
 }

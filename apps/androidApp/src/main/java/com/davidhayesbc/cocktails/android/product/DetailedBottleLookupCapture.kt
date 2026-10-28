@@ -221,7 +221,11 @@ internal class DetailedBottleLookupCaptureStore(
         val temporaryObject = readStoredObject(temporary)
         val currentOwner = current?.string("draftId")
         val temporaryOwner = temporaryObject?.string("draftId")
-        val primaryDeleted = if (currentOwner == draftId) deleteIfPresent(file) else true
+        val primaryDeleted = when {
+            currentOwner == draftId -> deleteIfPresent(file)
+            file.exists() && current == null -> false
+            else -> true
+        }
         val canDeleteTemporary = temporaryOwner == draftId || currentOwner == draftId || !file.exists() && temporaryObject == null
         val temporaryDeleted = if (canDeleteTemporary) deleteIfPresent(temporary) else true
         val sharesDeleted = removeShareCopies(draftId)

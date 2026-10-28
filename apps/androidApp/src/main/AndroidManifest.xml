@@ -11,7 +11,7 @@
         android:label="CocktAIls"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <provider
-            android:name="androidx.core.content.FileProvider"
+            android:name="com.davidhayesbc.cocktails.android.product.DetailedLookupCaptureFileProvider"
             android:authorities="${applicationId}.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">

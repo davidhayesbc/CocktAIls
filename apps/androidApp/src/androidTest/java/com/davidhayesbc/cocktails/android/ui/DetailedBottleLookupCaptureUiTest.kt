@@ -3,6 +3,7 @@ package com.davidhayesbc.cocktails.android.ui
 import android.content.ClipboardManager
 import android.view.View
 import android.view.ViewGroup
+import androidx.core.content.FileProvider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.ComposeView
@@ -18,9 +19,15 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.davidhayesbc.cocktails.android.MainActivity
 import com.davidhayesbc.cocktails.android.saveTestScreenshot
+import com.davidhayesbc.cocktails.android.product.DetailedCaptureArmResult
 import com.davidhayesbc.cocktails.android.product.DetailedCaptureStatus
+import com.davidhayesbc.cocktails.android.product.DetailedBottleLookupCaptureStore
 import com.davidhayesbc.cocktails.android.ui.theme.CocktailsTheme
+import java.io.File
+import java.io.FileNotFoundException
+import java.util.UUID
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -64,6 +71,77 @@ class DetailedBottleLookupCaptureUiTest {
         composeRule.onAllNodes(hasTestTag("detailed-capture-status")).assertCountEquals(0)
         composeRule.onNodeWithTag("confirm-arm-detailed-lookup-capture").assertIsDisplayed().performClick()
         composeRule.onNodeWithTag("detailed-capture-status").assertIsDisplayed().assertTextContains("Capture armed")
+    }
+
+    @Test
+    fun productionShareUriDeniesOpenAndMetadataRequestsAfterExpiry() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val draftId = "share-${UUID.randomUUID()}"
+        val token = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis() - 60 * 60 * 1000L + 10_000L
+        val storeFile = File(context.noBackupFilesDir, "detailed-capture-test-${UUID.randomUUID()}.json")
+        val store = DetailedBottleLookupCaptureStore(
+            storeFile,
+            { now },
+            shareCacheDirectory = context.cacheDir,
+            processSessionId = "instrumentation-test",
+        )
+        assertEquals(DetailedCaptureArmResult.ARMED, store.arm(draftId, token, "preview", now))
+        val recorder = store.claim(draftId, token, "5011333150725", "preview", 1, "test-model", now)
+            ?: error("The test capture should be claimable")
+        recorder.finish("COMPLETE")
+        val reviewed = store.previewForDraft(draftId, now) ?: error("The completed capture should be reviewable")
+        val sharedFile = store.exportReviewedCopyForDraft(draftId, reviewed, context.cacheDir, now)
+            ?: error("The reviewed capture should export to the configured share cache")
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", sharedFile)
+
+        assertEquals("application/json", context.contentResolver.getType(uri))
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor -> assertTrue(cursor.moveToFirst()) }
+        context.contentResolver.openInputStream(uri)?.use { input -> assertTrue(input.read() >= 0) }
+
+        val expiresAt = Regex("^lookup-[0-9a-f]{12}-(\\d+)-[0-9a-fA-F-]{36}\\.json$")
+            .matchEntire(sharedFile.name)?.groupValues?.get(1)?.toLongOrNull()
+            ?: error("The shared copy should carry its enforced expiry")
+        val waitMillis = (expiresAt - System.currentTimeMillis() + 100L).coerceAtLeast(0L)
+        Thread.sleep(waitMillis)
+
+        assertMetadataDenied { context.contentResolver.getType(uri) }
+        assertMetadataDenied { context.contentResolver.query(uri, null, null, null, null)?.close() }
+        assertOpenDenied { context.contentResolver.openInputStream(uri)?.close() }
+        store.deleteForDraft(draftId)
+    }
+
+    @Test
+    fun deletingAnUnreadableCaptureDoesNotReportSuccess() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val file = File(context.noBackupFilesDir, "detailed-capture-unreadable-${UUID.randomUUID()}.json")
+        val store = DetailedBottleLookupCaptureStore(file, processSessionId = "instrumentation-test")
+        file.writeText("not a valid capture")
+
+        assertTrue("unreadable data must not be reported as deleted", !store.deleteForDraft("draft-test"))
+        assertTrue(file.exists())
+        assertTrue(store.deleteAll())
+        assertTrue(!file.exists())
+    }
+
+    private fun assertMetadataDenied(request: () -> Unit) {
+        var denied = false
+        try {
+            request()
+        } catch (_: IllegalArgumentException) {
+            denied = true
+        }
+        assertTrue("expired share metadata should be denied", denied)
+    }
+
+    private fun assertOpenDenied(request: () -> Unit) {
+        var denied = false
+        try {
+            request()
+        } catch (_: FileNotFoundException) {
+            denied = true
+        }
+        assertTrue("expired share content should be denied", denied)
     }
 
     private fun setContent(content: @Composable () -> Unit) {
