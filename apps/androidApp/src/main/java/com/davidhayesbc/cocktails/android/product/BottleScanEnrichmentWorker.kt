@@ -19,6 +19,7 @@ import com.davidhayesbc.cocktails.android.R
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * A per-bottle durable task. A queued row may start after intake closes. A row already marked RUNNING
@@ -45,6 +46,8 @@ internal class BottleScanEnrichmentWorker(
         if (queuedJob.status == BottleEnrichmentStatus.RUNNING) {
             // WorkManager redelivery after process death must not repeat a request that
             // may already have reached its provider. The attempt token fences retries.
+            DetailedBottleLookupCaptureStore(File(applicationContext.noBackupFilesDir, "detailed-lookup-capture.json"))
+                .pendingAttemptWasMissed(draftId, attemptToken)
             queue.pauseAttempt(draftId, attemptToken, System.currentTimeMillis())
             return@withContext Result.success()
         }
@@ -87,6 +90,22 @@ internal class BottleScanEnrichmentWorker(
             val localMatch = repositories.repository.localProductForBarcode(barcode) != null
             ensureDiagnostics()
             val report = runtime.newDebugReport(barcode, localMatch, plan)
+            @Suppress("DEPRECATION")
+            val packageInfo = applicationContext.packageManager.getPackageInfo(applicationContext.packageName, 0)
+            val appVersionName = packageInfo.versionName ?: "unknown"
+            @Suppress("DEPRECATION")
+            val appVersionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) packageInfo.longVersionCode else packageInfo.versionCode.toLong()
+            val detailedCaptureStore = DetailedBottleLookupCaptureStore(
+                File(applicationContext.noBackupFilesDir, "detailed-lookup-capture.json"),
+            )
+            val captureModel = when (plan.extractor) {
+                AutomaticBottleExtractor.ON_DEVICE -> LOCAL_MODEL_LABEL
+                AutomaticBottleExtractor.OLLAMA_CLOUD -> applicationContext
+                    .getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE)
+                    .getString("ollama_cloud_model", null)
+                null -> null
+            }
+            val detailedCapture = detailedCaptureStore.claim(draftId, attemptToken, barcode, appVersionName, appVersionCode, captureModel)
             report.setQueueWaitMillis(queueWaitMillis)
             report.record(BottleLookupDebugEvent(
                 stage = BottleLookupDebugStage.QUEUE_WAIT,
@@ -97,7 +116,7 @@ internal class BottleScanEnrichmentWorker(
             var finalOutcome: ScannedBottleOutcome? = null
             try {
                 finalOutcome = BottleEnrichmentSerialGate.processWide.withSlot {
-                    runtime.process(barcode, plan, report) { stage, sourceUrl, _ ->
+                    runtime.process(barcode, plan, report, detailedCapture) { stage, sourceUrl, _ ->
                         if (isStopped || queue.status(draftId)?.let { it.status == BottleEnrichmentStatus.RUNNING && it.attemptToken == attemptToken } != true) {
                             throw CancellationException("Work was stopped or canceled")
                         }
@@ -136,6 +155,7 @@ internal class BottleScanEnrichmentWorker(
                     }
                 }
             } catch (cancelled: CancellationException) {
+                detailedCapture?.finish("CANCELLED")
                 report.finish("CANCELLED")
                 report.setWorkerElapsedMillis(SystemClock.elapsedRealtime() - workerStartedElapsed)
                 // Publish under the same queue lock that fences correction/retry. A
@@ -145,6 +165,7 @@ internal class BottleScanEnrichmentWorker(
                 }
                 throw cancelled
             } catch (_: Exception) {
+                detailedCapture?.finish("FAILED")
                 report.record(BottleLookupDebugEvent(
                     stage = BottleLookupDebugStage.COMPLETE,
                     provider = "APP",
@@ -157,6 +178,7 @@ internal class BottleScanEnrichmentWorker(
             val outcome = finalOutcome
             val currentJob = queue.status(draftId)
             if (!mayPersistBottleEnrichmentResult(isStopped, currentJob?.status)) {
+                detailedCapture?.finish("CANCELLED")
                 report.record(BottleLookupDebugEvent(
                     stage = BottleLookupDebugStage.REVIEW_PERSISTENCE,
                     provider = "APP",
@@ -217,6 +239,7 @@ internal class BottleScanEnrichmentWorker(
                 },
             )
             if (!finalized) {
+                detailedCapture?.finish("CANCELLED")
                 report.record(BottleLookupDebugEvent(
                     stage = BottleLookupDebugStage.REVIEW_PERSISTENCE,
                     provider = "APP",
@@ -227,6 +250,7 @@ internal class BottleScanEnrichmentWorker(
                 report.setWorkerElapsedMillis(SystemClock.elapsedRealtime() - workerStartedElapsed)
                 return@withContext Result.success()
             }
+            detailedCapture?.finish(if (finalStatus == BottleEnrichmentStatus.READY_FOR_REVIEW) "COMPLETE" else "FAILED")
             Result.success()
         } finally {
             repositories.close()

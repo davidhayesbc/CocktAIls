@@ -1,6 +1,8 @@
 package com.davidhayesbc.cocktails.android.product
 
 import kotlinx.coroutines.runBlocking
+import java.io.File
+import java.nio.file.Files
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -16,6 +18,31 @@ class OllamaCloudBottleDetailExtractorTest {
         markdown = "Example Gin is a London dry gin. The bottle contains 700 mL and is 40% ABV.",
         provider = "Firecrawl",
     )
+
+    @Test
+    fun optInCaptureStoresCloudValidatorInputAndModelContentWithoutHttpEnvelope() = runBlocking {
+        val root = Files.createTempDirectory("ollama-capture").toFile()
+        val store = DetailedBottleLookupCaptureStore(File(root, "capture.json"), { 100L }, processSessionId = "test")
+        val token = "00000000-0000-0000-0000-000000000077"
+        store.arm("draft-cloud", token, "preview", 100L)
+        val capture = store.claim("draft-cloud", token, "", "preview.1", 1, "qwen3:8b-cloud", 100L)!!
+        val reply = """{"facts":[{"field":"product_name","value":"Example Gin","evidence":"Example Gin"}]}"""
+        val provider = OllamaCloudBottleDetailExtractor(
+            { "synthetic-ollama-key" },
+            FakeTransport(OllamaCloudHttpResponse.Success(response(reply))),
+        )
+
+        provider.extractDetailed(source, "qwen3:8b-cloud", null, capture)
+        capture.finish("COMPLETE")
+        val preview = store.previewForDraft("draft-cloud", 100L)!!
+
+        assertTrue(preview.contains("Example Gin is a London dry gin"))
+        assertTrue(preview.contains(reply.replace("\"", "\\\"")))
+        assertFalse(preview.contains("synthetic-ollama-key"))
+        assertFalse(preview.contains("messages"))
+        root.deleteRecursively()
+        Unit
+    }
 
     @Test
     fun sendsOnlyBoundedUntrustedPageTextToTheSelectedModelAndReturnsEvidence() = runBlocking {

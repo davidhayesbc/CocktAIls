@@ -20,6 +20,7 @@ readonly screenshot_names=(
   onboarding-review-simulated.png
   onboarding-review-real-route.png
   onboarding-pause-simulated.png
+  detailed-lookup-capture-preview.png
 )
 readonly required_visual_screenshots=(
   onboarding-integrated-setup.png
@@ -28,6 +29,7 @@ readonly required_visual_screenshots=(
   onboarding-label-crop-dialog.png
   onboarding-review-real-route.png
   onboarding-review-simulated.png
+  detailed-lookup-capture-preview.png
 )
 
 readonly test_log="$RUNNER_TEMP/cocktails-instrumentation.log"

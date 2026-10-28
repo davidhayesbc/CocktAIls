@@ -22,8 +22,40 @@ import org.junit.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.io.File
+import java.nio.file.Files
 
 class LocalBottleDetailExtractorTest {
+    @Test
+    fun optedInCaptureReceivesExactValidatorInputAndModelReplyAtTheirPipelineStages() = runBlocking {
+        val root = Files.createTempDirectory("extractor-capture").toFile()
+        val store = DetailedBottleLookupCaptureStore(File(root, "capture.json"), { 100L }, processSessionId = "test")
+        val token = "00000000-0000-0000-0000-000000000099"
+        assertEquals(DetailedCaptureArmResult.ARMED, store.arm("draft-a", token, "preview", 100L))
+        val capture = store.claim("draft-a", token, "5011333150725", "preview.20", 20, "Qwen", 100L)!!
+        val rawModelReply = """{"facts":[{"field":"product_name","value":"North Star Gin","evidence":"North Star Gin"}]}"""
+        val page = WebPageText(
+            "North Star Gin",
+            "https://shop.example/north-star?session=private",
+            "UPC 5011333150725 · North Star Gin 40% ABV.",
+            "Firecrawl",
+        )
+        assertTrue(scannedProductIdentityEvidence("5011333150725", "North Star Gin", page.markdown) != null)
+        val result = LocalBottleDetailExtractor({ "/model.gguf" }, LocalInferenceRunner { _, _, _, _ -> rawModelReply })
+            .extractWithDetailedCapture(page, LOCAL_MODEL_LABEL, "5011333150725", capture)
+        capture.finish("COMPLETE")
+
+        assertTrue("Capture fixture must produce a valid identity-bound result: $result", result is BottleDetailExtractionResult.Found)
+        val preview = store.previewForDraft("draft-a", 100L)!!
+        assertTrue(preview.contains("UPC [barcode omitted]"))
+        assertTrue(preview.contains("North Star Gin 40% ABV."))
+        assertTrue(preview.contains(rawModelReply.replace("\"", "\\\"")))
+        assertTrue(preview.contains("STRUCTURED_IDENTITY_DATA_MISSING"))
+        assertFalse(preview.contains("session=private"))
+        root.deleteRecursively()
+        Unit
+    }
+
     @Test
     fun usesLocalRunnerAndAcceptsOnlyQuotedFieldsFromSelectedPage() = runBlocking {
         val page = WebPageText("Example Gin", "https://example.org/gin", "<p>North Star Gin 40% ABV</p><a href=\"https://tracker.example/?user=secret\">Buy</a>", "Firecrawl")
@@ -143,6 +175,18 @@ class LocalBottleDetailExtractorTest {
             "On-device Qwen3", LOCAL_MODEL_LABEL, "https://example.org/whisky", source,
         )
         assertEquals(BottleExtractionRejectionReason.VALUE_NOT_IN_EVIDENCE, (wrongAbv as BottleDetailExtractionResult.Rejected).reason)
+
+        val outOfRangeConflict = parseBottleFactCandidate(
+            """{"facts":[{"field":"abv_percent","value":"40%","evidence":"North Star Gin 40% ABV and 140% ABV"}]}""",
+            "On-device Qwen3", LOCAL_MODEL_LABEL, "https://example.org/gin",
+            "North Star Gin 40% ABV and 140% ABV",
+        )
+        assertTrue(outOfRangeConflict is BottleDetailExtractionResult.Rejected)
+        assertEquals(
+            BottleExtractionRejectionReason.INVALID_ABV_EVIDENCE,
+            (outOfRangeConflict as BottleDetailExtractionResult.Rejected).reason,
+        )
+        assertTrue(BottleFactField.ABV_PERCENT in unresolvedBottleSourceFields("North Star Gin 40% ABV and 140% ABV"))
     }
 
     @Test
@@ -167,6 +211,23 @@ class LocalBottleDetailExtractorTest {
 
         assertEquals(BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES, result.reason)
         assertEquals(setOf(BottleFactField.ABV_PERCENT), result.rejectedFields)
+    }
+
+    @Test
+    fun conflictDiagnosticsRetainOtherFieldRejectionReasons() {
+        val result = parseBottleFactCandidate(
+            """{"facts":[{"field":"abv_percent","value":"40%","evidence":"North Star Gin 40% ABV"},{"field":"abv_percent","value":"43%","evidence":"North Star Gin 43% ABV"},{"field":"quantity","value":"700 mL","evidence":"Bottle size 750 mL"}]}""",
+            "On-device Qwen3", LOCAL_MODEL_LABEL, "https://example.org/gin",
+            "North Star Gin 40% ABV. North Star Gin 43% ABV. Bottle size 750 mL.",
+        ) as BottleDetailExtractionResult.Rejected
+
+        assertEquals(
+            setOf(
+                BottleFactRejection(BottleFactField.ABV_PERCENT, BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES),
+                BottleFactRejection(BottleFactField.QUANTITY, BottleExtractionRejectionReason.VALUE_NOT_IN_EVIDENCE),
+            ),
+            result.fieldRejections.toSet(),
+        )
     }
 
     @Test

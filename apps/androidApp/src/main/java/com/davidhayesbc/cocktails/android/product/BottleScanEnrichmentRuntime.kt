@@ -98,6 +98,7 @@ internal class BottleScanEnrichmentRuntime(context: Context) {
         barcode: String,
         plan: ScannedBottlePlan,
         report: BottleLookupDebugReport,
+        detailedCapture: DetailedBottleLookupRecorder? = null,
         onStage: suspend (ScannedBottleStage, String?, String?) -> Unit,
     ): ScannedBottleOutcome {
         fun record(event: BottleLookupDebugEvent) {
@@ -123,6 +124,7 @@ internal class BottleScanEnrichmentRuntime(context: Context) {
                         page,
                         preferences.getString("ollama_cloud_model", "").orEmpty(),
                         requiredBarcode,
+                        detailedCapture,
                     )
                     AutomaticBottleExtractor.ON_DEVICE -> {
                         val modelFile = localModelStore.installedModel()
@@ -131,13 +133,13 @@ internal class BottleScanEnrichmentRuntime(context: Context) {
                             LocalBottleDetailExtractor(
                                 { modelFile.absolutePath },
                                 LazyLlamaCppLocalInferenceRunner(appContext),
-                            ).extractWithDiagnostics(page, LOCAL_MODEL_LABEL, requiredBarcode, ::record),
+                            ).extractWithDetailedCapture(page, LOCAL_MODEL_LABEL, requiredBarcode, detailedCapture, ::record),
                         )
                     }
                 }
             },
         )
-        return coordinator.processScannedBarcode(barcode, plan, onStage, ::record)
+        return coordinator.processScannedBarcode(barcode, plan, onStage, ::record, detailedCapture)
     }
 
     private data class AppVersion(val name: String, val code: Long)

@@ -118,6 +118,51 @@ class ScannedBottleWorkflowTest {
     }
 
     @Test
+    fun pageIdentityRejectionMapsProductAndOtherFactsSeparately() {
+        val barcode = "5011333150725"
+        val parsed = parseBottleFactCandidate(
+            """{"facts":[{"field":"product_name","value":"Other Reserve","evidence":"Other Reserve"},{"field":"abv_percent","value":"40%","evidence":"Other Reserve 40% ABV"}]}""",
+            "On-device Qwen3", LOCAL_MODEL_LABEL, "https://shop.example/item",
+            "Other Reserve 40% ABV UPC $barcode",
+        )
+        val rejected = bindPageBarcodeIdentity(
+            parsed,
+            barcode,
+            WebPageText("Auchentoshan Three Wood", "https://shop.example/item", "Other Reserve 40% ABV UPC $barcode", "Firecrawl"),
+        ) as BottleDetailExtractionResult.Rejected
+
+        assertEquals(
+            setOf(
+                BottleFactRejection(BottleFactField.PRODUCT_NAME, BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE),
+                BottleFactRejection(BottleFactField.ABV_PERCENT, BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE),
+            ),
+            rejected.fieldRejections.toSet(),
+        )
+    }
+
+    @Test
+    fun pageBindingReportsMissingProductNameWithoutMislabelingOtherFacts() {
+        val barcode = "5011333150725"
+        val parsed = parseBottleFactCandidate(
+            """{"facts":[{"field":"abv_percent","value":"40%","evidence":"Other Reserve 40% ABV"}]}""",
+            "On-device Qwen3", LOCAL_MODEL_LABEL, "https://shop.example/item", "Other Reserve 40% ABV UPC $barcode",
+        )
+        val rejected = bindPageBarcodeIdentity(
+            parsed,
+            barcode,
+            WebPageText("Auchentoshan Three Wood", "https://shop.example/item", "Other Reserve 40% ABV UPC $barcode", "Firecrawl"),
+        ) as BottleDetailExtractionResult.Rejected
+
+        assertEquals(
+            setOf(
+                BottleFactRejection(BottleFactField.PRODUCT_NAME, BottleExtractionRejectionReason.PRODUCT_NAME_MISSING),
+                BottleFactRejection(BottleFactField.ABV_PERCENT, BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE),
+            ),
+            rejected.fieldRejections.toSet(),
+        )
+    }
+
+    @Test
     fun onlyStillAcceptedFactValuesBecomeDurableProductSources() {
         val barcode = "5011333150725"
         val suggestions = BottleDetailSuggestions(

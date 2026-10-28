@@ -131,16 +131,18 @@ internal fun bindPageBarcodeIdentity(
     requiredBarcode: String,
     page: WebPageText,
 ): BottleDetailExtractionResult {
-    if (normalizeGtinForLookup(requiredBarcode) == null) return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.INVALID_TARGET_BARCODE)
+    if (normalizeGtinForLookup(requiredBarcode) == null) {
+        return rejectWithIdentityReasons(result, BottleExtractionRejectionReason.INVALID_TARGET_BARCODE)
+    }
     if (result !is BottleDetailExtractionResult.Found) return result
     val nameFact = result.suggestions.facts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }
-        ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.PRODUCT_NAME_MISSING)
+        ?: return rejectWithIdentityReasons(result, BottleExtractionRejectionReason.PRODUCT_NAME_MISSING)
     val title = page.title
     if (!title.isNullOrBlank() && !structuredProductNamesAgree(nameFact.value, title)) {
-        return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
+        return rejectWithIdentityReasons(result, BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
     }
     val identityEvidence = scannedProductIdentityEvidence(requiredBarcode, nameFact.value, page.markdown)
-        ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
+        ?: return rejectWithIdentityReasons(result, BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
     val unboundFacts = result.suggestions.facts.filter { fact ->
         fact.field != BottleFactField.PRODUCT_NAME && !factQuoteIsBoundToProductIdentity(fact, nameFact.value)
     }
@@ -148,16 +150,46 @@ internal fun bindPageBarcodeIdentity(
     val acceptedFacts = result.suggestions.facts.filter { fact ->
         fact.field == BottleFactField.PRODUCT_NAME || fact !in unboundFacts
     }.filterNot { it.field in unresolvedFields }
+    val identityRejections = result.suggestions.fieldRejections + unboundFacts.map {
+        BottleFactRejection(it.field, BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE)
+    }
     return result.copy(
         suggestions = result.suggestions.copy(
             facts = acceptedFacts,
             unresolvedFields = unresolvedFields,
             targetBarcode = requiredBarcode,
             identityEvidence = identityEvidence,
+            fieldRejections = identityRejections.distinct(),
         ),
         rejectedCandidates = result.rejectedCandidates + if (unboundFacts.isNotEmpty()) {
             setOf(BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE)
         } else emptySet(),
+    )
+}
+
+private fun rejectWithIdentityReasons(
+    result: BottleDetailExtractionResult,
+    reason: BottleExtractionRejectionReason,
+): BottleDetailExtractionResult {
+    if (result !is BottleDetailExtractionResult.Found) return result
+    val fieldReasons = buildList {
+        addAll(result.suggestions.fieldRejections)
+        if (reason == BottleExtractionRejectionReason.PRODUCT_NAME_MISSING) {
+            add(BottleFactRejection(BottleFactField.PRODUCT_NAME, reason))
+        }
+        result.suggestions.facts.forEach { fact ->
+            val fieldReason = if (fact.field == BottleFactField.PRODUCT_NAME || reason == BottleExtractionRejectionReason.INVALID_TARGET_BARCODE) {
+                reason
+            } else {
+                BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE
+            }
+            add(BottleFactRejection(fact.field, fieldReason))
+        }
+    }.distinct()
+    return BottleDetailExtractionResult.Rejected(
+        reason = reason,
+        rejectedFields = fieldReasons.map(BottleFactRejection::field).toSet(),
+        fieldRejections = fieldReasons,
     )
 }
 
@@ -461,6 +493,7 @@ internal class ScannedBottleEnrichmentCoordinator(
         plan: ScannedBottlePlan,
         onStage: suspend (ScannedBottleStage, sourceUrl: String?, progressLabel: String?) -> Unit = { _, _, _ -> },
         onDebugEvent: (BottleLookupDebugEvent) -> Unit = {},
+        detailedCapture: DetailedBottleLookupRecorder? = null,
     ): ScannedBottleOutcome {
         val query = scannedBottleSearchQuery(barcode) ?: run {
             onDebugEvent(BottleLookupDebugEvent(BottleLookupDebugStage.COMPLETE, "APP", "INVALID_BARCODE"))
@@ -496,6 +529,7 @@ internal class ScannedBottleEnrichmentCoordinator(
         val searchCall = measured(BottleLookupDebugStage.FIRECRAWL_SEARCH, "Firecrawl", onDebugEvent) { search(query) }
         val searchResult = searchCall.result
         val hits = (searchResult as? WebSearchResult.Found)?.hits.orEmpty()
+        if (hits.isEmpty()) detailedCapture?.recordSearchSelection(emptyList(), null, "NO_SEARCH_RESULTS")
         onDebugEvent(BottleLookupDebugEvent(
             stage = BottleLookupDebugStage.FIRECRAWL_SEARCH,
             provider = "Firecrawl",
@@ -513,6 +547,8 @@ internal class ScannedBottleEnrichmentCoordinator(
         }
 
         val selection = selectScannedBottleSearchHit(barcode, hits)
+        val selectedIndex = selection.selected?.let(hits::indexOf)?.takeIf { it >= 0 }
+        detailedCapture?.recordSearchSelection(hits, selectedIndex, selection.resultCode)
         onDebugEvent(BottleLookupDebugEvent(
             stage = BottleLookupDebugStage.SOURCE_SELECTION,
             provider = "APP",
@@ -566,8 +602,17 @@ internal class ScannedBottleEnrichmentCoordinator(
                 continue
             }
             val markdownDecision = scannedBarcodePageDecision(barcode, page.markdown)
-            val structuredIdentity = if (markdownDecision == ScannedBarcodePageDecision.VERIFIED) null else structuredBottleIdentityForPage(barcode, page)
+            val structuredResolution = resolveStructuredBottleIdentityForPage(barcode, page)
+            val structuredIdentity = if (markdownDecision == ScannedBarcodePageDecision.VERIFIED) null else structuredResolution.identity
             val decision = if (structuredIdentity != null) ScannedBarcodePageDecision.VERIFIED else markdownDecision
+            detailedCapture?.recordFetchedPage(
+                index = index,
+                url = page.sourceUrl,
+                title = page.title,
+                barcodeDecision = if (structuredIdentity != null) "STRUCTURED_PRODUCT_MATCH" else decision.name,
+                structuredIdentities = page.structuredBottleIdentities,
+                structuredIdentityStatus = structuredResolution.status,
+            )
             lastDecision = decision
             onDebugEvent(BottleLookupDebugEvent(
                 stage = BottleLookupDebugStage.BARCODE_MATCH,

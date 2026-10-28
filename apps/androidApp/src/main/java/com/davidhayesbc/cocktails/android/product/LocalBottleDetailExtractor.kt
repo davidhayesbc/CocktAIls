@@ -48,6 +48,14 @@ internal class LocalBottleDetailExtractor(
         model: String,
         requiredBarcode: String?,
         onDebugEvent: (BottleLookupDebugEvent) -> Unit = {},
+    ): BottleDetailExtractionResult = extractWithDetailedCapture(page, model, requiredBarcode, null, onDebugEvent)
+
+    suspend fun extractWithDetailedCapture(
+        page: WebPageText,
+        model: String,
+        requiredBarcode: String?,
+        detailedCapture: DetailedBottleLookupRecorder?,
+        onDebugEvent: (BottleLookupDebugEvent) -> Unit = {},
     ): BottleDetailExtractionResult {
         fun record(event: BottleLookupDebugEvent) {
             // Diagnostics must not be able to break an otherwise usable local extraction.
@@ -93,6 +101,15 @@ internal class LocalBottleDetailExtractor(
         // is shortened; otherwise a conflicting fact later on the page could be missed.
         val sourceText = redactBarcodeIdentifiers(sanitizeSourceTextForCloud(page.markdown))
             .take(LOCAL_VALIDATION_SOURCE_TEXT_CHARS)
+        detailedCapture?.recordValidatorInput(
+            provider = providerLabel,
+            barcode = requiredBarcode,
+            sourceText = sourceText,
+            pageTitle = page.title,
+            structuredIdentities = page.structuredBottleIdentities,
+            structuredIdentityStatus = structuredIdentityResolution?.status,
+            selectedStructuredIdentity = structuredIdentity,
+        )
         val promptSourceText = sourceText.take(LOCAL_SOURCE_TEXT_CHARS)
         val structuredFallback = structuredIdentity?.let { identity ->
             structuredProductNameFallback(requiredBarcode.orEmpty(), page, identity)
@@ -157,6 +174,8 @@ internal class LocalBottleDetailExtractor(
             if (!runnerReportedFailure) recordLocalFailure(currentFailureStage, code, failure, ::record)
             return BottleDetailExtractionResult.LocalFailure(code)
         }
+
+        detailedCapture?.recordModelResponse(providerLabel, LOCAL_MODEL_LABEL, output)
 
         record(BottleLookupDebugEvent(BottleLookupDebugStage.LOCAL_RESPONSE_PARSING, providerLabel, "RUNNING"))
         val parsed = try {

@@ -19,6 +19,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.util.Locale
 import com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup
@@ -134,15 +135,26 @@ internal class OllamaCloudBottleDetailExtractor(
         page: WebPageText,
         model: String,
         requiredBarcode: String?,
+        detailedCapture: DetailedBottleLookupRecorder? = null,
     ): BottleProviderCall<BottleDetailExtractionResult> {
         if (requiredBarcode != null && normalizeGtinForLookup(requiredBarcode) == null) return BottleProviderCall(BottleDetailExtractionResult.InvalidResponse)
         val safeSourceUrl = normalizePublicHttpsUrl(page.sourceUrl)
             ?: return BottleProviderCall(BottleDetailExtractionResult.InvalidResponse)
         val safeModel = model.trim()
         if (!isValidOllamaModelIdentifier(safeModel)) return BottleProviderCall(BottleDetailExtractionResult.InvalidModel)
-        val structuredIdentity = requiredBarcode?.let { structuredBottleIdentityForPage(it, page) }
+        val structuredResolution = requiredBarcode?.let { resolveStructuredBottleIdentityForPage(it, page) }
+        val structuredIdentity = structuredResolution?.identity
         val sourceText = redactBarcodeIdentifiers(sanitizeSourceTextForCloud(page.markdown)).take(MAX_SOURCE_TEXT_CHARS)
         if (sourceText.isBlank()) return BottleProviderCall(BottleDetailExtractionResult.InvalidResponse)
+        detailedCapture?.recordValidatorInput(
+            provider = providerLabel,
+            barcode = requiredBarcode,
+            sourceText = sourceText,
+            pageTitle = page.title,
+            structuredIdentities = page.structuredBottleIdentities,
+            structuredIdentityStatus = structuredResolution?.status,
+            selectedStructuredIdentity = structuredIdentity,
+        )
         val key = keyProvider()?.trim()?.takeIf(String::isNotEmpty)
             ?: return BottleProviderCall(BottleDetailExtractionResult.SetupRequired)
         return when (val response = transport.chat(safeModel, key, buildOllamaRequest(
@@ -152,6 +164,11 @@ internal class OllamaCloudBottleDetailExtractor(
         ))) {
             is OllamaCloudHttpResponse.Failure -> BottleProviderCall(response.status.toExtractionFailure(), response.status.takeIf { it in 100..599 })
             is OllamaCloudHttpResponse.Success -> {
+                val modelResponse = runCatching {
+                    val root = Json.parseToJsonElement(response.body).jsonObject
+                    (root["message"] as? JsonObject)?.get("content")?.jsonPrimitive?.contentOrNull
+                }.getOrNull() ?: "[model response content unavailable: malformed response envelope]"
+                detailedCapture?.recordModelResponse(providerLabel, safeModel, modelResponse, response.status)
                 val parsed = parseOllamaExtractionResponse(
                     response.body,
                     safeModel,
@@ -457,8 +474,10 @@ internal fun parseBottleFactCandidate(
     if (conflictingFields.isNotEmpty()) {
         return BottleDetailExtractionResult.Rejected(
             BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES,
-            conflictingFields,
-            conflictingFields.map { BottleFactRejection(it, BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES) },
+            conflictingFields + fieldRejections.map(BottleFactRejection::field),
+            (fieldRejections + conflictingFields.map {
+                BottleFactRejection(it, BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES)
+            }).distinct(),
         )
     }
     val rejectedFields = fieldRejections.map(BottleFactRejection::field).toSet()
@@ -550,10 +569,12 @@ internal fun unresolvedBottleSourceFields(sourceText: String): Set<BottleFactFie
         }
         .map { kotlin.math.round(it).toLong() }
         .toSet()
+    // Keep out-of-range claims in the conflict set: filtering them could make a plausible
+    // value appear unambiguous when the same source also contains an invalid ABV claim.
     val abvValues = Regex(
         """(?i)(?:(?<![\d.,])(\d{1,3}(?:[.,]\d{1,2})?)\s*%\s*(?:ABV|ALC(?:OHOL)?(?:\s+BY\s+VOLUME)?|ALC\.?\s*/\s*VOL\.?|VOL(?:UME)?)\b|\b(?:ABV|ALC(?:OHOL)?(?:\s+BY\s+VOLUME)?|ALC\.?\s*/\s*VOL\.?|VOL(?:UME)?)\s*[:=]?\s*(\d{1,3}(?:[.,]\d{1,2})?)\s*%)""",
     ).findAll(sourceText).mapNotNull { match ->
-        (match.groups[1]?.value ?: match.groups[2]?.value)?.replace(',', '.')?.toDoubleOrNull()?.takeIf { it in 0.0..100.0 }
+        (match.groups[1]?.value ?: match.groups[2]?.value)?.replace(',', '.')?.toDoubleOrNull()
     }.toSet()
     return buildSet {
         if (quantities.size > 1) add(BottleFactField.QUANTITY)
@@ -581,7 +602,6 @@ private fun evidencedAbvNumbers(evidence: String): Set<Double> {
     return (unitAfter.findAll(evidence).mapNotNull { it.groups[1]?.value } +
         unitBefore.findAll(evidence).mapNotNull { it.groups[1]?.value })
         .mapNotNull { it.replace(',', '.').toDoubleOrNull() }
-        .filter { it in 0.0..100.0 }
         .toSet()
 }
 
