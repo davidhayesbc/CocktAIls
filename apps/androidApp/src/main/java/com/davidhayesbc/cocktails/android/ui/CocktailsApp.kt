@@ -2965,32 +2965,43 @@ private fun BottleIntakeFlowScreen(
                 val draft = drafts.firstOrNull { it.id == pendingLabelDraftId }
                 if (draft == null) {
                     EmptyIntakeState("This bottle is no longer in the batch.", "Return to scanning", onScan)
-                } else Column(
-                    Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).testTag("bottle-intake-scroll").padding(horizontal = 24.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
-                ) {
-                    Text("Barcode captured · Bottle #${draft.position + 1}", style = MaterialTheme.typography.titleMedium)
-                    Text(draft.barcode.orEmpty(), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("Take a label photo for your own reference. It stays on this phone and is not sent to lookup providers.", style = MaterialTheme.typography.bodyMedium)
-                    if (capturePhoto == null) {
-                        Button(onClick = onCaptureLabel, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("capture-label-${draft.id}")) { Text("Capture label") }
-                    } else {
-                        val bitmap = remember(capturePhoto) { BitmapFactory.decodeByteArray(capturePhoto, 0, capturePhoto.size)?.asImageBitmap() }
-                        if (bitmap != null) Image(bitmap, contentDescription = "Preview label for bottle ${draft.position + 1}", modifier = Modifier.fillMaxWidth().heightIn(max = 292.dp).testTag("label-photo-preview-${draft.id}"))
-                        val showingOriginal = originalCapturePhoto == null || capturePhoto.contentEquals(originalCapturePhoto)
-                        if (suggestedLabelCrop != null && originalCapturePhoto != null && showingOriginal) {
-                            Text("Possible label edges found. Check the crop before using it.", style = MaterialTheme.typography.bodySmall)
-                            OutlinedButton(onClick = { onUseSuggestedCrop(suggestedLabelCrop) }, enabled = !labelCropBusy, modifier = Modifier.fillMaxWidth()) { Text("Check suggested crop") }
+                } else Column(Modifier.weight(1f).fillMaxWidth()) {
+                    Column(
+                        Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
+                            .testTag("bottle-intake-scroll").padding(horizontal = 24.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        Text("Barcode captured · Bottle #${draft.position + 1}", style = MaterialTheme.typography.titleMedium)
+                        Text(draft.barcode.orEmpty(), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Take a label photo for your own reference. It stays on this phone and is not sent to lookup providers.", style = MaterialTheme.typography.bodyMedium)
+                        capturePhoto?.let { photo ->
+                            val bitmap = remember(photo) { BitmapFactory.decodeByteArray(photo, 0, photo.size)?.asImageBitmap() }
+                            if (bitmap != null) Image(bitmap, contentDescription = "Preview label for bottle ${draft.position + 1}", modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp).testTag("label-photo-preview-${draft.id}"))
+                            val showingOriginal = originalCapturePhoto == null || photo.contentEquals(originalCapturePhoto)
+                            if (suggestedLabelCrop != null && originalCapturePhoto != null && showingOriginal) {
+                                Text("Possible label edges found. Check the crop before using it.", style = MaterialTheme.typography.bodySmall)
+                                OutlinedButton(onClick = { onUseSuggestedCrop(suggestedLabelCrop) }, enabled = !labelCropBusy, modifier = Modifier.fillMaxWidth()) { Text("Check suggested crop") }
+                            }
+                            if (originalCapturePhoto != null) OutlinedButton(onClick = { cropEditorOpen = true }, enabled = !labelCropBusy, modifier = Modifier.fillMaxWidth().testTag("adjust-bottle-label-crop")) { Text("Adjust crop") }
                         }
-                        if (originalCapturePhoto != null) OutlinedButton(onClick = { cropEditorOpen = true }, enabled = !labelCropBusy, modifier = Modifier.fillMaxWidth().testTag("adjust-bottle-label-crop")) { Text("Adjust crop") }
                         if (labelCropBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Button(onClick = { onUsePendingLabel(draft.id) }, enabled = !labelCropBusy, modifier = Modifier.weight(1f).heightIn(min = 56.dp).testTag("use-label-${draft.id}")) { Text("Use photo & scan next") }
-                            TextButton(onClick = onCaptureLabel, enabled = !labelCropBusy, modifier = Modifier.weight(1f).testTag("retake-label-${draft.id}")) { Text("Retake") }
+                        captureMessage?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                    }
+                    Column(
+                        Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        if (capturePhoto == null) {
+                            Button(onClick = onCaptureLabel, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("capture-label-${draft.id}")) { Text("Capture label") }
+                            TextButton(onClick = { onSkipPendingLabel(draft.id) }, enabled = !labelCropBusy, modifier = Modifier.fillMaxWidth().testTag("skip-label-${draft.id}")) { Text("Skip photo & scan next") }
+                        } else {
+                            Button(onClick = { onUsePendingLabel(draft.id) }, enabled = !labelCropBusy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("use-label-${draft.id}")) { Text("Use photo & scan next") }
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = onCaptureLabel, enabled = !labelCropBusy, modifier = Modifier.weight(1f).testTag("retake-label-${draft.id}")) { Text("Retake") }
+                                TextButton(onClick = { onSkipPendingLabel(draft.id) }, enabled = !labelCropBusy, modifier = Modifier.weight(1f).testTag("skip-label-${draft.id}")) { Text("Skip photo & scan next") }
+                            }
                         }
                     }
-                    captureMessage?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-                    TextButton(onClick = { onSkipPendingLabel(draft.id) }, enabled = !labelCropBusy, modifier = Modifier.fillMaxWidth().testTag("skip-label-${draft.id}")) { Text("Skip photo & scan next") }
                 }
                 if (cropEditorOpen && originalCapturePhoto != null) BottleLabelCropEditorDialog(
                     originalJpeg = originalCapturePhoto,
