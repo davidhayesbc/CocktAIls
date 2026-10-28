@@ -26,6 +26,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.rules.TestName
 
 @RunWith(AndroidJUnit4::class)
@@ -108,6 +109,12 @@ class BarcodeScannerLifecycleTest {
         composeRule.onNodeWithTag("scanner-pending-count").assertTextEquals("0 pending").assertIsDisplayed()
         awaitCameraPermissionGranted()
         composeRule.onNodeWithTag("barcode-camera-preview").assertIsDisplayed()
+        val scannerTitleBounds = composeRule.onNodeWithTag("barcode-intake-scanner-title").fetchSemanticsNode().boundsInRoot
+        val cameraFrameBounds = composeRule.onNodeWithTag("barcode-camera-frame").fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "Camera preview must start below the complete scanner heading: title=$scannerTitleBounds frame=$cameraFrameBounds",
+            cameraFrameBounds.top >= scannerTitleBounds.bottom,
+        )
         composeRule.waitUntil(timeoutMillis = 30_000) {
             composeRule.onAllNodesWithText("Camera is live and barcode frames are being analyzed.")
                 .fetchSemanticsNodes().isNotEmpty()

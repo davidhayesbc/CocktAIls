@@ -38,6 +38,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.padding
@@ -1699,7 +1702,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         if (showBottleIntake && bottleIntakeSession != null) {
             val cameraTokenForScreen = launchedBottleCameraToken
             BottleIntakeScreen(
-                modifier = Modifier.fillMaxSize().padding(contentPadding),
+                modifier = Modifier.fillMaxSize(),
                 session = bottleIntakeSession!!,
                 route = bottleIntakeRoute,
                 onRouteChange = { bottleIntakeRoute = it },
@@ -2827,7 +2830,7 @@ private fun BottleIntakeFlowScreen(
     var barcode by remember(session.id) { mutableStateOf("") }
     var brand by remember(session.id) { mutableStateOf("") }
     var productName by remember(session.id) { mutableStateOf("") }
-    Column(modifier.fillMaxSize().imePadding()) {
+    Column(modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).imePadding()) {
         if (route == BottleIntakeRoute.SETUP && labelCameraOutputFile == null) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 10.dp),
@@ -2979,7 +2982,7 @@ private fun BottleIntakeFlowScreen(
                             Text("Possible label edges found. Check the crop before using it.", style = MaterialTheme.typography.bodySmall)
                             OutlinedButton(onClick = { onUseSuggestedCrop(suggestedLabelCrop) }, enabled = !labelCropBusy, modifier = Modifier.fillMaxWidth()) { Text("Check suggested crop") }
                         }
-                        if (originalCapturePhoto != null) OutlinedButton(onClick = { cropEditorOpen = true }, enabled = !labelCropBusy, modifier = Modifier.fillMaxWidth()) { Text("Adjust crop") }
+                        if (originalCapturePhoto != null) OutlinedButton(onClick = { cropEditorOpen = true }, enabled = !labelCropBusy, modifier = Modifier.fillMaxWidth().testTag("adjust-bottle-label-crop")) { Text("Adjust crop") }
                         if (labelCropBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             Button(onClick = { onUsePendingLabel(draft.id) }, enabled = !labelCropBusy, modifier = Modifier.weight(1f).heightIn(min = 56.dp).testTag("use-label-${draft.id}")) { Text("Use photo & scan next") }
@@ -3206,7 +3209,7 @@ private fun BottleLabelCropEditorDialog(
     }
 
     Dialog(onDismissRequest = onDismiss) {
-        Card(Modifier.fillMaxWidth().widthIn(max = 560.dp)) {
+        Card(Modifier.fillMaxWidth().widthIn(max = 560.dp).testTag("bottle-label-crop-dialog")) {
             Column(
                 Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),

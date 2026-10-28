@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.graphics.Rect
 import android.os.Build
 import android.util.Log
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityNodeInfo
@@ -25,7 +26,6 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
@@ -189,7 +189,7 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("intake-manual-start").performClick()
         composeRule.onNodeWithTag("batch-manual-name").performTextInput(bottleName)
         composeRule.onNodeWithTag("batch-manual-name").assert(editableTextIs(bottleName))
-        composeRule.onNodeWithTag("batch-manual-name").performImeAction()
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-add-manual-bottle"))
         composeRule.onNodeWithTag("batch-add-manual-bottle").assertIsDisplayed().assertIsEnabled().performClick()
         composeRule.waitForIdle()
@@ -408,6 +408,8 @@ class OfflineRecipeSmokeTest {
                 }
             }
 
+            composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Review your bottle")
+            captureOnboardingScreenshot("onboarding-review-real-route.png")
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("review-evidence-toggle"))
             composeRule.onNodeWithTag("review-evidence-toggle").assertIsDisplayed().performClick()
             val identityEvidenceNote = "This page contains the scanned barcode. Review the quoted evidence before accepting."
@@ -808,7 +810,7 @@ class OfflineRecipeSmokeTest {
                     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                         BottleIntakeScreen(
                         modifier = Modifier.fillMaxSize(), session = activeSession, route = route, onRouteChange = { route = it }, homes = listOf(home),
-                        capturePhoto = capturedLabel, captureMessage = null, permissionMessage = null,
+                        capturePhoto = capturedLabel, originalCapturePhoto = capturedLabel, captureMessage = null, permissionMessage = null,
                         pendingLabelDraftId = pendingLabelId,
                         webSearchEnabled = false, webSearchStates = webStates, pendingEnrichmentJobs = jobs,
                         activeReviewDraftId = activeReviewId, ollamaCloudEnabled = false, localAiEnabled = false,
@@ -876,6 +878,12 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("capture-label-${first.id}").performClick()
             composeRule.waitForIdle()
             composeRule.onNodeWithTag("label-photo-preview-${first.id}").assertIsDisplayed()
+            composeRule.onNodeWithTag("use-label-${first.id}").assertIsDisplayed()
+            composeRule.onNodeWithTag("adjust-bottle-label-crop").assertIsDisplayed().performClick()
+            composeRule.onNodeWithTag("bottle-label-crop-dialog").assertIsDisplayed()
+            composeRule.onNodeWithTag("apply-bottle-label-crop").assertIsDisplayed()
+            captureOnboardingScreenshot("onboarding-label-crop-dialog.png")
+            composeRule.onNodeWithText("Cancel").performClick()
             composeRule.onNodeWithTag("use-label-${first.id}").assertIsDisplayed()
             // Screenshot helper waits for the UI and compositor before comparing the preview.
             val labelPreviewScreenshotHash = captureOnboardingScreenshot("onboarding-label-preview-simulated.png")

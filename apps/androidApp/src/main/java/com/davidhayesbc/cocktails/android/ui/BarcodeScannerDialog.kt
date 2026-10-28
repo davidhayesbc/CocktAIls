@@ -8,6 +8,7 @@ import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.AlertDialog
@@ -26,6 +27,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -225,7 +227,8 @@ internal fun BarcodeScannerDialog(
                         modifier = Modifier.testTag("barcode-intake-scanner-title"),
                     )
                     Text(scannerMessage, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Box(Modifier.weight(1f).fillMaxWidth().testTag("barcode-camera-frame")) {
+                    Spacer(Modifier.height(12.dp))
+                    Box(Modifier.weight(1f).fillMaxWidth().clipToBounds().testTag("barcode-camera-frame")) {
                         AndroidView(
                             factory = { viewContext -> PreviewView(viewContext).also {
                                 // Use TextureView-backed rendering so the camera preview stays
@@ -233,7 +236,7 @@ internal fun BarcodeScannerDialog(
                                 it.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
                                 previewView = it
                             } },
-                            modifier = Modifier.fillMaxSize().testTag("barcode-camera-preview"),
+                            modifier = Modifier.fillMaxSize().clipToBounds().testTag("barcode-camera-preview"),
                         )
                         Canvas(Modifier.align(Alignment.Center).fillMaxWidth(0.84f).height(152.dp)) {
                             val inset = 3.dp.toPx()
