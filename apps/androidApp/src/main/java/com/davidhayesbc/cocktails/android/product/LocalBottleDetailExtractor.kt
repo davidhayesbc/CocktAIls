@@ -79,7 +79,16 @@ internal class LocalBottleDetailExtractor(
             record(BottleLookupDebugEvent(BottleLookupDebugStage.LOCAL_INPUT_VALIDATION, providerLabel, "INVALID_MODEL"))
             return BottleDetailExtractionResult.InvalidModel
         }
-        val structuredIdentity = requiredBarcode?.let { structuredBottleIdentityForPage(it, page) }
+        val structuredIdentityResolution = requiredBarcode?.let { resolveStructuredBottleIdentityForPage(it, page) }
+        val structuredIdentity = structuredIdentityResolution?.identity
+        if (structuredIdentityResolution != null) {
+            record(BottleLookupDebugEvent(
+                stage = BottleLookupDebugStage.LOCAL_STRUCTURED_IDENTITY,
+                provider = providerLabel,
+                result = if (structuredIdentity != null) "FOUND" else "NO_MATCH",
+                reasonCodes = listOf(structuredIdentityResolution.status.debugCode),
+            ))
+        }
         // Keep the original bounded page for evidence/conflict checks. Only the model prompt
         // is shortened; otherwise a conflicting fact later on the page could be missed.
         val sourceText = redactBarcodeIdentifiers(sanitizeSourceTextForCloud(page.markdown))
@@ -176,6 +185,7 @@ internal class LocalBottleDetailExtractor(
                 suggestions = structuredFallback.suggestions.copy(
                     unresolvedFields = (structuredFallback.suggestions.unresolvedFields + parsed.rejectedFields) -
                         BottleFactField.PRODUCT_NAME,
+                    fieldRejections = parsed.fieldRejections,
                 ),
                 rejectedCandidates = setOf(parsed.reason),
             )
@@ -191,8 +201,22 @@ internal class LocalBottleDetailExtractor(
                 reasonCodes = listOf(fallbackReason),
                 factFields = (listOf(BottleFactField.PRODUCT_NAME) + parsed.rejectedFields)
                     .map(BottleFactField::wireValue),
+                rejectedFacts = parsed.fieldRejections,
             ))
             return fallback
+        }
+
+        if (parsed is BottleDetailExtractionResult.Rejected) {
+            if (requiredBarcode != null) {
+                record(BottleLookupDebugEvent(
+                    stage = BottleLookupDebugStage.LOCAL_IDENTITY_BINDING,
+                    provider = providerLabel,
+                    result = "SKIPPED",
+                    reasonCodes = listOf("MODEL_CANDIDATE_REJECTED_BEFORE_IDENTITY_BINDING"),
+                    factFields = parsed.rejectedFields.map(BottleFactField::wireValue),
+                ))
+            }
+            return parsed
         }
 
         if (structuredIdentity == null && requiredBarcode == null) return parsed
@@ -244,6 +268,7 @@ private fun recordExtractionResult(
             reasonCodes = result.rejectedCandidates.map(BottleExtractionRejectionReason::debugCode),
             factFields = (result.suggestions.facts.map(BottleFactEvidence::field) + result.suggestions.unresolvedFields)
                 .distinct().map(BottleFactField::wireValue),
+            rejectedFacts = result.suggestions.fieldRejections,
         ))
         is BottleDetailExtractionResult.Rejected -> record(BottleLookupDebugEvent(
             stage,
@@ -251,6 +276,7 @@ private fun recordExtractionResult(
             "REJECTED",
             reasonCodes = listOf(result.reason.debugCode),
             factFields = result.rejectedFields.map(BottleFactField::wireValue),
+            rejectedFacts = result.fieldRejections,
         ))
         else -> record(BottleLookupDebugEvent(stage, "On-device Qwen3", "REJECTED"))
     }

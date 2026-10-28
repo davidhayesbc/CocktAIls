@@ -28,6 +28,7 @@ internal enum class BottleLookupDebugStage {
     LOCAL_GENERATION,
     LOCAL_FIRST_TOKEN,
     LOCAL_RESPONSE_PARSING,
+    LOCAL_STRUCTURED_IDENTITY,
     LOCAL_IDENTITY_BINDING,
     LOCAL_RUNTIME_CLEANUP,
     REVIEW_PERSISTENCE,
@@ -57,6 +58,7 @@ internal data class BottleLookupDebugEvent(
     val outputChunks: Int? = null,
     val generatedTokens: Int? = null,
     val finishReason: String? = null,
+    val rejectedFacts: List<BottleFactRejection> = emptyList(),
 )
 
 /**
@@ -194,6 +196,7 @@ internal class BottleLookupDebugReport(
         outputChunks = event.outputChunks?.coerceIn(0, MAX_OUTPUT_CHUNKS),
         generatedTokens = event.generatedTokens?.coerceIn(0, MAX_GENERATED_TOKENS),
         finishReason = event.finishReason?.takeIf(FINISH_REASONS::contains),
+        rejectedFacts = event.rejectedFacts.distinct().take(MAX_REJECTED_FACTS),
     )
 
     private fun BottleLookupDebugEvent.toJson() = buildJsonObject {
@@ -212,6 +215,14 @@ internal class BottleLookupDebugReport(
         outputChunks?.let { put("outputChunks", it) }
         generatedTokens?.let { put("generatedTokens", it) }
         finishReason?.let { put("finishReason", it) }
+        put("rejectedFacts", buildJsonArray {
+            rejectedFacts.forEach { rejected ->
+                add(buildJsonObject {
+                    put("field", rejected.field.wireValue.uppercase())
+                    put("reason", rejected.reason.debugCode)
+                })
+            }
+        })
     }
 
     private fun timingSummary() = buildJsonObject {
@@ -277,6 +288,7 @@ internal class BottleLookupDebugReport(
         const val MAX_PROMPT_CHARACTERS = 20_000
         const val MAX_OUTPUT_CHUNKS = 1_024
         const val MAX_GENERATED_TOKENS = 1_024
+        const val MAX_REJECTED_FACTS = 12
 
         private val OUTCOMES = setOf("RUNNING", "SUCCESS", "PARTIAL", "NOT_FOUND", "FAILED", "CANCELLED", "DISABLED")
         private val RESULTS = setOf(
@@ -309,6 +321,9 @@ internal class BottleLookupDebugReport(
             "STRUCTURED_FACTS_FALLBACK_AFTER_TIMEOUT",
             "STRUCTURED_FACTS_FALLBACK_AFTER_TRUNCATION", "STRUCTURED_FACTS_FALLBACK_AFTER_MALFORMED_RESPONSE",
             "STRUCTURED_FACTS_FALLBACK_AFTER_MODEL_REJECTION",
+            "STRUCTURED_IDENTITY_VERIFIED", "STRUCTURED_IDENTITY_INVALID_BARCODE", "STRUCTURED_IDENTITY_TITLE_MISSING",
+            "STRUCTURED_IDENTITY_DATA_MISSING", "STRUCTURED_IDENTITY_BARCODE_NOT_PRESENT", "STRUCTURED_IDENTITY_AMBIGUOUS",
+            "STRUCTURED_IDENTITY_TITLE_MISMATCH", "MODEL_CANDIDATE_REJECTED_BEFORE_IDENTITY_BINDING",
             "LOCAL_GENERATION_TOKEN_LIMIT",
             "LOCAL_MODEL_OUTPUT_INVALID", "LOCAL_IDENTITY_BINDING_FAILED", "LOCAL_INFERENCE_FAILED",
         )

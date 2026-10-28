@@ -170,6 +170,41 @@ class LocalBottleDetailExtractorTest {
     }
 
     @Test
+    fun fieldRejectionReportMapsEachFieldToItsActualReasonWithoutValues() {
+        val source = "North Star Gin 40% ABV and North Star Gin 43% ABV. Bottle size 750 mL."
+        val result = parseBottleFactCandidate(
+            """{"facts":[{"field":"product_name","value":"Secret Bottle","evidence":"quote not in page"},{"field":"quantity","value":"700 mL","evidence":"Bottle size 750 mL"},{"field":"abv_percent","value":"40%","evidence":"North Star Gin 40% ABV and North Star Gin 43% ABV"}]}""",
+            "On-device Qwen3", LOCAL_MODEL_LABEL, "https://example.org/gin", source,
+        ) as BottleDetailExtractionResult.Rejected
+
+        assertEquals(
+            setOf(
+                BottleFactRejection(BottleFactField.PRODUCT_NAME, BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE),
+                BottleFactRejection(BottleFactField.QUANTITY, BottleExtractionRejectionReason.VALUE_NOT_IN_EVIDENCE),
+                BottleFactRejection(BottleFactField.ABV_PERCENT, BottleExtractionRejectionReason.INVALID_ABV_EVIDENCE),
+            ),
+            result.fieldRejections.toSet(),
+        )
+        val report = newDebugReport().also {
+            it.record(BottleLookupDebugEvent(
+                stage = BottleLookupDebugStage.LOCAL_RESPONSE_PARSING,
+                provider = "On-device Qwen3",
+                result = "REJECTED",
+                rejectedFacts = result.fieldRejections,
+            ))
+        }.toJson()
+        assertTrue(report.contains("\"field\": \"PRODUCT_NAME\""))
+        assertTrue(report.contains("\"reason\": \"EVIDENCE_NOT_IN_SOURCE\""))
+        assertTrue(report.contains("\"field\": \"QUANTITY\""))
+        assertTrue(report.contains("\"reason\": \"VALUE_NOT_IN_EVIDENCE\""))
+        assertTrue(report.contains("\"field\": \"ABV_PERCENT\""))
+        assertTrue(report.contains("\"reason\": \"INVALID_ABV_EVIDENCE\""))
+        assertFalse(report.contains("Secret Bottle"))
+        assertFalse(report.contains("40% ABV"))
+        assertFalse(report.contains("quote not in page"))
+    }
+
+    @Test
     fun verifiedStructuredNameSurvivesWhenEveryModelFactIsUnsupported() = runBlocking {
         val barcode = "5011333150725"
         val identity = StructuredBottleIdentity(barcode, "Auchentoshan Three Wood", "barcode $barcode; product Auchentoshan Three Wood")
@@ -197,6 +232,33 @@ class LocalBottleDetailExtractorTest {
         assertTrue(debugReport.contains("ABV_PERCENT"))
         assertFalse(debugReport.contains("46%"))
         assertFalse(debugReport.contains("Auchentoshan Three Wood 43% ABV"))
+    }
+
+    @Test
+    fun reportsMissingStructuredFallbackAndDoesNotMislabelParserRejectionAsIdentityFailure() = runBlocking {
+        val barcode = "5011333150725"
+        val page = WebPageText(
+            "Auchentoshan Three Wood Single Malt Scotch Whisky",
+            "https://cook.example/auchentoshan-three-wood",
+            "UPC $barcode. Auchentoshan Three Wood Single Malt Scotch Whisky. 750 mL. 43% ABV.",
+            "Firecrawl",
+        )
+        val events = mutableListOf<BottleLookupDebugEvent>()
+        val result = LocalBottleDetailExtractor({ "/model.gguf" }, LocalInferenceRunner { _, _, _, _ ->
+            """{"facts":[{"field":"product_name","value":"Other Reserve","evidence":"Auchentoshan Three Wood Single Malt Scotch Whisky"},{"field":"quantity","value":"700 mL","evidence":"750 mL"},{"field":"abv_percent","value":"46%","evidence":"43% ABV"}]}"""
+        }).extractWithDiagnostics(page, LOCAL_MODEL_LABEL, barcode, events::add)
+
+        assertEquals(BottleExtractionRejectionReason.VALUE_NOT_IN_EVIDENCE, (result as BottleDetailExtractionResult.Rejected).reason)
+        assertEquals(
+            listOf("product_name", "quantity", "abv_percent"),
+            events.single { it.stage == BottleLookupDebugStage.LOCAL_RESPONSE_PARSING && it.result == "REJECTED" }.factFields,
+        )
+        val identityAvailability = events.single { it.stage == BottleLookupDebugStage.LOCAL_STRUCTURED_IDENTITY }
+        assertEquals("NO_MATCH", identityAvailability.result)
+        assertEquals(listOf("STRUCTURED_IDENTITY_DATA_MISSING"), identityAvailability.reasonCodes)
+        val identityStage = events.single { it.stage == BottleLookupDebugStage.LOCAL_IDENTITY_BINDING }
+        assertEquals("SKIPPED", identityStage.result)
+        assertEquals(listOf("MODEL_CANDIDATE_REJECTED_BEFORE_IDENTITY_BINDING"), identityStage.reasonCodes)
     }
 
     @Test

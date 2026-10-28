@@ -29,6 +29,12 @@ internal data class BottleFactEvidence(
     val quote: String,
 )
 
+/** Privacy-safe rejection metadata. Never stores the rejected candidate value or evidence quote. */
+internal data class BottleFactRejection(
+    val field: BottleFactField,
+    val reason: BottleExtractionRejectionReason,
+)
+
 internal enum class BottleFactField(val label: String, val wireValue: String) {
     PRODUCT_NAME("Product", "product_name"),
     BRAND("Brand", "brand"),
@@ -45,6 +51,7 @@ internal data class BottleDetailSuggestions(
     val targetBarcode: String? = null,
     val identityEvidence: String? = null,
     val retrievalProvider: String = "Unknown",
+    val fieldRejections: List<BottleFactRejection> = emptyList(),
 )
 
 internal enum class BottleExtractionRejectionReason(val debugCode: String) {
@@ -73,6 +80,7 @@ internal sealed interface BottleDetailExtractionResult {
         val reason: BottleExtractionRejectionReason,
         /** Field names only; rejected values and source text are intentionally never retained. */
         val rejectedFields: Set<BottleFactField> = emptySet(),
+        val fieldRejections: List<BottleFactRejection> = emptyList(),
     ) : BottleDetailExtractionResult
     data object SetupRequired : BottleDetailExtractionResult
     data object InvalidModel : BottleDetailExtractionResult
@@ -346,12 +354,20 @@ internal fun bindStructuredProductIdentity(
     val acceptedFacts = (listOf(structuredNameFact) + result.suggestions.facts.filter { fact ->
         fact.field != BottleFactField.PRODUCT_NAME && fact !in unboundFacts
     }).filterNot { it.field in unresolvedFields }
+    val identityRejections = buildList {
+        addAll(result.suggestions.fieldRejections)
+        unboundFacts.forEach { add(BottleFactRejection(it.field, BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE)) }
+        if (mismatchedModelName) {
+            add(BottleFactRejection(BottleFactField.PRODUCT_NAME, BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE))
+        }
+    }.distinct()
     return result.copy(
         suggestions = result.suggestions.copy(
         facts = acceptedFacts,
         unresolvedFields = unresolvedFields,
         targetBarcode = requiredBarcode,
         identityEvidence = identity.evidence,
+        fieldRejections = identityRejections,
         ),
         rejectedCandidates = result.rejectedCandidates + buildSet {
             if (unboundFacts.isNotEmpty()) add(BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE)
@@ -386,7 +402,7 @@ internal fun parseBottleFactCandidate(
     val rawFacts = rawFactsElement as? JsonArray
         ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.INVALID_FACT_SHAPE)
     val rejected = linkedSetOf<BottleExtractionRejectionReason>()
-    val rejectedFields = linkedSetOf<BottleFactField>()
+    val fieldRejections = linkedSetOf<BottleFactRejection>()
     val facts = rawFacts.mapNotNull { value ->
         val fact = value as? JsonObject ?: run {
             rejected += BottleExtractionRejectionReason.INVALID_FACT_SHAPE
@@ -395,27 +411,35 @@ internal fun parseBottleFactCandidate(
         val field = fact.string("field")?.let { name -> BottleFactField.entries.firstOrNull { it.wireValue == name } }
             ?: run { rejected += BottleExtractionRejectionReason.INVALID_FACT_SHAPE; return@mapNotNull null }
         val text = fact.string("value")?.trim()?.takeIf { it.isNotEmpty() && it.length <= MAX_FACT_VALUE_CHARS }
-            ?: run { rejected += BottleExtractionRejectionReason.INVALID_FACT_SHAPE; rejectedFields += field; return@mapNotNull null }
+            ?: run {
+                rejected += BottleExtractionRejectionReason.INVALID_FACT_SHAPE
+                fieldRejections += BottleFactRejection(field, BottleExtractionRejectionReason.INVALID_FACT_SHAPE)
+                return@mapNotNull null
+            }
         val quote = fact.string("evidence")?.trim()?.takeIf { it.isNotEmpty() && it.length <= MAX_EVIDENCE_QUOTE_CHARS }
-            ?: run { rejected += BottleExtractionRejectionReason.INVALID_FACT_SHAPE; rejectedFields += field; return@mapNotNull null }
+            ?: run {
+                rejected += BottleExtractionRejectionReason.INVALID_FACT_SHAPE
+                fieldRejections += BottleFactRejection(field, BottleExtractionRejectionReason.INVALID_FACT_SHAPE)
+                return@mapNotNull null
+            }
         if (!sourceText.contains(quote, ignoreCase = true)) {
             rejected += BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE
-            rejectedFields += field
+            fieldRejections += BottleFactRejection(field, BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE)
             return@mapNotNull null
         }
         if (!factValueIsSupported(field, text, quote)) {
             rejected += BottleExtractionRejectionReason.VALUE_NOT_IN_EVIDENCE
-            rejectedFields += field
+            fieldRejections += BottleFactRejection(field, BottleExtractionRejectionReason.VALUE_NOT_IN_EVIDENCE)
             return@mapNotNull null
         }
         if (field == BottleFactField.ABV_PERCENT && !isSupportedAbvCandidate(text, quote)) {
             rejected += BottleExtractionRejectionReason.INVALID_ABV_EVIDENCE
-            rejectedFields += field
+            fieldRejections += BottleFactRejection(field, BottleExtractionRejectionReason.INVALID_ABV_EVIDENCE)
             return@mapNotNull null
         }
         if (field == BottleFactField.QUANTITY && Regex("""(?i)\b(?:ABV|alc(?:ohol)?|vol(?:ume)?)\b|%""").containsMatchIn(text)) {
             rejected += BottleExtractionRejectionReason.INVALID_QUANTITY_EVIDENCE
-            rejectedFields += field
+            fieldRejections += BottleFactRejection(field, BottleExtractionRejectionReason.INVALID_QUANTITY_EVIDENCE)
             return@mapNotNull null
         }
         BottleFactEvidence(field, text, quote)
@@ -423,7 +447,8 @@ internal fun parseBottleFactCandidate(
     if (facts.isEmpty()) {
         return BottleDetailExtractionResult.Rejected(
             rejected.firstOrNull() ?: BottleExtractionRejectionReason.NO_SUPPORTED_FIELDS,
-            rejectedFields,
+            fieldRejections.map(BottleFactRejection::field).toSet(),
+            fieldRejections.toList(),
         )
     }
     val conflictingFields = facts.groupBy(BottleFactEvidence::field).filterValues { fieldFacts ->
@@ -433,8 +458,10 @@ internal fun parseBottleFactCandidate(
         return BottleDetailExtractionResult.Rejected(
             BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES,
             conflictingFields,
+            conflictingFields.map { BottleFactRejection(it, BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES) },
         )
     }
+    val rejectedFields = fieldRejections.map(BottleFactRejection::field).toSet()
     val unresolvedFields = (unresolvedBottleSourceFields(sourceText) + rejectedFields).toMutableSet()
     var candidateFacts = facts
     var identityEvidence: String? = null
@@ -473,7 +500,10 @@ internal fun parseBottleFactCandidate(
         return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.NO_SUPPORTED_FIELDS)
     }
     return BottleDetailExtractionResult.Found(
-        BottleDetailSuggestions(provider, model, sourceUrl, acceptedFacts, unresolvedFields, requiredBarcode, identityEvidence, retrievalProvider),
+        BottleDetailSuggestions(
+            provider, model, sourceUrl, acceptedFacts, unresolvedFields, requiredBarcode, identityEvidence,
+            retrievalProvider, fieldRejections.toList(),
+        ),
         rejected,
     )
 }
@@ -481,7 +511,7 @@ internal fun parseBottleFactCandidate(
 /** Permit only presentation differences that preserve the literal fact and unit. */
 private fun factValueIsSupported(field: BottleFactField, value: String, quote: String): Boolean {
     return when (field) {
-        BottleFactField.ABV_PERCENT -> isSupportedAbvCandidate(value, quote)
+        BottleFactField.ABV_PERCENT -> parseAbvNumber(value)?.let { it in evidencedAbvNumbers(quote) } == true
         BottleFactField.QUANTITY -> isSupportedQuantityCandidate(value, quote)
         BottleFactField.PRODUCT_NAME, BottleFactField.BRAND -> containsWholeFactPhrase(quote, value)
     }
@@ -532,18 +562,27 @@ internal fun unresolvedBottleSourceFields(sourceText: String): Set<BottleFactFie
 }
 
 private fun isSupportedAbvCandidate(value: String, evidence: String): Boolean {
-    val valueNumber = Regex("""(?i)^\s*(\d{1,3}(?:[.,]\d{1,2})?)\s*%?\s*(?:ABV|ALC(?:OHOL)?(?:\s+BY\s+VOLUME)?|ALC\.?\s*/\s*VOL\.?|VOL(?:UME)?)?\s*$""")
-        .matchEntire(value)?.groupValues?.get(1)?.replace(',', '.')?.toDoubleOrNull() ?: return false
-    if (valueNumber !in 0.0..100.0) return false
+    val valueNumber = parseAbvNumber(value) ?: return false
+    val evidencedNumbers = evidencedAbvNumbers(evidence)
+    return evidencedNumbers.size == 1 && evidencedNumbers.single() == valueNumber
+}
+
+private fun parseAbvNumber(value: String): Double? {
+    val number = Regex("""(?i)^\s*(\d{1,3}(?:[.,]\d{1,2})?)\s*%?\s*(?:ABV|ALC(?:OHOL)?(?:\s+BY\s+VOLUME)?|ALC\.?\s*/\s*VOL\.?|VOL(?:UME)?)?\s*$""")
+        .matchEntire(value)?.groupValues?.get(1)?.replace(',', '.')?.toDoubleOrNull() ?: return null
+    return number.takeIf { it in 0.0..100.0 }
+}
+
+private fun evidencedAbvNumbers(evidence: String): Set<Double> {
     val unit = "(?:ABV|ALC(?:OHOL)?(?:\\s+BY\\s+VOLUME)?|ALC\\.?\\s*/\\s*VOL\\.?|VOL(?:UME)?)"
     val number = "(\\d{1,3}(?:[.,]\\d{1,2})?)"
     val unitAfter = Regex("""(?i)(?<![\d.,])$number\s*%\s*$unit\b""")
     val unitBefore = Regex("""(?i)$unit\s*[:=]?\s*$number\s*%""")
-    val evidencedNumbers = (unitAfter.findAll(evidence).mapNotNull { it.groups[1]?.value } +
+    return (unitAfter.findAll(evidence).mapNotNull { it.groups[1]?.value } +
         unitBefore.findAll(evidence).mapNotNull { it.groups[1]?.value })
         .mapNotNull { it.replace(',', '.').toDoubleOrNull() }
+        .filter { it in 0.0..100.0 }
         .toSet()
-    return evidencedNumbers.size == 1 && evidencedNumbers.single() == valueNumber
 }
 
 private fun JsonObject.string(field: String): String? = (this[field] as? JsonPrimitive)?.contentOrNull

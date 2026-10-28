@@ -405,7 +405,20 @@ class ScannedBottleWorkflowTest {
             listOf(identity),
         )
         assertEquals(identity, structuredBottleIdentityForPage("5011333150725", page))
+        assertEquals(StructuredIdentityStatus.VERIFIED, resolveStructuredBottleIdentityForPage("5011333150725", page).status)
         assertNull(structuredBottleIdentityForPage("5011333150725", page.copy(title = "Other Reserve")))
+        assertEquals(
+            StructuredIdentityStatus.TITLE_MISMATCH,
+            resolveStructuredBottleIdentityForPage("5011333150725", page.copy(title = "Other Reserve")).status,
+        )
+        assertEquals(
+            StructuredIdentityStatus.STRUCTURED_DATA_MISSING,
+            resolveStructuredBottleIdentityForPage("5011333150725", page.copy(structuredBottleIdentities = emptyList())).status,
+        )
+        assertEquals(
+            StructuredIdentityStatus.BARCODE_NOT_PRESENT,
+            resolveStructuredBottleIdentityForPage("5011333150725", page.copy(structuredBottleIdentities = listOf(identity.copy(barcode = "5011333150733")))).status,
+        )
         assertNull(
             structuredBottleIdentityForPage(
                 "5011333150725",
@@ -414,6 +427,16 @@ class ScannedBottleWorkflowTest {
                     identity.copy(productName = "Other Reserve", evidence = "Structured product fields: barcode 5011333150725; product Other Reserve"),
                 )),
             ),
+        )
+        assertEquals(
+            StructuredIdentityStatus.AMBIGUOUS_MATCH,
+            resolveStructuredBottleIdentityForPage(
+                "5011333150725",
+                page.copy(structuredBottleIdentities = listOf(
+                    identity,
+                    identity.copy(productName = "Other Reserve", evidence = "Structured product fields: barcode 5011333150725; product Other Reserve"),
+                )),
+            ).status,
         )
 
         var extractorSawProof = false

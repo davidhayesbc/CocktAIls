@@ -60,25 +60,55 @@ internal fun sourceMentionsScannedBarcode(barcode: String, sourceText: String): 
     scannedBarcodePageDecision(barcode, sourceText) == ScannedBarcodePageDecision.VERIFIED
 
 /** Structured barcode data is accepted only when it uniquely names the product shown in the page title. */
-internal fun structuredBottleIdentityForPage(barcode: String, page: WebPageText): StructuredBottleIdentity? {
-    val expected = normalizeGtinForLookup(barcode) ?: return null
-    val title = page.title?.takeIf(String::isNotBlank) ?: return null
+internal enum class StructuredIdentityStatus(val debugCode: String) {
+    VERIFIED("STRUCTURED_IDENTITY_VERIFIED"),
+    INVALID_BARCODE("STRUCTURED_IDENTITY_INVALID_BARCODE"),
+    PAGE_TITLE_MISSING("STRUCTURED_IDENTITY_TITLE_MISSING"),
+    STRUCTURED_DATA_MISSING("STRUCTURED_IDENTITY_DATA_MISSING"),
+    BARCODE_NOT_PRESENT("STRUCTURED_IDENTITY_BARCODE_NOT_PRESENT"),
+    AMBIGUOUS_MATCH("STRUCTURED_IDENTITY_AMBIGUOUS"),
+    TITLE_MISMATCH("STRUCTURED_IDENTITY_TITLE_MISMATCH"),
+}
+
+internal data class StructuredBottleIdentityResolution(
+    val identity: StructuredBottleIdentity?,
+    val status: StructuredIdentityStatus,
+)
+
+internal fun resolveStructuredBottleIdentityForPage(barcode: String, page: WebPageText): StructuredBottleIdentityResolution {
+    val expected = normalizeGtinForLookup(barcode)
+        ?: return StructuredBottleIdentityResolution(null, StructuredIdentityStatus.INVALID_BARCODE)
+    val title = page.title?.takeIf(String::isNotBlank)
+        ?: return StructuredBottleIdentityResolution(null, StructuredIdentityStatus.PAGE_TITLE_MISSING)
+    if (page.structuredBottleIdentities.isEmpty()) {
+        return StructuredBottleIdentityResolution(null, StructuredIdentityStatus.STRUCTURED_DATA_MISSING)
+    }
     val matches = page.structuredBottleIdentities
         .filter { normalizeGtinForLookup(it.barcode) == expected }
         .distinctBy { normalizeProductTitle(it.productName) }
-    if (matches.size != 1) return null
+    if (matches.isEmpty()) return StructuredBottleIdentityResolution(null, StructuredIdentityStatus.BARCODE_NOT_PRESENT)
+    if (matches.size != 1) return StructuredBottleIdentityResolution(null, StructuredIdentityStatus.AMBIGUOUS_MATCH)
     val identity = matches.single()
     val identityTokens = productIdentityTokens(identity.productName)
     val titleTokens = productIdentityTokens(title)
-    if (identityTokens.isEmpty() || titleTokens.isEmpty()) return null
+    if (identityTokens.isEmpty() || titleTokens.isEmpty()) {
+        return StructuredBottleIdentityResolution(null, StructuredIdentityStatus.TITLE_MISMATCH)
+    }
     val sharedTokens = identityTokens.intersect(titleTokens)
     val titleMatchesProduct = if (identityTokens.size == 1) {
         sharedTokens.size == 1
     } else {
         sharedTokens.size >= 2 && sharedTokens.size.toDouble() / identityTokens.size >= 0.75
     }
-    return identity.takeIf { titleMatchesProduct }
+    return if (titleMatchesProduct) {
+        StructuredBottleIdentityResolution(identity, StructuredIdentityStatus.VERIFIED)
+    } else {
+        StructuredBottleIdentityResolution(null, StructuredIdentityStatus.TITLE_MISMATCH)
+    }
 }
+
+internal fun structuredBottleIdentityForPage(barcode: String, page: WebPageText): StructuredBottleIdentity? =
+    resolveStructuredBottleIdentityForPage(barcode, page).identity
 
 /** Produces a bounded source passage tying a product name to one exact barcode for local validation. */
 internal fun scannedProductIdentityEvidence(barcode: String, productName: String, sourceText: String): String? {
@@ -602,6 +632,11 @@ internal class ScannedBottleEnrichmentCoordinator(
             httpStatus = extractionCall.httpStatus,
             sourceUrls = listOf(page.sourceUrl),
             factFields = suggestions?.facts?.map { it.field.wireValue }.orEmpty(),
+            rejectedFacts = when (extraction) {
+                is BottleDetailExtractionResult.Found -> extraction.suggestions.fieldRejections
+                is BottleDetailExtractionResult.Rejected -> extraction.fieldRejections
+                else -> emptyList()
+            },
             reasonCodes = buildList {
                 (extraction as? BottleDetailExtractionResult.Found)?.rejectedCandidates?.forEach { add(it.debugCode) }
                 suggestions?.unresolvedFields?.forEach { add("${it.wireValue.uppercase()}_UNRESOLVED") }
