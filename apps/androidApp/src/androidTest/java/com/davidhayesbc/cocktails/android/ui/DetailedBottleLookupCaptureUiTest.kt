@@ -1,6 +1,7 @@
 package com.davidhayesbc.cocktails.android.ui
 
 import android.content.ClipboardManager
+import android.database.Cursor
 import android.view.View
 import android.view.ViewGroup
 import androidx.core.content.FileProvider
@@ -15,6 +16,7 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.davidhayesbc.cocktails.android.MainActivity
@@ -68,9 +70,10 @@ class DetailedBottleLookupCaptureUiTest {
         composeRule.onAllNodes(hasTestTag("detailed-capture-status")).assertCountEquals(0)
         composeRule.onNodeWithTag("arm-detailed-lookup-capture").assertIsDisplayed().performClick()
         composeRule.onNodeWithText("Capture one lookup attempt?").assertIsDisplayed()
+        saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-capture-consent.png")
         composeRule.onAllNodes(hasTestTag("detailed-capture-status")).assertCountEquals(0)
         composeRule.onNodeWithTag("confirm-arm-detailed-lookup-capture").assertIsDisplayed().performClick()
-        composeRule.onNodeWithTag("detailed-capture-status").assertIsDisplayed().assertTextContains("Capture armed")
+        composeRule.onNodeWithTag("detailed-capture-status").performScrollTo().assertIsDisplayed().assertTextContains("Capture armed")
     }
 
     @Test
@@ -106,8 +109,8 @@ class DetailedBottleLookupCaptureUiTest {
         val waitMillis = (expiresAt - System.currentTimeMillis() + 100L).coerceAtLeast(0L)
         Thread.sleep(waitMillis)
 
-        assertMetadataDenied { context.contentResolver.getType(uri) }
-        assertMetadataDenied { context.contentResolver.query(uri, null, null, null, null)?.close() }
+        assertExpiredTypeDenied { context.contentResolver.getType(uri) }
+        assertExpiredQueryDenied { context.contentResolver.query(uri, null, null, null, null) }
         assertOpenDenied { context.contentResolver.openInputStream(uri)?.close() }
         store.deleteForDraft(draftId)
     }
@@ -125,14 +128,25 @@ class DetailedBottleLookupCaptureUiTest {
         assertTrue(!file.exists())
     }
 
-    private fun assertMetadataDenied(request: () -> Unit) {
+    private fun assertExpiredTypeDenied(request: () -> String?) {
         var denied = false
         try {
-            request()
+            denied = request() == null
         } catch (_: IllegalArgumentException) {
             denied = true
         }
-        assertTrue("expired share metadata should be denied", denied)
+        assertTrue("expired share MIME metadata should be denied", denied)
+    }
+
+    private fun assertExpiredQueryDenied(request: () -> Cursor?) {
+        var denied = false
+        try {
+            val cursor = request()
+            denied = cursor == null || cursor.use { !it.moveToFirst() }
+        } catch (_: IllegalArgumentException) {
+            denied = true
+        }
+        assertTrue("expired share query must not return metadata", denied)
     }
 
     private fun assertOpenDenied(request: () -> Unit) {
