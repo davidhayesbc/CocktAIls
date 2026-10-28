@@ -97,6 +97,10 @@ internal class BottleLookupDebugReport(
 
     private val lock = Any()
     private val events = mutableListOf<BottleLookupDebugEvent>()
+    // Timing totals survive eviction from the bounded recent-event ring.
+    private val timingTotals = mutableMapOf<BottleLookupDebugStage, Long>()
+    private val timedStages = mutableSetOf<BottleLookupDebugStage>()
+    private var aiProviderWasMeasured = false
     private var outcome: String = "RUNNING"
     private var queueWaitMillis: Long? = null
     private var workerElapsedMillis: Long? = null
@@ -110,7 +114,16 @@ internal class BottleLookupDebugReport(
     }
 
     fun record(event: BottleLookupDebugEvent) = synchronized(lock) {
-        events += sanitizeEvent(event)
+        val safeEvent = sanitizeEvent(event)
+        safeEvent.durationMillis?.let { duration ->
+            timedStages += safeEvent.stage
+            timingTotals[safeEvent.stage] = ((timingTotals[safeEvent.stage] ?: 0L) + duration)
+                .coerceAtMost(MAX_DURATION_MS)
+            if (safeEvent.stage == BottleLookupDebugStage.DETAIL_EXTRACTION &&
+                safeEvent.provider in setOf("ON_DEVICE", "OLLAMA_CLOUD", "On-device Qwen3", "Ollama Cloud")
+            ) aiProviderWasMeasured = true
+        }
+        events += safeEvent
         while (events.size > MAX_EVENTS) events.removeAt(0)
     }
 
@@ -202,33 +215,28 @@ internal class BottleLookupDebugReport(
     }
 
     private fun timingSummary() = buildJsonObject {
-        val measured = events.filter { it.durationMillis != null }
-        val searchMillis = measured.filter { it.stage == BottleLookupDebugStage.FIRECRAWL_SEARCH }.sumOf { it.durationMillis!! }
-        val fetchMillis = measured.filter { it.stage == BottleLookupDebugStage.FIRECRAWL_FETCH }.sumOf { it.durationMillis!! }
-        val offMillis = measured.filter { it.stage == BottleLookupDebugStage.OPEN_FOOD_FACTS }.sumOf { it.durationMillis!! }
+        fun total(stage: BottleLookupDebugStage) = timingTotals[stage] ?: 0L
+        val searchMillis = total(BottleLookupDebugStage.FIRECRAWL_SEARCH)
+        val fetchMillis = total(BottleLookupDebugStage.FIRECRAWL_FETCH)
+        val offMillis = total(BottleLookupDebugStage.OPEN_FOOD_FACTS)
         // DETAIL_EXTRACTION is the outer provider call; local load/prefill/generation events are nested
         // diagnostics and are deliberately excluded from this aggregate to avoid double counting.
-        val aiMillis = measured.filter {
-            it.stage == BottleLookupDebugStage.DETAIL_EXTRACTION && it.provider in setOf("ON_DEVICE", "OLLAMA_CLOUD")
-        }.sumOf { it.durationMillis!! }
+        val aiMillis = total(BottleLookupDebugStage.DETAIL_EXTRACTION)
         val networkMillis = searchMillis + fetchMillis + offMillis
         val providerMillis = networkMillis + aiMillis
+        val networkMeasured = setOf(
+            BottleLookupDebugStage.OPEN_FOOD_FACTS,
+            BottleLookupDebugStage.FIRECRAWL_SEARCH,
+            BottleLookupDebugStage.FIRECRAWL_FETCH,
+        ).any(timedStages::contains)
         timingValue("queueWaitMillis", queueWaitMillis)
         timingValue("workerElapsedMillis", workerElapsedMillis)
-        timingValue("openFoodFactsMillis", offMillis.takeIf { measured.any { event -> event.stage == BottleLookupDebugStage.OPEN_FOOD_FACTS && event.durationMillis != null } })
-        timingValue("firecrawlSearchMillis", searchMillis.takeIf { measured.any { event -> event.stage == BottleLookupDebugStage.FIRECRAWL_SEARCH && event.durationMillis != null } })
-        timingValue("firecrawlFetchMillis", fetchMillis.takeIf { measured.any { event -> event.stage == BottleLookupDebugStage.FIRECRAWL_FETCH && event.durationMillis != null } })
-        timingValue("networkProviderMillis", networkMillis.takeIf { measured.any { event -> event.stage in setOf(BottleLookupDebugStage.OPEN_FOOD_FACTS, BottleLookupDebugStage.FIRECRAWL_SEARCH, BottleLookupDebugStage.FIRECRAWL_FETCH) && event.durationMillis != null } })
-        timingValue("aiProviderMillis", aiMillis.takeIf { measured.any { event -> event.stage == BottleLookupDebugStage.DETAIL_EXTRACTION && event.provider in setOf("ON_DEVICE", "OLLAMA_CLOUD") && event.durationMillis != null } })
-        timingValue("providerActiveMillis", providerMillis.takeIf {
-            measured.any { event ->
-                event.stage in setOf(
-                    BottleLookupDebugStage.OPEN_FOOD_FACTS,
-                    BottleLookupDebugStage.FIRECRAWL_SEARCH,
-                    BottleLookupDebugStage.FIRECRAWL_FETCH,
-                ) || (event.stage == BottleLookupDebugStage.DETAIL_EXTRACTION && event.provider in setOf("ON_DEVICE", "OLLAMA_CLOUD"))
-            }
-        })
+        timingValue("openFoodFactsMillis", offMillis.takeIf { BottleLookupDebugStage.OPEN_FOOD_FACTS in timedStages })
+        timingValue("firecrawlSearchMillis", searchMillis.takeIf { BottleLookupDebugStage.FIRECRAWL_SEARCH in timedStages })
+        timingValue("firecrawlFetchMillis", fetchMillis.takeIf { BottleLookupDebugStage.FIRECRAWL_FETCH in timedStages })
+        timingValue("networkProviderMillis", networkMillis.takeIf { networkMeasured })
+        timingValue("aiProviderMillis", aiMillis.takeIf { BottleLookupDebugStage.DETAIL_EXTRACTION in timedStages && aiProviderWasMeasured })
+        timingValue("providerActiveMillis", providerMillis.takeIf { networkMeasured || BottleLookupDebugStage.DETAIL_EXTRACTION in timedStages && aiProviderWasMeasured })
         timingValue("endToEndMillis", if (queueWaitMillis != null && workerElapsedMillis != null) queueWaitMillis!! + workerElapsedMillis!! else null)
         put("aggregateNote", "Provider totals sum measured network and AI request spans. Local-model substage events are nested in AI time and are not added again. Unmeasured or cross-reboot queue timing is unavailable.")
     }
@@ -300,6 +308,7 @@ internal class BottleLookupDebugReport(
             "LOCAL_RUNTIME_CLEANUP_FAILED",
             "STRUCTURED_FACTS_FALLBACK_AFTER_TIMEOUT",
             "STRUCTURED_FACTS_FALLBACK_AFTER_TRUNCATION", "STRUCTURED_FACTS_FALLBACK_AFTER_MALFORMED_RESPONSE",
+            "STRUCTURED_FACTS_FALLBACK_AFTER_MODEL_REJECTION",
             "LOCAL_GENERATION_TOKEN_LIMIT",
             "LOCAL_MODEL_OUTPUT_INVALID", "LOCAL_IDENTITY_BINDING_FAILED", "LOCAL_INFERENCE_FAILED",
         )

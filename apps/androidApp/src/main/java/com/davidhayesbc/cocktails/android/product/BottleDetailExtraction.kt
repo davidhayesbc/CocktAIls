@@ -69,7 +69,11 @@ internal sealed interface BottleDetailExtractionResult {
         val suggestions: BottleDetailSuggestions,
         val rejectedCandidates: Set<BottleExtractionRejectionReason> = emptySet(),
     ) : BottleDetailExtractionResult
-    data class Rejected(val reason: BottleExtractionRejectionReason) : BottleDetailExtractionResult
+    data class Rejected(
+        val reason: BottleExtractionRejectionReason,
+        /** Field names only; rejected values and source text are intentionally never retained. */
+        val rejectedFields: Set<BottleFactField> = emptySet(),
+    ) : BottleDetailExtractionResult
     data object SetupRequired : BottleDetailExtractionResult
     data object InvalidModel : BottleDetailExtractionResult
     data object AuthenticationRequired : BottleDetailExtractionResult
@@ -330,9 +334,7 @@ internal fun bindStructuredProductIdentity(
     }
     if (result !is BottleDetailExtractionResult.Found) return result
     val modelName = result.suggestions.facts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }
-    if (modelName != null && !structuredProductNamesAgree(modelName.value, identity.productName)) {
-        return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
-    }
+    val mismatchedModelName = modelName != null && !structuredProductNamesAgree(modelName.value, identity.productName)
     val structuredNameFact = BottleFactEvidence(BottleFactField.PRODUCT_NAME, identity.productName, identity.evidence)
     val unboundFacts = result.suggestions.facts.filter { fact ->
         fact.field != BottleFactField.PRODUCT_NAME && !factQuoteIsBoundToProductIdentity(fact, identity.productName)
@@ -348,9 +350,10 @@ internal fun bindStructuredProductIdentity(
         targetBarcode = requiredBarcode,
         identityEvidence = identity.evidence,
         ),
-        rejectedCandidates = result.rejectedCandidates + if (unboundFacts.isNotEmpty()) {
-            setOf(BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE)
-        } else emptySet(),
+        rejectedCandidates = result.rejectedCandidates + buildSet {
+            if (unboundFacts.isNotEmpty()) add(BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE)
+            if (mismatchedModelName) add(BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
+        },
     )
 }
 
@@ -358,8 +361,8 @@ internal fun bindStructuredProductIdentity(
 internal fun factQuoteIsBoundToProductIdentity(fact: BottleFactEvidence, productName: String): Boolean =
     fact.quote.split(Regex("(?<=[.!?;])\\s+|\\n+|\\s+[|•]\\s+"))
         .any { passage ->
-            passage.contains(productName, ignoreCase = true) &&
-                passage.contains(fact.value, ignoreCase = true) &&
+            containsWholeFactPhrase(passage, productName) &&
+                factValueIsSupported(fact.field, fact.value, passage) &&
                 !Regex("(?i)\\b(?:related|similar|recommended|recommendation|alternative|other\\s+products?)\\b")
                     .containsMatchIn(passage)
         }
@@ -380,6 +383,7 @@ internal fun parseBottleFactCandidate(
     val rawFacts = rawFactsElement as? JsonArray
         ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.INVALID_FACT_SHAPE)
     val rejected = linkedSetOf<BottleExtractionRejectionReason>()
+    val rejectedFields = linkedSetOf<BottleFactField>()
     val facts = rawFacts.mapNotNull { value ->
         val fact = value as? JsonObject ?: run {
             rejected += BottleExtractionRejectionReason.INVALID_FACT_SHAPE
@@ -388,35 +392,47 @@ internal fun parseBottleFactCandidate(
         val field = fact.string("field")?.let { name -> BottleFactField.entries.firstOrNull { it.wireValue == name } }
             ?: run { rejected += BottleExtractionRejectionReason.INVALID_FACT_SHAPE; return@mapNotNull null }
         val text = fact.string("value")?.trim()?.takeIf { it.isNotEmpty() && it.length <= MAX_FACT_VALUE_CHARS }
-            ?: run { rejected += BottleExtractionRejectionReason.INVALID_FACT_SHAPE; return@mapNotNull null }
+            ?: run { rejected += BottleExtractionRejectionReason.INVALID_FACT_SHAPE; rejectedFields += field; return@mapNotNull null }
         val quote = fact.string("evidence")?.trim()?.takeIf { it.isNotEmpty() && it.length <= MAX_EVIDENCE_QUOTE_CHARS }
-            ?: run { rejected += BottleExtractionRejectionReason.INVALID_FACT_SHAPE; return@mapNotNull null }
+            ?: run { rejected += BottleExtractionRejectionReason.INVALID_FACT_SHAPE; rejectedFields += field; return@mapNotNull null }
         if (!sourceText.contains(quote, ignoreCase = true)) {
             rejected += BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE
+            rejectedFields += field
             return@mapNotNull null
         }
-        if (!quote.contains(text, ignoreCase = true)) {
+        if (!factValueIsSupported(field, text, quote)) {
             rejected += BottleExtractionRejectionReason.VALUE_NOT_IN_EVIDENCE
+            rejectedFields += field
             return@mapNotNull null
         }
         if (field == BottleFactField.ABV_PERCENT && !isSupportedAbvCandidate(text, quote)) {
             rejected += BottleExtractionRejectionReason.INVALID_ABV_EVIDENCE
+            rejectedFields += field
             return@mapNotNull null
         }
         if (field == BottleFactField.QUANTITY && Regex("""(?i)\b(?:ABV|alc(?:ohol)?|vol(?:ume)?)\b|%""").containsMatchIn(text)) {
             rejected += BottleExtractionRejectionReason.INVALID_QUANTITY_EVIDENCE
+            rejectedFields += field
             return@mapNotNull null
         }
         BottleFactEvidence(field, text, quote)
     }
     if (facts.isEmpty()) {
-        return BottleDetailExtractionResult.Rejected(rejected.firstOrNull() ?: BottleExtractionRejectionReason.NO_SUPPORTED_FIELDS)
+        return BottleDetailExtractionResult.Rejected(
+            rejected.firstOrNull() ?: BottleExtractionRejectionReason.NO_SUPPORTED_FIELDS,
+            rejectedFields,
+        )
     }
-    val conflictingFields = facts.groupBy(BottleFactEvidence::field).values.any { fieldFacts ->
+    val conflictingFields = facts.groupBy(BottleFactEvidence::field).filterValues { fieldFacts ->
         fieldFacts.map { it.value.trim().lowercase(Locale.ROOT) }.distinct().size > 1
+    }.keys
+    if (conflictingFields.isNotEmpty()) {
+        return BottleDetailExtractionResult.Rejected(
+            BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES,
+            conflictingFields,
+        )
     }
-    if (conflictingFields) return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES)
-    val unresolvedFields = unresolvedBottleSourceFields(sourceText).toMutableSet()
+    val unresolvedFields = (unresolvedBottleSourceFields(sourceText) + rejectedFields).toMutableSet()
     var candidateFacts = facts
     var identityEvidence: String? = null
     if (requiredBarcode != null) {
@@ -459,6 +475,37 @@ internal fun parseBottleFactCandidate(
     )
 }
 
+/** Permit only presentation differences that preserve the literal fact and unit. */
+private fun factValueIsSupported(field: BottleFactField, value: String, quote: String): Boolean {
+    return when (field) {
+        BottleFactField.ABV_PERCENT -> isSupportedAbvCandidate(value, quote)
+        BottleFactField.QUANTITY -> isSupportedQuantityCandidate(value, quote)
+        BottleFactField.PRODUCT_NAME, BottleFactField.BRAND -> containsWholeFactPhrase(quote, value)
+    }
+}
+
+private fun containsWholeFactPhrase(text: String, phrase: String): Boolean {
+    val normalizedText = normalizeFactSpacing(text)
+    val normalizedPhrase = normalizeFactSpacing(phrase)
+    return Regex("(?i)(?<![\\p{L}\\p{N}])${Regex.escape(normalizedPhrase)}(?![\\p{L}\\p{N}])")
+        .containsMatchIn(normalizedText)
+}
+
+private fun normalizeFactSpacing(value: String): String = value
+    .replace(Regex("\\s+"), " ")
+    .trim()
+
+private fun isSupportedQuantityCandidate(value: String, quote: String): Boolean {
+    val quantityPattern = Regex("""(?i)(?<![\d.,])(\d{1,4}(?:[.,]\d{1,2})?)\s*(mL|L)\b""")
+    val candidate = quantityPattern.matchEntire(normalizeFactSpacing(value)) ?: return false
+    val candidateAmount = candidate.groupValues[1].replace(',', '.').toBigDecimalOrNull() ?: return false
+    val candidateUnit = candidate.groupValues[2].lowercase(Locale.ROOT)
+    return quantityPattern.findAll(quote).any { match ->
+        val amount = match.groupValues[1].replace(',', '.').toBigDecimalOrNull() ?: return@any false
+        amount.compareTo(candidateAmount) == 0 && match.groupValues[2].lowercase(Locale.ROOT) == candidateUnit
+    }
+}
+
 /** Keep source-level bottle-size disagreements visible and unresolved instead of selecting one. */
 internal fun unresolvedBottleSourceFields(sourceText: String): Set<BottleFactField> {
     val quantities = Regex("""(?i)(?<![\d.,])(\d{1,4}(?:[.,]\d{1,2})?)\s*(mL|L)\b""")
@@ -482,7 +529,7 @@ internal fun unresolvedBottleSourceFields(sourceText: String): Set<BottleFactFie
 }
 
 private fun isSupportedAbvCandidate(value: String, evidence: String): Boolean {
-    val valueNumber = Regex("""^\s*(\d{1,3}(?:[.,]\d{1,2})?)\s*%?\s*$""")
+    val valueNumber = Regex("""(?i)^\s*(\d{1,3}(?:[.,]\d{1,2})?)\s*%?\s*(?:ABV|ALC(?:OHOL)?(?:\s+BY\s+VOLUME)?|ALC\.?\s*/\s*VOL\.?|VOL(?:UME)?)?\s*$""")
         .matchEntire(value)?.groupValues?.get(1)?.replace(',', '.')?.toDoubleOrNull() ?: return false
     if (valueNumber !in 0.0..100.0) return false
     val unit = "(?:ABV|ALC(?:OHOL)?(?:\\s+BY\\s+VOLUME)?|ALC\\.?\\s*/\\s*VOL\\.?|VOL(?:UME)?)"

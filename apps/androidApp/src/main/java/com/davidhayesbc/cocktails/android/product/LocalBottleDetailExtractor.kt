@@ -171,18 +171,27 @@ internal class LocalBottleDetailExtractor(
         }
         recordExtractionResult(BottleLookupDebugStage.LOCAL_RESPONSE_PARSING, parsed, ::record)
 
-        if (parsed is BottleDetailExtractionResult.Rejected &&
-            parsed.reason == BottleExtractionRejectionReason.MALFORMED_MODEL_RESPONSE &&
-            structuredFallback != null
-        ) {
+        if (parsed is BottleDetailExtractionResult.Rejected && structuredFallback != null) {
+            val fallback = structuredFallback.copy(
+                suggestions = structuredFallback.suggestions.copy(
+                    unresolvedFields = structuredFallback.suggestions.unresolvedFields + parsed.rejectedFields,
+                ),
+                rejectedCandidates = setOf(parsed.reason),
+            )
+            val fallbackReason = if (parsed.reason == BottleExtractionRejectionReason.MALFORMED_MODEL_RESPONSE) {
+                "STRUCTURED_FACTS_FALLBACK_AFTER_MALFORMED_RESPONSE"
+            } else {
+                "STRUCTURED_FACTS_FALLBACK_AFTER_MODEL_REJECTION"
+            }
             record(BottleLookupDebugEvent(
                 BottleLookupDebugStage.LOCAL_IDENTITY_BINDING,
                 providerLabel,
                 "COMPLETE",
-                reasonCodes = listOf("STRUCTURED_FACTS_FALLBACK_AFTER_MALFORMED_RESPONSE"),
-                factFields = listOf(BottleFactField.PRODUCT_NAME.wireValue),
+                reasonCodes = listOf(fallbackReason),
+                factFields = (listOf(BottleFactField.PRODUCT_NAME) + parsed.rejectedFields)
+                    .map(BottleFactField::wireValue),
             ))
-            return structuredFallback
+            return fallback
         }
 
         if (structuredIdentity == null && requiredBarcode == null) return parsed
@@ -228,10 +237,19 @@ private fun recordExtractionResult(
 ) {
     when (result) {
         is BottleDetailExtractionResult.Found -> record(BottleLookupDebugEvent(
-            stage, "On-device Qwen3", "COMPLETE", factFields = result.suggestions.facts.map { it.field.wireValue },
+            stage,
+            "On-device Qwen3",
+            "COMPLETE",
+            reasonCodes = result.rejectedCandidates.map(BottleExtractionRejectionReason::debugCode),
+            factFields = (result.suggestions.facts.map(BottleFactEvidence::field) + result.suggestions.unresolvedFields)
+                .distinct().map(BottleFactField::wireValue),
         ))
         is BottleDetailExtractionResult.Rejected -> record(BottleLookupDebugEvent(
-            stage, "On-device Qwen3", "REJECTED", reasonCodes = listOf(result.reason.debugCode),
+            stage,
+            "On-device Qwen3",
+            "REJECTED",
+            reasonCodes = listOf(result.reason.debugCode),
+            factFields = result.rejectedFields.map(BottleFactField::wireValue),
         ))
         else -> record(BottleLookupDebugEvent(stage, "On-device Qwen3", "REJECTED"))
     }

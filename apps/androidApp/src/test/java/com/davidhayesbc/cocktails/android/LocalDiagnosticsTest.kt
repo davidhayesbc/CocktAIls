@@ -266,5 +266,27 @@ class LocalDiagnosticsTest {
         assertEquals("UNAVAILABLE", unavailable["endToEndMillis"]!!.jsonObject["status"]!!.jsonPrimitive.content)
     }
 
+    @Test fun providerTimingsSurviveEvictionFromTheBoundedRecentEventRing() {
+        val report = BottleLookupDebugReport(1, "preview", 15, "5011333150725", "5011333150725", false, true, true, true, "On-device Qwen3", "Qwen3-0.6B-Q8_0", null)
+        report.record(BottleLookupDebugEvent(BottleLookupDebugStage.FIRECRAWL_SEARCH, "Firecrawl", "FOUND", durationMillis = 400))
+        report.record(BottleLookupDebugEvent(BottleLookupDebugStage.FIRECRAWL_FETCH, "Firecrawl", "FETCHED", durationMillis = 800))
+        report.record(BottleLookupDebugEvent(BottleLookupDebugStage.DETAIL_EXTRACTION, "ON_DEVICE", "COMPLETE", durationMillis = 14_890))
+        repeat(BottleLookupDebugReport.MAX_EVENTS + 4) { index ->
+            report.record(BottleLookupDebugEvent(BottleLookupDebugStage.LOCAL_GENERATION, "On-device Qwen3", "COMPLETE", generatedTokens = index))
+        }
+        report.finish("PARTIAL")
+
+        val root = Json.parseToJsonElement(report.toJson()).jsonObject
+        val events = root["events"]!!.jsonArray
+        assertEquals(BottleLookupDebugReport.MAX_EVENTS, events.size)
+        assertFalse(events.any { it.jsonObject["stage"]!!.jsonPrimitive.content == "FIRECRAWL_SEARCH" })
+        val timing = root["timing"]!!.jsonObject
+        assertEquals("400", timing["firecrawlSearchMillis"]!!.jsonObject["durationMillis"]!!.jsonPrimitive.content)
+        assertEquals("800", timing["firecrawlFetchMillis"]!!.jsonObject["durationMillis"]!!.jsonPrimitive.content)
+        assertEquals("1200", timing["networkProviderMillis"]!!.jsonObject["durationMillis"]!!.jsonPrimitive.content)
+        assertEquals("14890", timing["aiProviderMillis"]!!.jsonObject["durationMillis"]!!.jsonPrimitive.content)
+        assertEquals("16090", timing["providerActiveMillis"]!!.jsonObject["durationMillis"]!!.jsonPrimitive.content)
+    }
+
     private fun String.countOccurrences(value: String): Int = windowed(value.length).count { it == value }
 }
