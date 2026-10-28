@@ -1110,13 +1110,18 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         var photoWasSaved = false
         if (photo != null) {
             if (!repository.updateBottleIntakeDraft(draft.copy(photoData = photo, photoSha256 = photoSha256(photo)))) {
+                LocalDiagnostics.recordEvent("LABEL_PHOTO_PROCESSING_FAILED")
                 bottleLabelCaptureMessage = "The label photo could not be saved. Retake it or skip; the bottle draft is still safe."
                 return false
             }
             photoWasSaved = true
+            LocalDiagnostics.recordEvent("LABEL_PHOTO_APPLIED")
+        } else {
+            LocalDiagnostics.recordEvent("LABEL_PHOTO_SKIPPED")
         }
         val queueJob = bottleEnrichmentQueue.status(draft.id)
         if (queueJob?.labelCaptureRequired == true && !bottleEnrichmentQueue.completeLabelCapture(draft.id, System.currentTimeMillis())) {
+            LocalDiagnostics.recordEvent("LABEL_PHOTO_PROCESSING_FAILED")
             if (photoWasSaved) repository.updateBottleIntakeDraft(draft.copy(photoData = null, photoSha256 = null))
             bottleLabelCaptureMessage = "The local lookup queue could not be saved. The photo remains available; retry or skip the lookup step."
             bottleIntakeSession = repository.openBottleIntakeSession()
@@ -1432,7 +1437,17 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         }
         pendingLabelPreferences.edit().putBoolean("camera_result_ready", true).commit()
         processingBottleCameraToken = token
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        LocalDiagnostics.recordEvent("LABEL_PHOTO_PROCESSING_STARTED")
+        val uri = try {
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        } catch (_: Exception) {
+            file.delete()
+            clearPersistedCameraLaunch(token)
+            processingBottleCameraToken = processingBottleCaptureAfterCompletion(processingBottleCameraToken, token)
+            LocalDiagnostics.recordEvent("LABEL_PHOTO_PROCESSING_FAILED")
+            bottleLabelCaptureMessage = "The captured photo could not be opened. Retry or skip; your bottle draft is safe."
+            return
+        }
         coroutineScope.launch {
             val result = try {
                 Result.success(withContext(Dispatchers.IO) { readAndCompressProductPhoto(context, uri) })
@@ -1491,6 +1506,8 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 pendingBottleLabelPhoto = updatedPhoto.selected
                 pendingBottleLabelOriginalPhoto = updatedPhoto.original
                 pendingBottleLabelCropSuggestion = updatedPhoto.suggestedCrop
+                if (result.isSuccess && stored) LocalDiagnostics.recordEvent("LABEL_PHOTO_READY_FOR_REVIEW")
+                else LocalDiagnostics.recordEvent("LABEL_PHOTO_PROCESSING_FAILED")
                 bottleLabelCaptureMessage = when {
                     targetDraftId != null && originalPhoto != null && !stored -> "The label is captured, but its preview could not be saved. Retake it or skip; the bottle draft is safe."
                     result.isSuccess -> null

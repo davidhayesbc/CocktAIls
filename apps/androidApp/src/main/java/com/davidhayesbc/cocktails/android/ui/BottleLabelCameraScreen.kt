@@ -43,11 +43,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.view.doOnLayout
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.davidhayesbc.cocktails.android.LocalDiagnostics
 import com.davidhayesbc.cocktails.android.product.LiveBottleLabelBoundary
 import com.davidhayesbc.cocktails.android.product.LiveBottleLabelEdgeDetector
 import com.davidhayesbc.cocktails.android.product.LiveBottleLabelEdgeStabilizer
@@ -84,6 +86,8 @@ internal fun BottleLabelCameraScreen(
     var currentGeometryGeneration by remember { mutableStateOf(0L) }
     var cameraMessage by remember { mutableStateOf("Starting label camera…") }
     var takingPicture by remember { mutableStateOf(false) }
+    val captureInProgress = remember { AtomicBoolean(false) }
+    val captureErrorVisible = remember { AtomicBoolean(false) }
     val bindCurrentViewport = remember { mutableStateOf<(() -> Unit)?>(null) }
     // Bind the callback to this capture file/token. A stale CameraX callback must never
     // be routed through a recomposed screen to a later bottle's token.
@@ -125,7 +129,8 @@ internal fun BottleLabelCameraScreen(
                         .setTargetRotation(view.display?.rotation ?: Surface.ROTATION_0)
                         .build()
                     analyzer = analysisUseCase
-                    bindCurrentViewport.value = {
+                    bindCurrentViewport.value = viewport@{
+                        if (captureInProgress.get()) return@viewport
                         if (!disposed.get() && view.width > 0 && view.height > 0) {
                             val geometry = view.width to view.height
                             val rotation = view.display?.rotation ?: Surface.ROTATION_0
@@ -152,6 +157,7 @@ internal fun BottleLabelCameraScreen(
                                         lastBoundGeometry = geometry
                                         lastBoundRotation = rotation
                                         cameraMessage = "No clear label edge yet. Center it in the guide; you can crop by hand after capture."
+                                        LocalDiagnostics.recordEvent("LABEL_CAMERA_READY")
                                     }
                                 }.onFailure {
                                     cameraMessage = "Camera preview alignment failed. You can still capture and crop by hand."
@@ -175,7 +181,7 @@ internal fun BottleLabelCameraScreen(
                             if (!detectorReady.get()) {
                                 stabilizer.update(null)
                                 ContextCompat.getMainExecutor(context).execute {
-                                    if (!disposed.get() && cameraFrameBelongsToGeometry(frameGeometryGeneration, geometryGeneration.get())) {
+                                    if (!disposed.get() && !captureInProgress.get() && !captureErrorVisible.get() && cameraFrameBelongsToGeometry(frameGeometryGeneration, geometryGeneration.get())) {
                                         boundary = null
                                         boundaryGeometryGeneration = frameGeometryGeneration
                                         cameraMessage = "Edge detection is unavailable. You can still take the photo and crop it by hand."
@@ -200,7 +206,7 @@ internal fun BottleLabelCameraScreen(
                             ) ?: run {
                                 stabilizer.update(null)
                                 ContextCompat.getMainExecutor(context).execute {
-                                    if (!disposed.get() && cameraFrameBelongsToGeometry(frameGeometryGeneration, geometryGeneration.get())) {
+                                    if (!disposed.get() && !captureInProgress.get() && !captureErrorVisible.get() && cameraFrameBelongsToGeometry(frameGeometryGeneration, geometryGeneration.get())) {
                                         boundary = null
                                         boundaryGeometryGeneration = frameGeometryGeneration
                                     }
@@ -211,7 +217,7 @@ internal fun BottleLabelCameraScreen(
                             val stable = stabilizer.update(detection)
                             val sourceTransform = stable?.let { runCatching { imageTransformFactory.getOutputTransform(proxy) }.getOrNull() }
                             ContextCompat.getMainExecutor(context).execute {
-                                if (!disposed.get() && cameraFrameBelongsToGeometry(frameGeometryGeneration, geometryGeneration.get())) {
+                                if (!disposed.get() && !captureInProgress.get() && !captureErrorVisible.get() && cameraFrameBelongsToGeometry(frameGeometryGeneration, geometryGeneration.get())) {
                                     val previewTransform = runCatching { view.outputTransform }.getOrNull()
                                     val mapped = if (stable != null && sourceTransform != null && previewTransform != null) {
                                         mapAnalysisCropToPreview(
@@ -237,7 +243,7 @@ internal fun BottleLabelCameraScreen(
                         } catch (_: Exception) {
                             stabilizer.update(null)
                             ContextCompat.getMainExecutor(context).execute {
-                                if (!disposed.get() && cameraFrameBelongsToGeometry(frameGeometryGeneration, geometryGeneration.get())) {
+                                if (!disposed.get() && !captureInProgress.get() && !captureErrorVisible.get() && cameraFrameBelongsToGeometry(frameGeometryGeneration, geometryGeneration.get())) {
                                     boundary = null
                                     boundaryGeometryGeneration = frameGeometryGeneration
                                     cameraMessage = "Label edges could not be checked. You can still take the photo and crop it by hand."
@@ -334,7 +340,19 @@ internal fun BottleLabelCameraScreen(
                 }
             }
         }
-        Text(cameraMessage, Modifier.fillMaxWidth().padding(horizontal = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onBackground)
+        Box(
+            Modifier.fillMaxWidth().heightIn(min = 48.dp, max = 48.dp).testTag("label-camera-status"),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Text(
+                cameraMessage,
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedButton(onClick = cancelCapture, enabled = !takingPicture, modifier = Modifier.weight(1f).heightIn(min = 54.dp).testTag("cancel-live-label")) { Text("Cancel photo") }
             Button(
@@ -345,28 +363,43 @@ internal fun BottleLabelCameraScreen(
                     }?.crop
                     val parent = output.parentFile
                     if (parent == null || (!parent.isDirectory && !parent.mkdirs()) || (output.exists() && !output.delete())) {
+                        LocalDiagnostics.recordEvent("LABEL_CAMERA_STORAGE_FAILED")
                         cameraMessage = "The label photo could not be prepared in local storage. Retry or cancel the photo; the bottle draft is safe."
                         return@Button
                     }
+                    captureErrorVisible.set(false)
+                    captureInProgress.set(true)
                     takingPicture = true
                     cameraMessage = "Capturing label…"
+                    LocalDiagnostics.recordEvent("LABEL_CAMERA_CAPTURE_STARTED")
                     val options = ImageCapture.OutputFileOptions.Builder(output).build()
                     try {
                         capture.takePicture(options, ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageSavedCallback {
                             override fun onImageSaved(result: ImageCapture.OutputFileResults) {
+                                captureInProgress.set(false)
                                 takingPicture = false
+                                LocalDiagnostics.recordEvent("LABEL_CAMERA_CAPTURE_SAVED")
                                 onSaved(detectedCropAtShutter)
+                                bindCurrentViewport.value?.invoke()
                             }
                             override fun onError(exception: ImageCaptureException) {
+                                captureInProgress.set(false)
                                 takingPicture = false
+                                captureErrorVisible.set(true)
                                 output.delete()
+                                LocalDiagnostics.recordEvent("LABEL_CAMERA_CAPTURE_FAILED")
                                 cameraMessage = "Photo could not be captured. Keep the bottle steady and try again, or skip the photo."
+                                bindCurrentViewport.value?.invoke()
                             }
                         })
                     } catch (_: Exception) {
+                        captureInProgress.set(false)
                         takingPicture = false
+                        captureErrorVisible.set(true)
                         output.delete()
+                        LocalDiagnostics.recordEvent("LABEL_CAMERA_CAPTURE_FAILED")
                         cameraMessage = "Photo could not be captured. Try again or cancel the photo; the bottle draft is safe."
+                        bindCurrentViewport.value?.invoke()
                     }
                 },
                 enabled = imageCapture != null && !takingPicture,

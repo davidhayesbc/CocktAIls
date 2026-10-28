@@ -93,11 +93,33 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TestRule
+import org.junit.runner.Description
 import org.junit.runner.RunWith
+import org.junit.runners.model.Statement
 
 @RunWith(AndroidJUnit4::class)
 class OfflineRecipeSmokeTest {
-    @get:Rule
+    @get:Rule(order = 0)
+    val cameraPermissionRule = TestRule { base, description ->
+        object : Statement() {
+            override fun evaluate() {
+                if (description.methodName == "integratedLabelCameraCaptureShowsPhotoAndContinuesToNextBottle") {
+                    val instrumentation = InstrumentationRegistry.getInstrumentation()
+                    val appContext = instrumentation.targetContext
+                    instrumentation.uiAutomation.executeShellCommand(
+                        "pm grant ${appContext.packageName} ${Manifest.permission.CAMERA}",
+                    ).close()
+                    check(appContext.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                        "Instrumentation did not grant CAMERA before the integrated label capture test."
+                    }
+                }
+                base.evaluate()
+            }
+        }
+    }
+
+    @get:Rule(order = 1)
     val composeRule = createAndroidComposeRule<MainActivity>()
 
     @Test
@@ -676,6 +698,161 @@ class OfflineRecipeSmokeTest {
         } finally {
             setTestContent { }
             output.delete()
+        }
+    }
+
+    @Test
+    fun integratedLabelCameraCaptureShowsPhotoAndContinuesToNextBottle() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val databaseName = "label-camera-flow-${System.currentTimeMillis()}.db"
+        val outputDirectory = File(context.cacheDir, "label-camera-flow-test")
+        outputDirectory.mkdirs()
+        val driver = AndroidSqliteDriver(CocktailsDatabase.Schema, context, databaseName)
+        val repository = LocalCocktailRepository(CocktailsDatabase(driver))
+        repository.initialize(1)
+        val home = repository.locations().single()
+        val initialSession = repository.startBottleIntakeSession(home.id, InventoryLevel.FULL, 2)
+        val initialDraft = repository.addBottleIntakeDraft(
+            initialSession.id,
+            "Camera Callback Test Bottle",
+            "Spirit",
+            home.id,
+            InventoryLevel.FULL,
+            3,
+            barcode = "5011333150725",
+        )!!
+        var activeSession by mutableStateOf(repository.openBottleIntakeSession()!!)
+        var route by mutableStateOf(BottleIntakeRoute.CAPTURE_LABEL)
+        var pendingDraftId by mutableStateOf<String?>(initialDraft.id)
+        var cameraToken by mutableStateOf<BottleCaptureToken?>(BottleCaptureToken(1, initialDraft.id))
+        var nextCaptureGeneration = 1L
+        var capturedPhoto by mutableStateOf<ByteArray?>(null)
+        var captureMessage by mutableStateOf<String?>(null)
+        var savedCallbackToken by mutableStateOf<BottleCaptureToken?>(null)
+        var callbackCount by mutableStateOf(0)
+        var nextScanRequested by mutableStateOf(false)
+
+        fun outputFor(token: BottleCaptureToken): File = File(
+            outputDirectory,
+            "capture-${token.generation}-${token.draftId}.jpg",
+        )
+
+        try {
+            LocalDiagnostics.clear()
+            setTestContent {
+                CocktailsTheme(darkTheme = true) {
+                    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                        BottleIntakeScreen(
+                            modifier = Modifier.fillMaxSize(),
+                            session = activeSession,
+                            route = route,
+                            onRouteChange = { route = it },
+                            homes = listOf(home),
+                            capturePhoto = capturedPhoto,
+                            originalCapturePhoto = capturedPhoto,
+                            captureMessage = captureMessage,
+                            permissionMessage = null,
+                            pendingLabelDraftId = pendingDraftId,
+                            labelCameraOutputFile = cameraToken?.let(::outputFor),
+                            labelCameraToken = cameraToken,
+                            onLabelPhotoSaved = { token, _ ->
+                                val output = outputFor(token)
+                                savedCallbackToken = token
+                                callbackCount += 1
+                                captureMessage = if (output.isFile && output.length() > 0) {
+                                    capturedPhoto = stripJpegMetadata(output.readBytes())
+                                    output.delete()
+                                    null
+                                } else {
+                                    "CameraX reported capture completion without a readable photo."
+                                }
+                                cameraToken = null
+                            },
+                            onLabelCameraCancel = { token ->
+                                outputFor(token).delete()
+                                cameraToken = null
+                            },
+                            webSearchEnabled = false,
+                            webSearchStates = emptyMap(),
+                            pendingEnrichmentJobs = emptyMap(),
+                            activeReviewDraftId = null,
+                            ollamaCloudEnabled = false,
+                            localAiEnabled = false,
+                            onSearchDraft = {},
+                            onFetchDraftSource = { _, _ -> },
+                            onExtractDraftDetails = {},
+                            onExtractDraftDetailsOnDevice = {},
+                            onResumeEnrichment = { _, _ -> },
+                            onCancelDraftSearch = {},
+                            onCaptureLabel = {
+                                nextCaptureGeneration += 1
+                                cameraToken = BottleCaptureToken(nextCaptureGeneration, initialDraft.id)
+                            },
+                            onUsePendingLabel = { draftId ->
+                                val photo = capturedPhoto
+                                val draft = activeSession.drafts.firstOrNull { it.id == draftId }
+                                val saved = if (draftId == initialDraft.id && photo != null && draft != null) {
+                                    repository.updateBottleIntakeDraft(draft.copy(photoData = photo, photoSha256 = photoSha256(photo)))
+                                } else false
+                                if (saved) {
+                                    activeSession = repository.openBottleIntakeSession()!!
+                                    capturedPhoto = null
+                                    pendingDraftId = null
+                                    route = BottleIntakeRoute.SCANNING
+                                    nextScanRequested = true
+                                }
+                                saved
+                            },
+                            onSkipPendingLabel = { false },
+                            onDiscardCapturedLabel = { capturedPhoto = null },
+                            onAttachCapturedLabel = {},
+                            onScan = { nextScanRequested = true },
+                            onAcceptAndScanNext = { BottleIntakeCommitResult.Invalid("Test only") },
+                            onAddManual = { _, _, _, _, _, _, _ -> false },
+                            onRemove = {},
+                            onUpdate = { repository.updateBottleIntakeDraft(it) },
+                            onFieldEdited = { _, _ -> },
+                            onHomeChanged = {},
+                            onLevelChanged = {},
+                            onConfirm = { BottleIntakeCommitResult.Invalid("Test only") },
+                            onCancel = {},
+                            onDismiss = {},
+                            onPauseQueue = {},
+                            onResumeScanning = { route = BottleIntakeRoute.SCANNING },
+                        )
+                    }
+                }
+            }
+
+            composeRule.onNodeWithTag("label-live-camera").assertIsDisplayed()
+            composeRule.waitUntil(timeoutMillis = 30_000) {
+                composeRule.onAllNodesWithTag("capture-live-label").fetchSemanticsNodes()
+                    .any { node -> !node.config.contains(SemanticsProperties.Disabled) }
+            }
+            composeRule.onNodeWithTag("capture-live-label").assertIsDisplayed().assertIsEnabled().performClick()
+            composeRule.waitUntil(timeoutMillis = 30_000) {
+                composeRule.onAllNodesWithTag("label-photo-preview-${initialDraft.id}").fetchSemanticsNodes().isNotEmpty()
+            }
+            assertEquals("CameraX must deliver exactly one saved-image callback", 1, callbackCount)
+            assertEquals(BottleCaptureToken(1, initialDraft.id), savedCallbackToken)
+            composeRule.onNodeWithTag("label-photo-preview-${initialDraft.id}").assertIsDisplayed()
+            composeRule.onAllNodesWithTag("capture-live-label").assertCountEquals(0)
+            composeRule.onNodeWithTag("use-label-${initialDraft.id}").assertIsDisplayed().performClick()
+            composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Scan the next bottle")
+            composeRule.onNodeWithTag("batch-scan-bottles").assertIsDisplayed().assertIsEnabled()
+            assertTrue("Captured label should advance to the next bottle only after use is confirmed", nextScanRequested)
+            val savedBottle = repository.openBottleIntakeSession()!!.drafts.single()
+            assertTrue(savedBottle.photoData?.isNotEmpty() == true)
+            assertEquals(photoSha256(savedBottle.photoData!!), savedBottle.photoSha256)
+            val diagnostics = LocalDiagnostics.preview()
+            assertTrue(diagnostics.contains("LABEL_CAMERA_CAPTURE_STARTED"))
+            assertTrue(diagnostics.contains("LABEL_CAMERA_CAPTURE_SAVED"))
+        } finally {
+            setTestContent { }
+            driver.close()
+            outputDirectory.listFiles()?.forEach(File::delete)
+            outputDirectory.delete()
+            context.deleteDatabase(databaseName)
         }
     }
 
