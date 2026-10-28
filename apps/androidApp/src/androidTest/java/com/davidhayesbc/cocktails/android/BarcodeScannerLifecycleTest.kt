@@ -103,9 +103,9 @@ class BarcodeScannerLifecycleTest {
         composeRule.onNodeWithTag("barcode-intake-scanner").assertIsDisplayed()
         composeRule.onNodeWithTag("barcode-intake-scanner-title").assertTextEquals("Scan the next bottle").assertIsDisplayed()
         composeRule.onNodeWithTag("scanner-queue-summary").assertIsDisplayed()
-        composeRule.onNodeWithText("0 ready").assertIsDisplayed()
-        composeRule.onNodeWithText("0 running").assertIsDisplayed()
-        composeRule.onNodeWithText("0 pending").assertIsDisplayed()
+        composeRule.onNodeWithTag("scanner-ready-count").assertTextEquals("0 ready").assertIsDisplayed()
+        composeRule.onNodeWithTag("scanner-running-count").assertTextEquals("0 running").assertIsDisplayed()
+        composeRule.onNodeWithTag("scanner-pending-count").assertTextEquals("0 pending").assertIsDisplayed()
         awaitCameraPermissionGranted()
         composeRule.onNodeWithTag("barcode-camera-preview").assertIsDisplayed()
         composeRule.waitUntil(timeoutMillis = 30_000) {

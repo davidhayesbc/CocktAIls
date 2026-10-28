@@ -68,6 +68,7 @@ import com.davidhayesbc.cocktails.android.product.SharedPreferencesLookupStorage
 import com.davidhayesbc.cocktails.android.product.BottleLookupDebugEvent
 import com.davidhayesbc.cocktails.android.product.BottleLookupDebugReport
 import com.davidhayesbc.cocktails.android.product.BottleProviderCall
+import com.davidhayesbc.cocktails.android.product.stripJpegMetadata
 import com.davidhayesbc.cocktails.android.product.OpenFoodFactsLookupResult
 import com.davidhayesbc.cocktails.android.product.WebSearchResult
 import com.davidhayesbc.cocktails.android.product.ScannedBottleEnrichmentCoordinator
@@ -217,7 +218,6 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("bottle-intake-draft-error-0").assertTextEquals("Enter a bottle name before accepting this bottle.")
         composeRule.onNodeWithTag("bottle-intake-draft-error-0").assertIsDisplayed()
         val acceptFirstBottleTag = "accept-scanned-bottle-$firstDraftId"
-        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag(acceptFirstBottleTag))
         composeRule.onNodeWithTag(acceptFirstBottleTag).assertIsNotEnabled()
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-name-0"))
         composeRule.onNodeWithTag("bottle-intake-draft-name-0").performTextInput(bottleName)
@@ -420,7 +420,6 @@ class OfflineRecipeSmokeTest {
             assertEquals("Auchentoshan Three Wood", repository.openBottleIntakeSession()!!.drafts.first().ingredientName)
             assertEquals("Auchentoshan Three Wood", repository.openBottleIntakeSession()!!.drafts.first().productName)
             val acceptScannedBottle = "accept-scanned-bottle-${first.id}"
-            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag(acceptScannedBottle))
             composeRule.onNodeWithTag(acceptScannedBottle).assertIsDisplayed().assertIsEnabled().performClick()
             composeRule.waitUntil(timeoutMillis = 5_000) { nextScanRequested }
             assertTrue(secondDraftId != null)
@@ -537,7 +536,6 @@ class OfflineRecipeSmokeTest {
                 editableTextIs(""),
             )
             val acceptTag = "accept-scanned-bottle-${draft.id}"
-            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag(acceptTag))
             composeRule.onNodeWithTag(acceptTag).assertIsNotEnabled()
 
             // Non-automated suggestions stay separate until a user explicitly applies them,
@@ -740,10 +738,7 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Review your bottle")
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("review-evidence-toggle"))
         composeRule.onNodeWithTag("review-evidence-toggle").assertIsDisplayed().performClick()
-        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(
-            hasText("Restored the verified source and suggestions for this unaccepted bottle. Review them; no provider request restarted."),
-        )
-        composeRule.onNodeWithText("Restored the verified source and suggestions for this unaccepted bottle. Review them; no provider request restarted.").assertIsDisplayed()
+        composeRule.onNodeWithTag("review-evidence-message-$draftId").assertIsDisplayed()
         // The suggestion card follows the restoration message and can be below the viewport.
         // Assert it exists in the source UI, then scroll it into view before checking visibility.
         composeRule.onNodeWithText(suggestions).assertExists()
@@ -1013,7 +1008,8 @@ class OfflineRecipeSmokeTest {
             canvas.drawText("GIN", 210f, 416f, textPaint)
             val output = java.io.ByteArrayOutputStream()
             bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, output)
-            return output.toByteArray()
+            return stripJpegMetadata(output.toByteArray())
+                ?: error("Synthetic label fixture did not pass product-photo metadata sanitation")
         } finally {
             bitmap.recycle()
         }

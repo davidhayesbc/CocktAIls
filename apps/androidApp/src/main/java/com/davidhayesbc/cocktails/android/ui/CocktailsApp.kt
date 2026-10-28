@@ -3586,7 +3586,9 @@ private fun BottleReviewCard(
                                 Text(if (job.status == BottleEnrichmentStatus.PAUSED && job.operation == BottleEnrichmentOperation.FIRECRAWL_SEARCH) "Resume lookup" else "Retry lookup")
                             }
                         }
-                        webSearchState.message?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        webSearchState.message?.let {
+                            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("review-evidence-message-${draft.id}"))
+                        }
                         webSearchState.hits.forEach { hit ->
                             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                 Text(hit.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
@@ -3629,7 +3631,7 @@ private fun BottleReviewCard(
                             Text("Suggestions · ${suggestions.provider} · ${suggestions.model}", style = MaterialTheme.typography.titleSmall)
                             Text(suggestions.sourceUrl, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                             suggestions.unresolvedFields.forEach { field ->
-                                Text("${field.label} is unclear in this source. No value was selected.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                                Text("${field.label} is unclear in this source. No value was selected; check it manually.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                             }
                             suggestions.facts.forEach { fact ->
                                 Text("${fact.field.label}: ${fact.value}", style = MaterialTheme.typography.bodyMedium)

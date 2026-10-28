@@ -239,9 +239,9 @@ internal fun BarcodeScannerDialog(
                     ) {
                         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                Text("$readyCount ready", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                                Text("$runningCount running", style = MaterialTheme.typography.labelLarge)
-                                Text("$pendingCount pending", style = MaterialTheme.typography.labelLarge)
+                                Text("$readyCount ready", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.testTag("scanner-ready-count"))
+                                Text("$runningCount running", style = MaterialTheme.typography.labelLarge, modifier = Modifier.testTag("scanner-running-count"))
+                                Text("$pendingCount pending", style = MaterialTheme.typography.labelLarge, modifier = Modifier.testTag("scanner-pending-count"))
                             }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                 Text("${batchBottleCount ?: acceptedCount} bottles in this batch", style = MaterialTheme.typography.bodySmall)
