@@ -1,0 +1,8 @@
+CREATE TABLE bottle_intake_acceptance (
+    draft_id TEXT NOT NULL PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES bottle_intake_session(id) ON DELETE CASCADE,
+    inventory_id TEXT NOT NULL REFERENCES inventory_item(id),
+    accepted_at INTEGER NOT NULL
+);
+
+CREATE INDEX bottle_intake_acceptance_session ON bottle_intake_acceptance(session_id, accepted_at, draft_id);

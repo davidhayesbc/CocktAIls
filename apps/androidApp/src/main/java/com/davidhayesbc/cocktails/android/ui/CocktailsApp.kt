@@ -505,7 +505,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var bottleIntakeCameraMessage by remember { mutableStateOf<String?>(null) }
     var bottleIntakeSession by remember(repository) { mutableStateOf(repository.openBottleIntakeSession()) }
     var bottleIntakeRoute by remember(repository) {
-        mutableStateOf(if (repository.openBottleIntakeSession()?.drafts.isNullOrEmpty()) BottleIntakeRoute.SETUP else BottleIntakeRoute.SCANNING)
+        mutableStateOf(if (repository.openBottleIntakeSession() == null) BottleIntakeRoute.SETUP else BottleIntakeRoute.SCANNING)
     }
     LaunchedEffect(showBottleIntake, bottleIntakeSession?.id, bottleIntakeSession?.drafts?.size, pendingBottleEnrichmentJobs) {
         val session = bottleIntakeSession
@@ -1802,13 +1802,42 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 },
                 onAcceptAndScanNext = { draftId ->
                     val draft = bottleIntakeSession?.drafts?.firstOrNull { it.id == draftId }
-                    if (draft != null && draftId == activeScannedDraftId && draft.ingredientName.isNotBlank() && draft.ingredientName != "Unidentified bottle") {
-                        bottleEnrichmentQueue.finish(draftId, BottleEnrichmentStatus.REVIEWED, "USER_ACCEPTED", System.currentTimeMillis())
-                        refreshPendingBottleEnrichmentJobs()
-                        activeScannedDraftId = null
-                        bottleIntakeRoute = BottleIntakeRoute.SCANNING
-                        if (context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) showBottleScanner = true
-                        context.getSharedPreferences("cocktails_local_scan_review", Context.MODE_PRIVATE).edit().remove("active_draft_id").apply()
+                    if (draft == null || draftId != activeScannedDraftId) {
+                        BottleIntakeCommitResult.Invalid("This bottle is no longer the active review.")
+                    } else {
+                        val suggestions = bottleWebSearchStates[draftId]?.extractedSuggestions ?: pendingBottleEvidenceStore.read(draftId)
+                        val sources = acceptedProductSourcesForBottle(draft, suggestions)
+                        when (val result = repository.acceptBottleIntakeDraft(draft.sessionId, draftId, System.currentTimeMillis(), sources)) {
+                            is BottleIntakeCommitResult.Accepted, is BottleIntakeCommitResult.AlreadyAccepted -> {
+                                bottleEnrichmentQueue.finish(draftId, BottleEnrichmentStatus.REVIEWED, "USER_ACCEPTED", System.currentTimeMillis())
+                                pendingBottleEvidenceStore.remove(draftId)
+                                bottleWebSearchStates = bottleWebSearchStates - draftId
+                                refreshPantry()
+                                bottleIntakeSession = repository.openBottleIntakeSession()
+                                refreshPendingBottleEnrichmentJobs()
+                                val nextReview = bottleIntakeSession?.drafts?.firstOrNull { next ->
+                                    pendingBottleEnrichmentJobs[next.id]?.status in setOf(
+                                        BottleEnrichmentStatus.READY_FOR_REVIEW,
+                                        BottleEnrichmentStatus.NEEDS_ATTENTION,
+                                    )
+                                }
+                                if (nextReview != null) {
+                                    activeScannedDraftId = nextReview.id
+                                    bottleIntakeRoute = BottleIntakeRoute.REVIEW
+                                    context.getSharedPreferences("cocktails_local_scan_review", Context.MODE_PRIVATE)
+                                        .edit().putString("active_draft_id", nextReview.id).apply()
+                                } else {
+                                    activeScannedDraftId = null
+                                    bottleIntakeRoute = BottleIntakeRoute.SCANNING
+                                    context.getSharedPreferences("cocktails_local_scan_review", Context.MODE_PRIVATE)
+                                        .edit().remove("active_draft_id").apply()
+                                    if (context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) showBottleScanner = true
+                                }
+                                result
+                            }
+                            is BottleIntakeCommitResult.Invalid -> result
+                            else -> result
+                        }
                     }
                 },
                 onAddManual = { name, category, barcode, brand, productName, level, photo ->
@@ -1896,6 +1925,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                                 pendingBottleLabelCropSuggestion = null
                                 bottleLabelCaptureMessage = null
                             }
+                            is BottleIntakeCommitResult.Accepted, is BottleIntakeCommitResult.AlreadyAccepted -> Unit
                             is BottleIntakeCommitResult.Invalid -> Unit
                         }
                         result
@@ -2292,7 +2322,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         BarcodeScannerDialog(
             continuous = false,
             fullScreen = true,
-            batchBottleCount = bottleIntakeSession!!.drafts.size,
+            batchBottleCount = bottleIntakeSession!!.confirmedCount + bottleIntakeSession!!.drafts.size,
             readyCount = bottleIntakeSession!!.drafts.count { draft ->
                 pendingBottleEnrichmentJobs[draft.id]?.status in setOf(BottleEnrichmentStatus.READY_FOR_REVIEW, BottleEnrichmentStatus.NEEDS_ATTENTION)
             },
@@ -2650,7 +2680,7 @@ internal fun BottleIntakeScreen(
     onDiscardCapturedLabel: () -> Unit,
     onAttachCapturedLabel: (BottleIntakeDraft) -> Unit,
     onScan: () -> Unit,
-    onAcceptAndScanNext: (String) -> Unit,
+    onAcceptAndScanNext: (String) -> BottleIntakeCommitResult,
     onAddManual: (String, String, String?, String?, String?, InventoryLevel, ByteArray?) -> Boolean,
     onRemove: (BottleIntakeDraft) -> Unit,
     onUpdate: (BottleIntakeDraft) -> Boolean,
@@ -2762,7 +2792,7 @@ private fun BottleIntakeFlowScreen(
     onAttachCapturedLabel: (BottleIntakeDraft) -> Unit,
     onScan: () -> Unit,
     onReviewBottle: (String) -> Unit,
-    onAcceptAndScanNext: (String) -> Unit,
+    onAcceptAndScanNext: (String) -> BottleIntakeCommitResult,
     onAddManual: (String, String, String?, String?, String?, InventoryLevel, ByteArray?) -> Boolean,
     onRemove: (BottleIntakeDraft) -> Unit,
     onUpdate: (BottleIntakeDraft) -> Boolean,
@@ -2778,7 +2808,9 @@ private fun BottleIntakeFlowScreen(
 ) {
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    var error by remember(session.id) { mutableStateOf<String?>(null) }
     LaunchedEffect(route) {
+        error = null
         focusManager.clearFocus(force = true)
         keyboardController?.hide()
     }
@@ -2788,8 +2820,7 @@ private fun BottleIntakeFlowScreen(
     val needsHelp = drafts.filter { pendingEnrichmentJobs[it.id]?.status == BottleEnrichmentStatus.NEEDS_ATTENTION }
     val runningCount = drafts.count { pendingEnrichmentJobs[it.id]?.status == BottleEnrichmentStatus.RUNNING }
     val pendingCount = drafts.count { pendingEnrichmentJobs[it.id]?.status in setOf(BottleEnrichmentStatus.QUEUED, BottleEnrichmentStatus.CAPTURE_REQUIRED) }
-    val reviewedCount = drafts.count { pendingEnrichmentJobs[it.id]?.status == BottleEnrichmentStatus.REVIEWED }
-    var error by remember(session.id) { mutableStateOf<String?>(null) }
+    val reviewedCount = session.confirmedCount + drafts.count { pendingEnrichmentJobs[it.id]?.status == BottleEnrichmentStatus.REVIEWED }
     var cropEditorOpen by remember(session.id, pendingLabelDraftId) { mutableStateOf(false) }
     var name by remember(session.id) { mutableStateOf("") }
     var category by remember(session.id) { mutableStateOf("Spirit") }
@@ -2992,6 +3023,7 @@ private fun BottleIntakeFlowScreen(
                 else {
                     val webState = webSearchStates[draft.id] ?: BottleWebSearchState()
                     val job = pendingEnrichmentJobs[draft.id]
+                    val hasAnotherReadyBottle = ready.any { it.id != draft.id } || needsHelp.any { it.id != draft.id }
                     Column(Modifier.weight(1f).fillMaxWidth()) {
                         Column(
                             Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
@@ -3019,17 +3051,24 @@ private fun BottleIntakeFlowScreen(
                                 onCancelSearch = { onCancelDraftSearch(draft.id) },
                             )
                         }
+                        error?.let { Text(it, Modifier.fillMaxWidth().padding(horizontal = 24.dp), color = MaterialTheme.colorScheme.error) }
                         Row(
                             Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
                             Button(
-                                onClick = { onAcceptAndScanNext(draft.id) },
+                                onClick = {
+                                    when (val result = onAcceptAndScanNext(draft.id)) {
+                                        is BottleIntakeCommitResult.Accepted, is BottleIntakeCommitResult.AlreadyAccepted -> error = null
+                                        is BottleIntakeCommitResult.Invalid -> error = result.reason
+                                        else -> error = "This bottle could not be accepted. It is still in your draft queue."
+                                    }
+                                },
                                 enabled = draft.ingredientName.isNotBlank() && draft.ingredientName != "Unidentified bottle" &&
                                     !webState.searching && webState.fetchingUrl == null && !webState.extracting && webState.automaticStage == null,
                                 shape = RoundedCornerShape(28.dp),
                                 modifier = Modifier.weight(1f).heightIn(min = 56.dp).testTag("accept-scanned-bottle-${draft.id}"),
-                            ) { Text("Accept & review next") }
+                            ) { Text(if (hasAnotherReadyBottle) "Accept & review next" else "Accept & scan next") }
                             OutlinedButton(
                                 onClick = { onRouteChange(BottleIntakeRoute.SCANNING) },
                                 shape = RoundedCornerShape(28.dp),
@@ -3388,6 +3427,16 @@ private fun BottleReviewCard(
         webSearchState.searching -> "Searching enabled providers"
         else -> statusText
     }
+    // Manual lookups may offer explicit per-field application only when the extraction result
+    // carries the same GTIN and a source passage that ties the product identity to that GTIN.
+    // Merely having a product name/brand suggestion on a page is not enough to apply it.
+    val canApplyManualSuggestions = remember(draft.barcode, webSearchState.extractedSuggestions, webSearchState.barcodeVerifiedInPage, webSearchState.barcodeVerifiedByStructuredProduct) {
+        val barcode = draft.barcode?.let(::normalizeGtinForLookup)
+        val suggestions = webSearchState.extractedSuggestions
+        barcode != null && suggestions?.targetBarcode?.let(::normalizeGtinForLookup) == barcode &&
+            suggestions.identityEvidence?.let { sourceMentionsScannedBarcode(draft.barcode.orEmpty(), it) } == true &&
+            (webSearchState.barcodeVerifiedInPage || webSearchState.barcodeVerifiedByStructuredProduct)
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth().testTag("bottle-review-card-${draft.id}"),
@@ -3585,6 +3634,55 @@ private fun BottleReviewCard(
                             suggestions.facts.forEach { fact ->
                                 Text("${fact.field.label}: ${fact.value}", style = MaterialTheme.typography.bodyMedium)
                                 Text("Evidence: “${fact.quote}”", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                if (!webSearchState.automatedScan && canApplyManualSuggestions) {
+                                    TextButton(
+                                        onClick = {
+                                            when (fact.field) {
+                                                BottleFactField.PRODUCT_NAME -> {
+                                                    val acceptedName = fact.value.trim()
+                                                    val ingredient = if (name == "Unidentified bottle") acceptedName else name
+                                                    if (acceptedName.isNotEmpty() && onUpdate(draft.copy(
+                                                            ingredientName = ingredient,
+                                                            productName = acceptedName,
+                                                            brand = brand.trim().ifEmpty { null },
+                                                        ))) {
+                                                        name = ingredient
+                                                        productName = acceptedName
+                                                        onFieldEdited(draft.id, BottleDraftField.PRODUCT_NAME)
+                                                        if (ingredient != draft.ingredientName) onFieldEdited(draft.id, BottleDraftField.INGREDIENT_NAME)
+                                                        nameValidationMessage = null
+                                                        onValidityChanged(draft.id, ingredient.isNotBlank())
+                                                    }
+                                                }
+                                                BottleFactField.BRAND -> {
+                                                    val acceptedBrand = fact.value.trim()
+                                                    if (acceptedBrand.isNotEmpty() && onUpdate(draft.copy(brand = acceptedBrand))) {
+                                                        brand = acceptedBrand
+                                                        onFieldEdited(draft.id, BottleDraftField.BRAND)
+                                                    }
+                                                }
+                                                BottleFactField.QUANTITY -> {
+                                                    val acceptedQuantity = fact.value.trim()
+                                                    if (acceptedQuantity.isNotEmpty() && onUpdate(draft.copy(quantity = acceptedQuantity, quantityEdited = true))) {
+                                                        quantity = acceptedQuantity
+                                                        onFieldEdited(draft.id, BottleDraftField.QUANTITY)
+                                                    }
+                                                }
+                                                BottleFactField.ABV_PERCENT -> {
+                                                    val acceptedAbv = fact.value.trim()
+                                                    if (acceptedAbv.isNotEmpty() && onUpdate(draft.copy(abvPercent = acceptedAbv, abvPercentEdited = true))) {
+                                                        abvPercent = acceptedAbv
+                                                        onFieldEdited(draft.id, BottleDraftField.ABV_PERCENT)
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.testTag("apply-manual-suggestion-${fact.field.wireValue}-${draft.id}"),
+                                    ) { Text("Use ${fact.field.label.lowercase()} suggestion") }
+                                }
+                            }
+                            if (!webSearchState.automatedScan && !canApplyManualSuggestions && suggestions.facts.isNotEmpty()) {
+                                Text("These suggestions are not linked to this bottle’s barcode. Copy a value manually only if you can verify the product.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                         if (webSearchState.automatedScan) {

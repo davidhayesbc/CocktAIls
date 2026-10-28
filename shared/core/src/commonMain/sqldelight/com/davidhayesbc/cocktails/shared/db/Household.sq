@@ -134,6 +134,15 @@ CREATE TABLE bottle_intake_draft (
     UNIQUE(session_id, position)
 );
 
+CREATE TABLE bottle_intake_acceptance (
+    draft_id TEXT NOT NULL PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES bottle_intake_session(id) ON DELETE CASCADE,
+    inventory_id TEXT NOT NULL REFERENCES inventory_item(id),
+    accepted_at INTEGER NOT NULL
+);
+
+CREATE INDEX bottle_intake_acceptance_session ON bottle_intake_acceptance(session_id, accepted_at, draft_id);
+
 CREATE INDEX bottle_intake_draft_session ON bottle_intake_draft(session_id, position);
 
 CREATE UNIQUE INDEX ingredient_name_category
@@ -310,6 +319,9 @@ UPDATE bottle_intake_session SET location_id = ?, updated_at = ? WHERE id = ? AN
 updateBottleIntakeSessionDefaultLevel:
 UPDATE bottle_intake_session SET default_level = ?, updated_at = ? WHERE id = ? AND status = 'OPEN';
 
+incrementBottleIntakeAcceptedCount:
+UPDATE bottle_intake_session SET confirmed_count = confirmed_count + 1, updated_at = ? WHERE id = ? AND status = 'OPEN';
+
 confirmBottleIntakeSession:
 UPDATE bottle_intake_session SET status = 'CONFIRMED', updated_at = ?, confirmed_count = ? WHERE id = ? AND status = 'OPEN';
 
@@ -347,6 +359,12 @@ UPDATE bottle_intake_draft SET level = ? WHERE session_id = ?;
 
 deleteBottleIntakeDraft:
 DELETE FROM bottle_intake_draft WHERE id = ? AND session_id = ?;
+
+selectBottleIntakeAcceptance:
+SELECT draft_id, session_id, inventory_id, accepted_at FROM bottle_intake_acceptance WHERE draft_id = ?;
+
+insertBottleIntakeAcceptance:
+INSERT INTO bottle_intake_acceptance(draft_id, session_id, inventory_id, accepted_at) VALUES (?, ?, ?, ?);
 
 deleteBottleIntakeDrafts:
 DELETE FROM bottle_intake_draft WHERE session_id = ?;

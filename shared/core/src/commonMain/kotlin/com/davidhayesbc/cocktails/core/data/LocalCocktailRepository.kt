@@ -1023,7 +1023,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         if (name.isEmpty() || (cleanedBarcode != null && normalizeGtinForLookup(cleanedBarcode) == null)) return null
         if (photoJpeg != null && (photoJpeg.size > MAX_PRODUCT_PHOTO_BYTES || !isProductPhotoJpeg(photoJpeg))) return null
         if (!isValidBottleQuantity(quantity) || !isValidBottleAbv(abvPercent)) return null
-        val position = queries.selectNextBottleIntakePosition(sessionId).executeAsOne()
+        val position = maxOf(session.confirmed_count, queries.selectNextBottleIntakePosition(sessionId).executeAsOne())
         val id = newUuidV7(nowMillis)
         queries.insertBottleIntakeDraft(
             id, sessionId, position, cleanedBarcode, null, name, category.trim().ifEmpty { "Other" },
@@ -1063,6 +1063,69 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         true
     }
 
+    /**
+     * Accepts one reviewed physical bottle. Inventory write, provenance, acceptance receipt,
+     * and draft removal happen in one transaction so a repeated tap cannot add a second bottle.
+     */
+    fun acceptBottleIntakeDraft(
+        sessionId: String,
+        draftId: String,
+        nowMillis: Long,
+        productSources: List<ProductFactSourceDraft> = emptyList(),
+    ): BottleIntakeCommitResult = database.transactionWithResult {
+        queries.selectBottleIntakeAcceptance(draftId).executeAsOneOrNull()?.let { accepted ->
+            if (accepted.session_id == sessionId) {
+                return@transactionWithResult BottleIntakeCommitResult.AlreadyAccepted(
+                    accepted.inventory_id,
+                    queries.selectBottleIntakeDrafts(sessionId).executeAsList().size,
+                )
+            }
+            return@transactionWithResult BottleIntakeCommitResult.Invalid("This bottle draft belongs to another intake session.")
+        }
+        val session = queries.selectBottleIntakeSession(sessionId).executeAsOneOrNull()
+            ?: return@transactionWithResult BottleIntakeCommitResult.Invalid("Intake session no longer exists.")
+        if (session.status != "OPEN") return@transactionWithResult BottleIntakeCommitResult.Invalid("This intake session is already closed.")
+        val draft = queries.selectBottleIntakeDraft(draftId, sessionId).executeAsOneOrNull()
+            ?: return@transactionWithResult BottleIntakeCommitResult.Invalid("This bottle is no longer waiting for review.")
+        if (productSources.anyNot(::isValidProductFactSourceDraft)) {
+            return@transactionWithResult BottleIntakeCommitResult.Invalid("A product source note is incomplete.")
+        }
+        val draftError = validateBottleIntakeDraft(draft, productSources)
+        if (draftError != null) return@transactionWithResult BottleIntakeCommitResult.Invalid(draftError)
+
+        var matchedProductId: String? = null
+        val barcode = draft.barcode
+        if (barcode != null) {
+            val normalized = normalizeGtinForLookup(barcode)
+                ?: return@transactionWithResult BottleIntakeCommitResult.Invalid("This bottle barcode is invalid.")
+            val stored = queries.selectProductsForBarcodeDeduplication().executeAsList().firstOrNull {
+                it.barcode?.let(::normalizeGtinForLookup) == normalized
+            }
+            if (stored != null) {
+                val targetIngredient = queries.selectIngredientByNameAndCategory(
+                    draft.ingredient_name.trim(), draft.category.trim(),
+                ).executeAsOneOrNull()
+                    ?: return@transactionWithResult BottleIntakeCommitResult.Invalid("This barcode already belongs to a different ingredient. Correct the bottle or clear its barcode.")
+                if (stored.ingredient_id != targetIngredient) {
+                    return@transactionWithResult BottleIntakeCommitResult.Invalid("This barcode already belongs to a different ingredient. Correct the bottle or clear its barcode.")
+                }
+                matchedProductId = stored.id
+            }
+        }
+
+        val householdId = queries.selectFirstHousehold().executeAsOne().id
+        val memberId = preferredMemberId() ?: queries.selectFirstMember(householdId).executeAsOne().id
+        val inventoryId = writeBottleDraft(draft, matchedProductId, memberId, nowMillis, productSources)
+            ?: error("Bottle intake validation failed during single-bottle acceptance.")
+        queries.insertBottleIntakeAcceptance(draftId, sessionId, inventoryId, nowMillis)
+        queries.deleteBottleIntakeDraft(draftId, sessionId)
+        queries.incrementBottleIntakeAcceptedCount(nowMillis, sessionId)
+        BottleIntakeCommitResult.Accepted(
+            inventoryId = inventoryId,
+            remainingDraftCount = queries.selectBottleIntakeDrafts(sessionId).executeAsList().size,
+        )
+    }
+
     /** Promotes all drafts atomically; a confirmed marker makes retries idempotent. */
     fun confirmBottleIntakeSession(
         sessionId: String,
@@ -1073,25 +1136,13 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             ?: return@transactionWithResult BottleIntakeCommitResult.Invalid("Intake session no longer exists.")
         if (session.status == "CONFIRMED") return@transactionWithResult BottleIntakeCommitResult.AlreadyConfirmed(session.confirmed_count.toInt())
         val drafts = queries.selectBottleIntakeDrafts(sessionId).executeAsList()
-        if (drafts.isEmpty()) return@transactionWithResult BottleIntakeCommitResult.Invalid("Add at least one bottle before confirming.")
+        if (drafts.isEmpty() && session.confirmed_count == 0L) return@transactionWithResult BottleIntakeCommitResult.Invalid("Add at least one bottle before confirming.")
         if (productSourcesByDraftId.keys.any { draftId -> drafts.none { it.id == draftId } } ||
             productSourcesByDraftId.values.flatten().anyNot(::isValidProductFactSourceDraft)
         ) return@transactionWithResult BottleIntakeCommitResult.Invalid("A product source note is incomplete or belongs to another bottle.")
         for (draft in drafts) {
             val sources = productSourcesByDraftId[draft.id].orEmpty()
-            if (sources.isNotEmpty() && draft.barcode == null) {
-                return@transactionWithResult BottleIntakeCommitResult.Invalid("Product source notes can only be saved with a scanned product barcode.")
-            }
-            if (sources.any { source ->
-                    when (source.fieldName) {
-                        "product_name" -> source.fieldValue != draft.product_name && source.fieldValue != draft.ingredient_name
-                        "brand" -> source.fieldValue != draft.brand
-                        "quantity" -> source.fieldValue != draft.bottle_quantity
-                        "abv_percent" -> normalizeBottleAbv(source.fieldValue) != normalizeBottleAbv(draft.abv_percent)
-                        else -> true
-                    }
-                }
-            ) return@transactionWithResult BottleIntakeCommitResult.Invalid("A source suggestion no longer matches the bottle details being saved.")
+            validateBottleIntakeDraft(draft, sources)?.let { return@transactionWithResult BottleIntakeCommitResult.Invalid(it) }
         }
         val draftBarcodes = mutableMapOf<String, Pair<String, String>>()
         for (draft in drafts) {
@@ -1131,14 +1182,14 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                     memberId,
                     nowMillis,
                     productSourcesByDraftId[draft.id].orEmpty(),
-                ).not()
-            ) {
+                ) == null) {
                 error("Bottle intake validation failed during atomic commit.")
             }
         }
-        queries.confirmBottleIntakeSession(nowMillis, drafts.size.toLong(), sessionId)
+        val totalConfirmed = session.confirmed_count + drafts.size
+        queries.confirmBottleIntakeSession(nowMillis, totalConfirmed, sessionId)
         queries.deleteBottleIntakeDrafts(sessionId)
-        BottleIntakeCommitResult.Confirmed(drafts.size)
+        BottleIntakeCommitResult.Confirmed(totalConfirmed.toInt())
     }
 
     private fun mapBottleIntakeSession(id: String, status: String, locationId: String, defaultLevel: String, createdAt: Long, updatedAt: Long, confirmedCount: Long): BottleIntakeSession = BottleIntakeSession(
@@ -1157,20 +1208,51 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         level = InventoryLevel.valueOf(level), createdAt = createdAt,
     )
 
+    private fun validateBottleIntakeDraft(
+        draft: Bottle_intake_draft,
+        sources: List<ProductFactSourceDraft>,
+    ): String? {
+        if (draft.ingredient_name.isBlank()) return "A bottle needs an ingredient name before it can be accepted."
+        if (draft.photo_data != null && (draft.photo_data.size > MAX_PRODUCT_PHOTO_BYTES || !isProductPhotoJpeg(draft.photo_data) ||
+                !photoSha256(draft.photo_data).equals(draft.photo_sha256, ignoreCase = true))) {
+            return "A label photo is invalid. Remove it or capture it again."
+        }
+        if (!isValidBottleQuantity(draft.bottle_quantity) || !isValidBottleAbv(draft.abv_percent)) {
+            return "Bottle size or ABV needs a valid value."
+        }
+        val normalizedBarcode = draft.barcode?.let(::normalizeGtinForLookup)
+        if (draft.barcode != null && normalizedBarcode == null) return "This bottle barcode is invalid."
+        if (sources.isNotEmpty() && normalizedBarcode == null) {
+            return "Product source notes can only be saved with a scanned product barcode."
+        }
+        if (sources.any { source ->
+                when (source.fieldName) {
+                    "product_name" -> source.fieldValue != draft.product_name && source.fieldValue != draft.ingredient_name
+                    "brand" -> source.fieldValue != draft.brand
+                    "quantity" -> source.fieldValue != draft.bottle_quantity
+                    "abv_percent" -> normalizeBottleAbv(source.fieldValue) != normalizeBottleAbv(draft.abv_percent)
+                    else -> true
+                }
+            }) {
+            return "A source suggestion no longer matches the bottle details being saved."
+        }
+        return null
+    }
+
     private fun writeBottleDraft(
         draft: Bottle_intake_draft,
         matchedProductId: String?,
         memberId: String,
         nowMillis: Long,
         sourceFacts: List<ProductFactSourceDraft>,
-    ): Boolean {
+    ): String? {
         val ingredientName = draft.ingredient_name.trim()
         val category = draft.category.trim().ifEmpty { "Other" }
         val exact = queries.selectIngredientByNameAndCategory(ingredientName, category).executeAsOneOrNull()
         val sameName = if (exact == null && queries.countIngredientsByName(ingredientName).executeAsOne() == 1L)
             queries.selectIngredientsByName(ingredientName).executeAsOneOrNull() else null
         val target = exact ?: sameName
-        if (matchedProductId != null && (target == null || queries.selectProductById(matchedProductId).executeAsOne().ingredient_id != target)) return false
+        if (matchedProductId != null && (target == null || queries.selectProductById(matchedProductId).executeAsOne().ingredient_id != target)) return null
         val ingredientId = exact ?: sameName ?: newUuidV7(nowMillis + draft.position + 1).also {
             queries.insertIngredientIgnore(it, ingredientName, category, nowMillis)
         }
@@ -1203,7 +1285,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             writeRevision(productId, "PRODUCT", memberId, nowMillis, jsonObject("id" to jsonString(productId), "ingredientId" to jsonString(product.ingredient_id), "brand" to nullableJsonString(product.brand), "productName" to jsonString(product.product_name), "barcode" to (product.barcode?.let(::jsonString) ?: "null"), "photoSha256" to (product.photo_sha256?.let(::jsonString) ?: "null"), "bottleQuantity" to nullableJsonString(product.bottle_quantity), "abvPercent" to nullableJsonString(product.abv_percent), "createdAt" to product.created_at.toString()))
         }
         if (sourceFacts.isNotEmpty()) {
-            if (productId == null) return false
+            if (productId == null) return null
             sourceFacts.forEachIndexed { index, fact ->
                 val sourceId = newUuidV7(nowMillis + draft.position * 100L + index + 1L)
                 queries.insertProductSourceIgnore(
@@ -1226,8 +1308,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             )
             writeRevision(productId, "PRODUCT", memberId, nowMillis, payload)
         }
-        writeInventory(draft.location_id, ingredientId, InventoryLevel.valueOf(draft.level), memberId, nowMillis, productId)
-        return true
+        return writeInventory(draft.location_id, ingredientId, InventoryLevel.valueOf(draft.level), memberId, nowMillis, productId)
     }
 
     fun productFactSources(productId: String): List<ProductFactSource> = queries.selectProductSourcesForProduct(productId).executeAsList().map { row ->
@@ -1396,7 +1477,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         memberId: String,
         nowMillis: Long,
         productId: String?,
-    ) {
+    ): String {
         val inventoryId = newUuidV7(nowMillis)
         queries.insertInventory(inventoryId, locationId, ingredientId, productId, level.name, nowMillis, memberId)
         writeRevision(
@@ -1406,6 +1487,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             nowMillis,
             inventoryPayload(locationId, ingredientId, productId, level),
         )
+        return inventoryId
     }
 
     private fun inventoryPayload(locationId: String, ingredientId: String, productId: String?, level: InventoryLevel): String =

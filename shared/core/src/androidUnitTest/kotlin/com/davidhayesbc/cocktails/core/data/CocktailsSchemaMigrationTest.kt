@@ -53,7 +53,7 @@ class CocktailsSchemaMigrationTest {
                 bindString(3, "FULL"); bindLong(4, 2L); bindString(5, "member-v5")
             }
 
-            CocktailsDatabase.Schema.migrate(driver, 5, 8)
+            CocktailsDatabase.Schema.migrate(driver, 5, 9)
             val database = CocktailsDatabase(driver)
             val repository = LocalCocktailRepository(database)
             val pantry = repository.pantry("home-v5")
@@ -107,7 +107,7 @@ class CocktailsSchemaMigrationTest {
                 bindString(3, "HALF"); bindLong(4, 3L); bindString(5, "member-v4")
             }
 
-            CocktailsDatabase.Schema.migrate(driver, 4, 8)
+            CocktailsDatabase.Schema.migrate(driver, 4, 9)
             val database = CocktailsDatabase(driver)
             assertEquals("0012345678905", database.householdQueries.selectProductById("bottle-v4").executeAsOne().barcode)
             val migratedBottle = database.householdQueries.selectInventoryById("stock-v4").executeAsOne()
@@ -160,7 +160,7 @@ class CocktailsSchemaMigrationTest {
                 bindString(3, "HALF"); bindLong(4, 12L); bindString(5, "member-v3")
             }
 
-            CocktailsDatabase.Schema.migrate(driver, 3, 8)
+            CocktailsDatabase.Schema.migrate(driver, 3, 9)
             val database = CocktailsDatabase(driver)
             assertEquals("stock-v3", database.householdQueries.selectInventoryId("home-v3", "gin-v3").executeAsOne())
             assertEquals("HALF", database.householdQueries.selectPantryForLocation("home-v3").executeAsOne().level)
@@ -209,7 +209,7 @@ class CocktailsSchemaMigrationTest {
                 bindString(3, "LOW"); bindLong(4, 2L); bindString(5, "member-v2")
             }
 
-            CocktailsDatabase.Schema.migrate(driver, 2, 8)
+            CocktailsDatabase.Schema.migrate(driver, 2, 9)
             val database = CocktailsDatabase(driver)
             val repository = LocalCocktailRepository(database)
             assertEquals("stock-v2", database.householdQueries.selectInventoryId("home-v2", "gin-v2").executeAsOne())
@@ -252,7 +252,7 @@ class CocktailsSchemaMigrationTest {
         }
         driver.execute(null, "PRAGMA user_version = 1", 0)
 
-        CocktailsDatabase.Schema.migrate(driver, 1, 8)
+        CocktailsDatabase.Schema.migrate(driver, 1, 9)
         val database = CocktailsDatabase(driver)
         val migratedPantry = database.householdQueries.selectPantryForLocation(legacyLocationId).executeAsOne()
 

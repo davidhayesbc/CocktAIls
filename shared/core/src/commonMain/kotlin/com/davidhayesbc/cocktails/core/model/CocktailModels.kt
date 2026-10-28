@@ -134,6 +134,8 @@ data class ProductFactSource(
 )
 
 sealed interface BottleIntakeCommitResult {
+    data class Accepted(val inventoryId: String, val remainingDraftCount: Int) : BottleIntakeCommitResult
+    data class AlreadyAccepted(val inventoryId: String, val remainingDraftCount: Int) : BottleIntakeCommitResult
     data class Confirmed(val bottleCount: Int) : BottleIntakeCommitResult
     data class AlreadyConfirmed(val bottleCount: Int) : BottleIntakeCommitResult
     data class Invalid(val reason: String) : BottleIntakeCommitResult

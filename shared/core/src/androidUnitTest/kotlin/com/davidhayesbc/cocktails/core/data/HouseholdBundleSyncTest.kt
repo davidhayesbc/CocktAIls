@@ -202,6 +202,106 @@ class HouseholdBundleSyncTest {
     }
 
     @Test
+    fun acceptingOneDraftIsAtomicIdempotentAndDiscardOnlyRemovesUnacceptedDrafts() {
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        CocktailsDatabase.Schema.create(driver)
+        val database = CocktailsDatabase(driver)
+        val repository = LocalCocktailRepository(database)
+        repository.initialize(10)
+        val home = repository.locations().single().id
+        val session = repository.startBottleIntakeSession(home, InventoryLevel.FULL, 20)
+        val labelPhoto = byteArrayOf(
+            0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 0xc0.toByte(), 0, 11, 8, 0, 1, 0, 1, 1, 1, 17, 0,
+            0xff.toByte(), 0xda.toByte(), 0, 8, 1, 1, 0, 0, 63, 0, 0, 0xff.toByte(), 0xd9.toByte(),
+        )
+        val first = repository.addBottleIntakeDraft(
+            session.id, "North Star Gin", "Spirit", home, InventoryLevel.LOW, 30,
+            barcode = "012345678905", brand = "North Star", productName = "Dry Gin", quantity = "750 mL", abvPercent = "43%",
+            photoJpeg = labelPhoto,
+        )!!
+        val second = repository.addBottleIntakeDraft(
+            session.id, "North Star Gin", "Spirit", home, InventoryLevel.FULL, 31,
+            barcode = "012345678905", brand = "North Star", productName = "Dry Gin", quantity = "750 mL", abvPercent = "43%",
+        )!!
+        val unreviewed = repository.addBottleIntakeDraft(
+            session.id, "Unreviewed Rum", "Spirit", home, InventoryLevel.FULL, 32,
+            barcode = "4006381333931",
+        )!!
+        val fact = ProductFactSourceDraft(
+            retrievalProvider = "Firecrawl", extractionProvider = "On-device Qwen3", extractionModel = "qwen3-0.6b-q8",
+            sourceUrl = "https://products.example/north-star-gin", fieldName = "product_name", fieldValue = "Dry Gin",
+            evidenceQuote = "UPC 012345678905 · Dry Gin",
+        )
+
+        val accepted = assertIs<com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult.Accepted>(
+            repository.acceptBottleIntakeDraft(session.id, first.id, 40, listOf(fact)),
+        )
+        assertEquals(2, accepted.remainingDraftCount)
+        assertEquals("Dry Gin", repository.openBottleIntakeSession()!!.drafts.first { it.id == second.id }.productName)
+        assertEquals(1, repository.pantry(home).size)
+        assertEquals(1, repository.openBottleIntakeSession()!!.confirmedCount)
+
+        val restarted = LocalCocktailRepository(CocktailsDatabase(driver))
+        val resumed = restarted.openBottleIntakeSession()!!
+        assertEquals(1, resumed.confirmedCount)
+        assertEquals(setOf(second.id, unreviewed.id), resumed.drafts.map { it.id }.toSet())
+        val repeated = assertIs<com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult.AlreadyAccepted>(
+            restarted.acceptBottleIntakeDraft(session.id, first.id, 50, listOf(fact)),
+        )
+        assertEquals(accepted.inventoryId, repeated.inventoryId)
+        assertEquals(1, restarted.pantry(home).size)
+        val acceptedProduct = database.householdQueries.selectAllProductsForBundle().executeAsOne()
+        assertEquals("750 mL", acceptedProduct.bottle_quantity)
+        assertEquals("43%", acceptedProduct.abv_percent)
+        assertContentEquals(labelPhoto, acceptedProduct.photo_data)
+        assertEquals("Dry Gin", restarted.productFactSources(acceptedProduct.id).single().fieldValue)
+
+        val acceptedSecond = assertIs<com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult.Accepted>(
+            restarted.acceptBottleIntakeDraft(session.id, second.id, 60),
+        )
+        val twoBottles = restarted.pantry(home)
+        assertEquals(2, twoBottles.size)
+        assertEquals(2, twoBottles.map { it.inventoryId }.toSet().size)
+        assertEquals(1, twoBottles.map { it.productId }.toSet().size)
+        assertEquals(setOf(InventoryLevel.LOW, InventoryLevel.FULL), twoBottles.map { it.level }.toSet())
+        assertEquals(1, acceptedSecond.remainingDraftCount)
+        val productId = twoBottles.first().productId!!
+        assertEquals(listOf("Dry Gin"), restarted.productFactSources(productId).map { it.fieldValue })
+
+        assertTrue(restarted.cancelBottleIntakeSession(session.id))
+        assertEquals(2, restarted.pantry(home).size)
+        assertEquals(null, restarted.openBottleIntakeSession())
+        driver.close()
+    }
+
+    @Test
+    fun batchConfirmationIncludesPreviouslyAcceptedBottleAndCannotDuplicateIt() {
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        CocktailsDatabase.Schema.create(driver)
+        val repository = LocalCocktailRepository(CocktailsDatabase(driver))
+        repository.initialize(10)
+        val home = repository.locations().single().id
+        val session = repository.startBottleIntakeSession(home, InventoryLevel.FULL, 20)
+        val first = repository.addBottleIntakeDraft(session.id, "Gin", "Spirit", home, InventoryLevel.LOW, 30, "012345678905")!!
+        repository.addBottleIntakeDraft(session.id, "Gin", "Spirit", home, InventoryLevel.FULL, 31, "012345678905")!!
+
+        assertIs<com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult.Accepted>(
+            repository.acceptBottleIntakeDraft(session.id, first.id, 40),
+        )
+        val confirmed = assertIs<com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult.Confirmed>(
+            repository.confirmBottleIntakeSession(session.id, 50),
+        )
+        assertEquals(2, confirmed.bottleCount)
+        val repeated = assertIs<com.davidhayesbc.cocktails.core.model.BottleIntakeCommitResult.AlreadyConfirmed>(
+            repository.confirmBottleIntakeSession(session.id, 60),
+        )
+        assertEquals(2, repeated.bottleCount)
+        assertEquals(2, repository.pantry(home).size)
+        assertEquals(2, repository.pantry(home).map { it.inventoryId }.toSet().size)
+        driver.close()
+    }
+
+    @Test
     fun invalidBarcodeAddDoesNotPersistAndCorrectedRetryRetainsLabelPhoto() {
         val database = database()
         val repository = LocalCocktailRepository(database)

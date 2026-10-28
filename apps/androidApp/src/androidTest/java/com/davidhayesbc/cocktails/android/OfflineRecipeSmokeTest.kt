@@ -285,6 +285,12 @@ class OfflineRecipeSmokeTest {
             extractedSuggestions = suggestions,
             message = "Suggestions are ready. Review the source before accepting.",
         )))
+        var jobs by mutableStateOf(mapOf(first.id to BottleEnrichmentJob(
+            id = "job-${first.id}", sessionId = session.id, draftId = first.id,
+            operation = BottleEnrichmentOperation.FIRECRAWL_SEARCH, status = BottleEnrichmentStatus.READY_FOR_REVIEW,
+            sourceUrl = sourceUrl, model = "qwen3-0.6b-q8", resultCode = "CANDIDATES_READY",
+            labelCaptureRequired = false, updatedAtMillis = 3,
+        )))
         var nextScanRequested by mutableStateOf(false)
         var secondDraftId by mutableStateOf<String?>(null)
         var route by mutableStateOf(BottleIntakeRoute.REVIEW)
@@ -303,7 +309,7 @@ class OfflineRecipeSmokeTest {
                         permissionMessage = null,
                         webSearchEnabled = false,
                         webSearchStates = webStates,
-                        pendingEnrichmentJobs = emptyMap(),
+                        pendingEnrichmentJobs = jobs,
                         activeReviewDraftId = activeDraftId,
                         ollamaCloudEnabled = false,
                         localAiEnabled = false,
@@ -320,16 +326,35 @@ class OfflineRecipeSmokeTest {
                         onAcceptAndScanNext = { draftId ->
                             assertEquals(first.id, draftId)
                             assertTrue(pendingEvidenceStore.save(draftId, suggestions))
+                            val reviewedFirst = repository.openBottleIntakeSession()!!.drafts.single { it.id == first.id }
+                            val accepted = repository.acceptBottleIntakeDraft(
+                                session.id, draftId, 4,
+                                acceptedProductSourcesForBottle(reviewedFirst, pendingEvidenceStore.read(draftId)),
+                            )
+                            assertTrue(accepted is BottleIntakeCommitResult.Accepted)
+                            pendingEvidenceStore.remove(draftId)
+                            jobs = jobs + (first.id to jobs.getValue(first.id).copy(
+                                status = BottleEnrichmentStatus.REVIEWED,
+                                resultCode = "USER_ACCEPTED",
+                            ))
                             nextScanRequested = true
                             val next = repository.addBottleIntakeDraft(
-                                session.id, "Auchentoshan Three Wood", "Spirit", home.id, InventoryLevel.FULL, 4,
+                                session.id, "Auchentoshan Three Wood", "Spirit", home.id, InventoryLevel.FULL, 5,
                                 barcode = barcode, brand = "Auchentoshan", productName = "Auchentoshan Three Wood",
                             )!!
                             secondDraftId = next.id
                             activeDraftId = next.id
+                            jobs = jobs + (next.id to jobs.getValue(first.id).copy(
+                                id = "job-${next.id}", draftId = next.id,
+                                status = BottleEnrichmentStatus.READY_FOR_REVIEW,
+                            ))
                             webStates = mapOf(next.id to BottleWebSearchState(automatedScan = true, message = "Review the next bottle."))
                             activeSession = repository.openBottleIntakeSession()!!
-                            route = BottleIntakeRoute.SCANNING
+                            route = BottleIntakeRoute.REVIEW
+                            BottleIntakeCommitResult.Accepted(
+                                inventoryId = repository.pantry(home.id).single().inventoryId,
+                                remainingDraftCount = activeSession.drafts.size,
+                            )
                         },
                         onAddManual = { _, _, _, _, _, _, _ -> false },
                         onRemove = { draft -> repository.removeBottleIntakeDraft(draft.sessionId, draft.id); activeSession = repository.openBottleIntakeSession()!! },
@@ -386,20 +411,24 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag(acceptScannedBottle).assertIsDisplayed().assertIsEnabled().performClick()
             composeRule.waitUntil(timeoutMillis = 5_000) { nextScanRequested }
             assertTrue(secondDraftId != null)
-            composeRule.onNodeWithTag("batch-scan-bottles").assertIsDisplayed()
-            assertEquals(2, repository.openBottleIntakeSession()!!.drafts.size)
+            assertEquals(BottleIntakeRoute.REVIEW, route)
+            composeRule.onNodeWithTag("bottle-intake-draft-name-1").assert(editableTextIs("Auchentoshan Three Wood"))
+            val firstAcceptedBottle = repository.pantry(home.id).single()
+            assertTrue(repository.productFactSources(firstAcceptedBottle.productId!!).any { it.fieldValue == "Auchentoshan Three Wood" })
+            assertEquals(1, repository.openBottleIntakeSession()!!.drafts.size)
 
             // Accepting a scan, pausing the batch, and losing the in-memory screen state must not
             // discard its evidence. Confirmation reads the persisted suggestion and transfers it.
             keepBottleIntakeForLater()
             assertTrue(!intakeVisible)
-            assertEquals(suggestions, pendingEvidenceStore.read(first.id))
+            assertEquals(null, pendingEvidenceStore.read(first.id))
             intakeVisible = true
             route = BottleIntakeRoute.QUEUE
             composeRule.waitForIdle()
             composeRule.onNodeWithTag("batch-confirm").performClick()
             assertTrue(repository.openBottleIntakeSession() == null)
             val savedProductId = repository.pantry(home.id).first().productId!!
+            assertEquals(2, repository.pantry(home.id).size)
             assertEquals(setOf("Auchentoshan Three Wood", "Auchentoshan", "43%"), repository.productFactSources(savedProductId).map { it.fieldValue }.toSet())
             assertEquals(null, pendingEvidenceStore.read(first.id))
         } finally {
@@ -449,7 +478,7 @@ class OfflineRecipeSmokeTest {
                         onSearchDraft = {}, onFetchDraftSource = { _, _ -> }, onExtractDraftDetails = {},
                         onExtractDraftDetailsOnDevice = {}, onResumeEnrichment = { _, _ -> }, onCancelDraftSearch = {},
                         onCaptureLabel = {}, onDiscardCapturedLabel = {}, onAttachCapturedLabel = {}, onScan = {},
-                        onAcceptAndScanNext = {}, onAddManual = { _, _, _, _, _, _, _ -> false },
+                        onAcceptAndScanNext = { BottleIntakeCommitResult.Invalid("Test only") }, onAddManual = { _, _, _, _, _, _, _ -> false },
                         onRemove = { },
                         onUpdate = { updated ->
                             val saved = repository.updateBottleIntakeDraft(updated)
@@ -493,6 +522,19 @@ class OfflineRecipeSmokeTest {
             val acceptTag = "accept-scanned-bottle-${draft.id}"
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag(acceptTag))
             composeRule.onNodeWithTag(acceptTag).assertIsNotEnabled()
+
+            // Non-automated suggestions stay separate until a user explicitly applies them,
+            // and application is offered only when the source identity matches this barcode.
+            webState = webState.copy(automatedScan = false, barcodeVerifiedInPage = false)
+            composeRule.waitForIdle()
+            composeRule.onNodeWithTag("review-evidence-toggle").performClick()
+            composeRule.onNodeWithTag("apply-manual-suggestion-product_name-${draft.id}").assertDoesNotExist()
+            webState = webState.copy(barcodeVerifiedInPage = true)
+            composeRule.waitForIdle()
+            val applyProductTag = "apply-manual-suggestion-product_name-${draft.id}"
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag(applyProductTag))
+            composeRule.onNodeWithTag(applyProductTag).assertIsDisplayed().performClick()
+            assertEquals("Another suggested bottle", repository.openBottleIntakeSession()!!.drafts.single().productName)
         } finally {
             setTestContent { }
             driver.close()
@@ -539,7 +581,7 @@ class OfflineRecipeSmokeTest {
                         onLabelCameraCancel = { cameraToken.value = null },
                         onUsePendingLabel = { true },
                         onSkipPendingLabel = { skippedDraft = it; true }, onDiscardCapturedLabel = {},
-                        onAttachCapturedLabel = {}, onScan = {}, onAcceptAndScanNext = {},
+                        onAttachCapturedLabel = {}, onScan = {}, onAcceptAndScanNext = { BottleIntakeCommitResult.Invalid("Test only") },
                         onAddManual = { _, _, _, _, _, _, _ -> false }, onRemove = {}, onUpdate = { true },
                         onFieldEdited = { _, _ -> }, onHomeChanged = {}, onLevelChanged = {},
                         onConfirm = { BottleIntakeCommitResult.Invalid("Test only") }, onCancel = {}, onDismiss = {},
@@ -768,7 +810,7 @@ class OfflineRecipeSmokeTest {
                             else { scanAnotherBottle(); route = BottleIntakeRoute.CAPTURE_LABEL }
                         },
                         onReviewBottle = { activeReviewId = it; route = BottleIntakeRoute.REVIEW },
-                        onAcceptAndScanNext = { activeReviewId = null; route = BottleIntakeRoute.SCANNING },
+                        onAcceptAndScanNext = { activeReviewId = null; route = BottleIntakeRoute.SCANNING; BottleIntakeCommitResult.Invalid("Test only") },
                         onAddManual = { _, _, _, _, _, _, _ -> false },
                         onRemove = {}, onUpdate = { repository.updateBottleIntakeDraft(it) }, onFieldEdited = { _, _ -> },
                         onHomeChanged = {}, onLevelChanged = {},
