@@ -26,6 +26,27 @@ class BottleProviderOutcomeTest {
     }
 
     @Test
+    fun deterministicFallbackAfterAttemptIsNotMisreportedAsAiSkipped() {
+        val extraction = BottleDetailExtractionResult.Found(
+            BottleDetailSuggestions(
+                provider = "Verified source table + On-device Qwen3",
+                model = LOCAL_MODEL_LABEL,
+                sourceUrl = "https://example.com/bottle",
+                facts = listOf(BottleFactEvidence(BottleFactField.PRODUCT_NAME, "Three Wood", "### Three Wood")),
+                targetBarcode = "5011333150725",
+                identityEvidence = "UPC 5011333150725 · Three Wood",
+                extractionMethod = BottleExtractionMethod.DETERMINISTIC_FALLBACK_AFTER_MODEL,
+            ),
+        )
+        val statuses = bottleProviderOutcomes(
+            plan = ScannedBottlePlan(openFoodFactsEnabled = false, firecrawlEnabled = true, extractor = AutomaticBottleExtractor.ON_DEVICE),
+            outcome = ScannedBottleOutcome(barcode = "5011333150725", search = WebSearchResult.Found(emptyList()), extraction = extraction),
+        )
+
+        assertEquals(BottleProviderOutcome.FALLBACK, statuses.ai)
+    }
+
+    @Test
     fun noSearchResultsAndSkippedModelRemainSeparateOutcomes() {
         val outcome = ScannedBottleOutcome(
             barcode = "5011733110725",

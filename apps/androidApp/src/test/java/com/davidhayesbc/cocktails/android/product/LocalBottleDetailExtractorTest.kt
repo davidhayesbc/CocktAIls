@@ -140,10 +140,39 @@ class LocalBottleDetailExtractorTest {
         assertTrue(result.suggestions.facts.none { it.value == "1" || it.field == BottleFactField.ABV_PERCENT })
         assertFalse("A rejected AI quantity must not mark the labeled size unresolved", BottleFactField.QUANTITY in result.suggestions.unresolvedFields)
         assertTrue(BottleFactField.ABV_PERCENT in result.suggestions.unresolvedFields)
-        assertEquals(BottleExtractionMethod.DETERMINISTIC_SOURCE, result.suggestions.extractionMethod)
+        assertEquals(BottleExtractionMethod.DETERMINISTIC_FALLBACK_AFTER_MODEL, result.suggestions.extractionMethod)
         assertTrue(result.suggestions.fieldRejections.any {
             it.field == BottleFactField.QUANTITY && it.reason == BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE
         })
+    }
+
+    @Test
+    fun validModelCompletionMergesOnlyMissingFieldsWithBarcodeBoundNameAndSize() = runBlocking {
+        val partialMarkdown = COOK_STREET_AUCHENTOSHAN
+            .replace("| Alcohol: | 43% |", "")
+            .replace("| Category: | Single Malt |", "| Category: | Single Malt |\n| Brand: | Auchentoshan |")
+        val page = cookStreetAuchentoshanPage(partialMarkdown)
+        var prompt = ""
+        val output = """{"facts":[{"field":"brand","value":"Auchentoshan","evidence":"| Brand: | Auchentoshan |"}]}"""
+        val result = LocalBottleDetailExtractor({ "/model.gguf" }, LocalInferenceRunner { _, _, userPrompt, _ ->
+            prompt = userPrompt
+            output
+        }).extract(page, LOCAL_MODEL_LABEL, "5011333150725") as BottleDetailExtractionResult.Found
+
+        assertTrue(prompt.contains("Requested fields: brand, abv_percent"))
+        assertTrue(prompt.contains("### AUCHENTOSHAN - THREE WOOD"))
+        assertEquals(
+            mapOf(
+                BottleFactField.PRODUCT_NAME to "AUCHENTOSHAN - THREE WOOD",
+                BottleFactField.QUANTITY to "750 mL",
+                BottleFactField.BRAND to "Auchentoshan",
+            ),
+            result.suggestions.facts.associate { it.field to it.value },
+        )
+        assertEquals("5011333150725", result.suggestions.targetBarcode)
+        assertTrue(result.suggestions.identityEvidence?.contains("5011333150725") == true)
+        assertEquals(BottleExtractionMethod.MODEL_WITH_DETERMINISTIC_FACTS, result.suggestions.extractionMethod)
+        assertEquals(setOf(BottleFactField.ABV_PERCENT), result.suggestions.unresolvedFields)
     }
 
     @Test
@@ -463,7 +492,7 @@ class LocalBottleDetailExtractorTest {
 
         assertTrue(result is BottleDetailExtractionResult.Found)
         val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
-        assertEquals("Structured product data", suggestions.provider)
+        assertEquals("Structured product data + On-device Qwen3", suggestions.provider)
         assertEquals("Auchentoshan Three Wood", suggestions.facts.single().value)
         assertFalse(BottleFactField.PRODUCT_NAME in suggestions.unresolvedFields)
         assertTrue(BottleFactField.ABV_PERCENT in suggestions.unresolvedFields)
@@ -631,7 +660,7 @@ class LocalBottleDetailExtractorTest {
 
         assertTrue(result is BottleDetailExtractionResult.Found)
         val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
-        assertEquals("Structured product data", suggestions.provider)
+        assertEquals("Structured product data + On-device Qwen3", suggestions.provider)
         assertEquals("Auchentoshan Three Wood", suggestions.facts.single().value)
         assertEquals(setOf(BottleFactField.BRAND, BottleFactField.QUANTITY, BottleFactField.ABV_PERCENT), suggestions.unresolvedFields)
         assertTrue(events.any {
@@ -681,7 +710,7 @@ class LocalBottleDetailExtractorTest {
 
             assertTrue(result is BottleDetailExtractionResult.Found)
             val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
-            assertEquals("Structured product data", suggestions.provider)
+            assertEquals("Structured product data + On-device Qwen3", suggestions.provider)
             assertEquals("Auchentoshan Three Wood", suggestions.facts.single().value)
             val generation = events.single { it.stage == BottleLookupDebugStage.LOCAL_GENERATION && it.result == "FAILED" }
             assertEquals(160, generation.generatedTokens)
@@ -888,7 +917,7 @@ class LocalBottleDetailExtractorTest {
 
             assertTrue(result is BottleDetailExtractionResult.Found)
             val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
-            assertEquals("Structured product data", suggestions.provider)
+            assertEquals("Structured product data + On-device Qwen3", suggestions.provider)
             assertEquals("Auchentoshan Three Wood", suggestions.facts.single().value)
             assertEquals(setOf(BottleFactField.BRAND, BottleFactField.QUANTITY, BottleFactField.ABV_PERCENT), suggestions.unresolvedFields)
             assertEquals("5011333150725", suggestions.targetBarcode)

@@ -33,6 +33,9 @@ internal data class BottleFactEvidence(
 internal enum class BottleExtractionMethod {
     MODEL,
     DETERMINISTIC_SOURCE,
+    DETERMINISTIC_SOURCE_PARTIAL,
+    MODEL_WITH_DETERMINISTIC_FACTS,
+    DETERMINISTIC_FALLBACK_AFTER_MODEL,
 }
 
 /** Privacy-safe rejection metadata. Never stores the rejected candidate value or evidence quote. */
@@ -65,6 +68,7 @@ internal enum class BottleExtractionRejectionReason(val debugCode: String) {
     MALFORMED_MODEL_RESPONSE("MALFORMED_MODEL_RESPONSE"),
     NO_FACTS("NO_SUPPORTED_FIELDS"),
     INVALID_FACT_SHAPE("INVALID_FACT_SHAPE"),
+    UNREQUESTED_FIELD("UNREQUESTED_FIELD"),
     EVIDENCE_NOT_IN_SOURCE("EVIDENCE_NOT_IN_SOURCE"),
     VALUE_NOT_IN_EVIDENCE("VALUE_NOT_IN_EVIDENCE"),
     INVALID_ABV_EVIDENCE("INVALID_ABV_EVIDENCE"),
@@ -581,8 +585,9 @@ private fun isSupportedQuantityCandidate(value: String, quote: String): Boolean 
 
 /** Keep source-level bottle-size disagreements visible and unresolved instead of selecting one. */
 internal fun unresolvedBottleSourceFields(sourceText: String): Set<BottleFactField> {
+    val normalizedSourceText = sourceText.replace('|', ' ')
     val quantities = Regex("""(?i)(?<![\d.,])(\d{1,4}(?:[.,]\d{1,2})?)\s*(mL|L)\b""")
-        .findAll(sourceText)
+        .findAll(normalizedSourceText)
         .mapNotNull { match ->
             val amount = match.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return@mapNotNull null
             val milliliters = if (match.groupValues[2].equals("L", ignoreCase = true)) amount * 1_000 else amount
@@ -594,7 +599,7 @@ internal fun unresolvedBottleSourceFields(sourceText: String): Set<BottleFactFie
     // value appear unambiguous when the same source also contains an invalid ABV claim.
     val abvValues = Regex(
         """(?i)(?:(?<![\d.,])(\d{1,3}(?:[.,]\d{1,2})?)\s*%\s*(?:ABV|ALC(?:OHOL)?(?:\s+BY\s+VOLUME)?|ALC\.?\s*/\s*VOL\.?|VOL(?:UME)?)\b|\b(?:ABV|ALC(?:OHOL)?(?:\s+BY\s+VOLUME)?|ALC\.?\s*/\s*VOL\.?|VOL(?:UME)?)\s*[:=]?\s*(\d{1,3}(?:[.,]\d{1,2})?)\s*%)""",
-    ).findAll(sourceText).mapNotNull { match ->
+    ).findAll(normalizedSourceText).mapNotNull { match ->
         (match.groups[1]?.value ?: match.groups[2]?.value)?.replace(',', '.')?.toDoubleOrNull()
     }.toSet()
     return buildSet {

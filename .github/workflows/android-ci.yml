@@ -289,7 +289,7 @@ jobs:
             ${{ runner.temp }}/onboarding-*.png
             ${{ runner.temp }}/detailed-lookup-capture-*.png
             ${{ runner.temp }}/detailed-lookup-debug-mode-*.png
-            ${{ runner.temp }}/more-export-bar-*.png
+            ${{ runner.temp }}/more-export-bar*.png
             apps/androidApp/build/outputs/androidTest-results/connected/**/*.xml
             apps/androidApp/build/reports/androidTests/connected/**
           if-no-files-found: ignore

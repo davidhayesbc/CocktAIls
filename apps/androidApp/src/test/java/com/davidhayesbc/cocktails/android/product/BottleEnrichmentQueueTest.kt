@@ -313,13 +313,13 @@ class BottleEnrichmentQueueTest {
             nowMillis = 3,
             providerOutcomes = BottleEnrichmentProviderOutcomes(
                 web = BottleProviderOutcome.NO_RESULTS,
-                ai = BottleProviderOutcome.SKIPPED_DETERMINISTIC,
+                ai = BottleProviderOutcome.FALLBACK,
             ),
         ) { BottleEnrichmentStatus.NEEDS_ATTENTION to "NO_SOURCE_FOUND" })
 
         val reopened = BottleEnrichmentQueue(storage).status("draft-outcomes")!!
         assertEquals(BottleProviderOutcome.NO_RESULTS, reopened.webOutcome)
-        assertEquals(BottleProviderOutcome.SKIPPED_DETERMINISTIC, reopened.aiOutcome)
+        assertEquals(BottleProviderOutcome.FALLBACK, reopened.aiOutcome)
         assertFalse(storage.raw.orEmpty().contains("page markdown"))
         assertFalse(storage.raw.orEmpty().contains("model output"))
     }

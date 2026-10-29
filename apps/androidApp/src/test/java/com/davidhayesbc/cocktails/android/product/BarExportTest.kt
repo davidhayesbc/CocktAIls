@@ -17,6 +17,54 @@ import org.junit.Test
 
 class BarExportTest {
     @Test
+    fun documentPickerOperationsSerializeAndNeverWriteWithoutTheMatchingSnapshot() {
+        val preparing = BarExportOperation.IDLE.begin("request-1")!!
+        assertEquals(BarExportOperationPhase.PREPARING, preparing.phase)
+        assertEquals(null, preparing.begin("request-2"))
+        val picker = preparing.pickerLaunched("request-1")!!
+
+        val stale = picker.pickerResult("old-request", destinationChosen = true, snapshotAvailable = true)
+        assertEquals(BarExportPickerAction.STALE, stale.second)
+        assertEquals(picker, stale.first)
+
+        val (cancelledState, cancelledAction) = picker.pickerResult("request-1", destinationChosen = false, snapshotAvailable = true)
+        assertEquals(BarExportPickerAction.CANCELLED, cancelledAction)
+        assertEquals(BarExportOperation.IDLE, cancelledState)
+
+        val (missingSnapshotState, missingSnapshotAction) = picker.pickerResult("request-1", destinationChosen = true, snapshotAvailable = false)
+        assertEquals(BarExportPickerAction.SNAPSHOT_UNAVAILABLE, missingSnapshotAction)
+        assertEquals(BarExportOperation.IDLE, missingSnapshotState)
+
+        val (writeState, writeAction) = picker.pickerResult("request-1", destinationChosen = true, snapshotAvailable = true)
+        assertEquals(BarExportPickerAction.WRITE, writeAction)
+        assertEquals(BarExportOperationPhase.WRITING, writeState.phase)
+        assertEquals(null, writeState.begin("request-2"))
+        assertEquals(null, writeState.writeFinished("request-2"))
+        assertEquals(BarExportOperation.IDLE, writeState.writeFinished("request-1"))
+    }
+
+    @Test
+    fun activityRecreationKeepsPickerRequestButSafelyInvalidatesInterruptedPreparationOrWrite() {
+        val preparing = BarExportOperation.IDLE.begin("preparing")!!
+        val (resetPreparation, preparationReason) = preparing.recoverAfterActivityRecreation()
+        assertEquals(BarExportOperation.IDLE, resetPreparation)
+        assertEquals(BarExportRecovery.PREPARATION_INTERRUPTED, preparationReason)
+
+        val picker = preparing.pickerLaunched("preparing")!!
+        val (waitingForPicker, pickerReason) = picker.recoverAfterActivityRecreation()
+        assertEquals(picker, waitingForPicker)
+        assertEquals(BarExportRecovery.WAITING_FOR_PICKER_RESULT, pickerReason)
+        val (noSnapshot, resultAction) = waitingForPicker.pickerResult("preparing", destinationChosen = true, snapshotAvailable = false)
+        assertEquals(BarExportPickerAction.SNAPSHOT_UNAVAILABLE, resultAction)
+        assertEquals(BarExportOperation.IDLE, noSnapshot)
+
+        val writing = picker.pickerResult("preparing", destinationChosen = true, snapshotAvailable = true).first
+        val (resetWrite, writeReason) = writing.recoverAfterActivityRecreation()
+        assertEquals(BarExportOperation.IDLE, resetWrite)
+        assertEquals(BarExportRecovery.WRITE_INTERRUPTED, writeReason)
+    }
+
+    @Test
     fun exportsFifteenConfirmedPhysicalBottlesWithDistinctIdsAndStableSchema() {
         val entries = (1..15).map { number ->
             PantryEntry(

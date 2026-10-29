@@ -37,6 +37,7 @@ internal enum class BottleProviderOutcome {
     QUEUED,
     RUNNING,
     COMPLETE,
+    FALLBACK,
     NO_RESULTS,
     NO_MATCH,
     FAILED,

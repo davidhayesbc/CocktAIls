@@ -76,6 +76,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -220,7 +222,12 @@ import com.davidhayesbc.cocktails.android.product.FirecrawlSearchProvider
 import com.davidhayesbc.cocktails.android.product.OllamaCloudBottleDetailExtractor
 import com.davidhayesbc.cocktails.android.product.BAR_EXPORT_FILENAME
 import com.davidhayesbc.cocktails.android.product.BAR_EXPORT_MIME_TYPE
+import com.davidhayesbc.cocktails.android.product.BarExportOperation
+import com.davidhayesbc.cocktails.android.product.BarExportOperationPhase
+import com.davidhayesbc.cocktails.android.product.BarExportPickerAction
+import com.davidhayesbc.cocktails.android.product.BarExportRecovery
 import com.davidhayesbc.cocktails.android.product.barExportCompletionMessage
+import com.davidhayesbc.cocktails.android.product.barExportRecoveryMessage
 import com.davidhayesbc.cocktails.android.product.buildBarExportJson
 import com.davidhayesbc.cocktails.android.product.writeBarExport
 import com.davidhayesbc.cocktails.android.product.BottleDetailExtractionResult
@@ -259,8 +266,20 @@ import kotlinx.serialization.json.put
 import java.io.ByteArrayOutputStream
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+
+private val BarExportOperationSaver = Saver<BarExportOperation, List<String>>(
+    save = { listOf(it.requestId.orEmpty(), it.phase.name) },
+    restore = { saved ->
+        val phase = saved.getOrNull(1)?.let { value -> runCatching { BarExportOperationPhase.valueOf(value) }.getOrNull() }
+            ?: BarExportOperationPhase.IDLE
+        val requestId = saved.getOrNull(0)?.takeIf(String::isNotBlank)
+        if (phase == BarExportOperationPhase.IDLE || requestId == null) BarExportOperation.IDLE
+        else BarExportOperation(requestId, phase)
+    },
+)
 
 private enum class Page(val label: String) {
     MAKE("Make"),
@@ -852,7 +871,18 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var shareMessage by remember { mutableStateOf<String?>(null) }
     var barExportMessage by remember { mutableStateOf<String?>(null) }
     var barExportContents by remember { mutableStateOf<String?>(null) }
-    var barExportPending by remember { mutableStateOf(false) }
+    var barExportOperation by rememberSaveable(stateSaver = BarExportOperationSaver) {
+        mutableStateOf(BarExportOperation.IDLE)
+    }
+    val barExportPending = barExportOperation.phase != BarExportOperationPhase.IDLE
+    LaunchedEffect(Unit) {
+        val (recovered, reason) = barExportOperation.recoverAfterActivityRecreation()
+        if (reason != BarExportRecovery.NONE && reason != BarExportRecovery.WAITING_FOR_PICKER_RESULT) {
+            barExportOperation = recovered
+            barExportContents = null
+            barExportMessage = barExportRecoveryMessage(reason)
+        }
+    }
     var stagedBundle by remember { mutableStateOf<HouseholdBundle?>(null) }
     var stagedPreview by remember { mutableStateOf<HouseholdImportPreview?>(null) }
     var stagedRecipeTable by remember { mutableStateOf<RecipeImportTable?>(null) }
@@ -1437,51 +1467,80 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     }
 
     val barExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(BAR_EXPORT_MIME_TYPE)) { uri ->
-        val contents = barExportContents
-        barExportContents = null
-        barExportPending = false
-        if (uri == null) {
-            barExportMessage = barExportCompletionMessage(destinationChosen = false, writeSucceeded = null)
-        } else {
-            coroutineScope.launch {
-                val succeeded = runCatching {
-                    withContext(Dispatchers.IO) {
-                        val output = context.contentResolver.openOutputStream(uri, "w") ?: return@withContext false
-                        writeBarExport(output, contents ?: return@withContext false)
+        val requestId = barExportOperation.requestId
+        val (nextOperation, action) = barExportOperation.pickerResult(
+            id = requestId,
+            destinationChosen = uri != null,
+            snapshotAvailable = barExportContents != null,
+        )
+        when (action) {
+            BarExportPickerAction.STALE -> Unit
+            BarExportPickerAction.CANCELLED -> {
+                barExportOperation = nextOperation
+                barExportContents = null
+                barExportMessage = barExportCompletionMessage(destinationChosen = false, writeSucceeded = null)
+            }
+            BarExportPickerAction.SNAPSHOT_UNAVAILABLE -> {
+                barExportOperation = nextOperation
+                barExportContents = null
+                barExportMessage = "This export could not be resumed, so the selected file was not opened or changed. Try Export Bar again."
+            }
+            BarExportPickerAction.WRITE -> {
+                val contents = barExportContents ?: return@rememberLauncherForActivityResult
+                val activeRequestId = requestId ?: return@rememberLauncherForActivityResult
+                barExportOperation = nextOperation
+                barExportContents = null
+                coroutineScope.launch {
+                    val succeeded = try {
+                        withContext(Dispatchers.IO) {
+                            val output = context.contentResolver.openOutputStream(uri!!, "w") ?: return@withContext false
+                            writeBarExport(output, contents)
+                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        false
                     }
-                }.getOrDefault(false)
-                barExportMessage = barExportCompletionMessage(destinationChosen = true, writeSucceeded = succeeded)
+                    barExportOperation.writeFinished(activeRequestId)?.let { finished ->
+                        barExportOperation = finished
+                        barExportMessage = barExportCompletionMessage(destinationChosen = true, writeSucceeded = succeeded)
+                    }
+                }
             }
         }
     }
 
     fun beginBarExport() {
-        if (barExportPending) return
+        val requestId = UUID.randomUUID().toString()
+        barExportOperation = barExportOperation.begin(requestId) ?: return
         val locationId = selectedLocationId
         if (locationId.isBlank()) {
+            barExportOperation = barExportOperation.abort(requestId) ?: barExportOperation
             barExportMessage = "Choose a home before exporting its bar."
             return
         }
-        barExportPending = true
         barExportMessage = "Preparing confirmed bottles from the selected home…"
         coroutineScope.launch {
-            val prepared = runCatching {
+            val json = try {
                 withContext(Dispatchers.IO) {
                     buildBarExportJson(repository.pantry(locationId), System.currentTimeMillis())
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                barExportOperation.abort(requestId)?.let { barExportOperation = it }
+                barExportMessage = barExportCompletionMessage(destinationChosen = true, writeSucceeded = false)
+                return@launch
             }
-            prepared.onSuccess { json ->
-                barExportContents = json
-                barExportMessage = null
-                runCatching { barExportLauncher.launch(BAR_EXPORT_FILENAME) }
-                    .onFailure {
-                        barExportContents = null
-                        barExportPending = false
-                        barExportMessage = barExportCompletionMessage(destinationChosen = true, writeSucceeded = false)
-                    }
-            }.onFailure {
+            if (barExportOperation.requestId != requestId || barExportOperation.phase != BarExportOperationPhase.PREPARING) return@launch
+            barExportContents = json
+            barExportOperation = barExportOperation.pickerLaunched(requestId) ?: return@launch
+            barExportMessage = null
+            try {
+                barExportLauncher.launch(BAR_EXPORT_FILENAME)
+            } catch (_: Exception) {
+                barExportOperation.abort(requestId)?.let { barExportOperation = it }
                 barExportContents = null
-                barExportPending = false
                 barExportMessage = barExportCompletionMessage(destinationChosen = true, writeSucceeded = false)
             }
         }
@@ -3637,6 +3696,7 @@ private fun providerOutcomeLabel(job: BottleEnrichmentJob?, web: Boolean): Strin
         BottleProviderOutcome.QUEUED -> "Queued"
         BottleProviderOutcome.RUNNING -> "Running"
         BottleProviderOutcome.COMPLETE -> "Complete · result found"
+        BottleProviderOutcome.FALLBACK -> "AI issue · kept verified source facts"
         BottleProviderOutcome.NO_RESULTS -> "Complete · no results"
         BottleProviderOutcome.NO_MATCH -> "Complete · no barcode match"
         BottleProviderOutcome.FAILED -> "Failed"
@@ -5581,7 +5641,7 @@ private fun HouseholdScreen(
             onClick = onExportBar,
             enabled = !barExportPending,
             modifier = Modifier.fillMaxWidth().testTag("export-bar"),
-        ) { Text(if (barExportPending) "Preparing bar export…" else "Export Bar") }
+        ) { Text(if (barExportPending) "Bar export in progress…" else "Export Bar") }
         barExportMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("bar-export-message")) }
         Button(onClick = onExport, modifier = Modifier.fillMaxWidth()) { Text("Export household backup") }
         OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth()) { Text("Import household backup") }

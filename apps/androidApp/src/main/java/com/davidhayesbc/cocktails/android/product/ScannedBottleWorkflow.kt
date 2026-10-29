@@ -175,11 +175,14 @@ internal fun barcodeBoundMarkdownProduct(barcode: String, sourceText: String): B
         val identityEvidence = "${lines[headingIndex].trim()}\n${upcLine.trim()}"
         if (identityEvidence.length > 320 || sourceBarcodeCandidates(identityEvidence).toSet() != setOf(expected)) continue
 
+        val sectionLines = listOf(lines[headingIndex].trim()) + lines.subList(start, end).map(String::trim)
+        val sourceConflicts = unresolvedBottleSourceFields(sectionLines.joinToString("\n"))
         val facts = mutableListOf(BottleFactEvidence(BottleFactField.PRODUCT_NAME, productName, lines[headingIndex].trim()))
         val unresolved = linkedSetOf(BottleFactField.BRAND)
         val rejections = mutableListOf<BottleFactRejection>()
         val sizeRows = rows.filter { isSizeLabel(it[0]) }
-        val quantity = sizeRows.singleOrNull()?.let { row -> parseExplicitBottleSize(row[1]) }
+        val quantity = sizeRows.singleOrNull()?.takeIf { BottleFactField.QUANTITY !in sourceConflicts }
+            ?.let { row -> parseExplicitBottleSize(row[1]) }
         if (quantity != null) {
             val line = lines.subList(start, end).first { candidate ->
                 val cells = markdownTableCells(candidate)
@@ -190,12 +193,13 @@ internal fun barcodeBoundMarkdownProduct(barcode: String, sourceText: String): B
             unresolved += BottleFactField.QUANTITY
             if (sizeRows.isNotEmpty()) rejections += BottleFactRejection(
                 BottleFactField.QUANTITY,
-                if (sizeRows.size > 1) BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES
+                if (sizeRows.size > 1 || BottleFactField.QUANTITY in sourceConflicts) BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES
                 else BottleExtractionRejectionReason.INVALID_QUANTITY_EVIDENCE,
             )
         }
         val alcoholRows = rows.filter { isAlcoholLabel(it[0]) }
-        val abv = alcoholRows.singleOrNull()?.let { parseExplicitAbv(it[1]) }
+        val abv = alcoholRows.singleOrNull()?.takeIf { BottleFactField.ABV_PERCENT !in sourceConflicts }
+            ?.let { parseExplicitAbv(it[1]) }
         if (abv != null) {
             val line = lines.subList(start, end).first { candidate ->
                 val cells = markdownTableCells(candidate)
@@ -206,7 +210,7 @@ internal fun barcodeBoundMarkdownProduct(barcode: String, sourceText: String): B
             unresolved += BottleFactField.ABV_PERCENT
             if (alcoholRows.isNotEmpty()) rejections += BottleFactRejection(
                 BottleFactField.ABV_PERCENT,
-                if (alcoholRows.size > 1) BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES
+                if (alcoholRows.size > 1 || BottleFactField.ABV_PERCENT in sourceConflicts) BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES
                 else BottleExtractionRejectionReason.INVALID_ABV_EVIDENCE,
             )
         }
@@ -215,7 +219,7 @@ internal fun barcodeBoundMarkdownProduct(barcode: String, sourceText: String): B
             productName = productName,
             nameEvidence = lines[headingIndex].trim(),
             identityEvidence = identityEvidence,
-            sourceSection = (listOf(lines[headingIndex].trim()) + lines.subList(start, end).map(String::trim))
+            sourceSection = sectionLines
                 .filter(String::isNotEmpty).joinToString("\n"),
             facts = facts,
             unresolvedFields = unresolved,
@@ -612,9 +616,13 @@ internal fun bottleProviderOutcomes(
     }
 
     val ai = when (val extraction = outcome?.extraction) {
-        is BottleDetailExtractionResult.Found -> if (
-            extraction.suggestions.extractionMethod == BottleExtractionMethod.DETERMINISTIC_SOURCE
-        ) BottleProviderOutcome.SKIPPED_DETERMINISTIC else BottleProviderOutcome.COMPLETE
+        is BottleDetailExtractionResult.Found -> when (extraction.suggestions.extractionMethod) {
+            BottleExtractionMethod.DETERMINISTIC_SOURCE -> BottleProviderOutcome.SKIPPED_DETERMINISTIC
+            BottleExtractionMethod.DETERMINISTIC_SOURCE_PARTIAL -> BottleProviderOutcome.NOT_CONFIGURED
+            BottleExtractionMethod.DETERMINISTIC_FALLBACK_AFTER_MODEL -> BottleProviderOutcome.FALLBACK
+            BottleExtractionMethod.MODEL,
+            BottleExtractionMethod.MODEL_WITH_DETERMINISTIC_FACTS -> BottleProviderOutcome.COMPLETE
+        }
         is BottleDetailExtractionResult.Rejected, BottleDetailExtractionResult.InvalidResponse -> BottleProviderOutcome.FAILED
         BottleDetailExtractionResult.SetupRequired, BottleDetailExtractionResult.InvalidModel -> BottleProviderOutcome.NOT_CONFIGURED
         BottleDetailExtractionResult.AuthenticationRequired -> BottleProviderOutcome.AUTHENTICATION_REQUIRED
@@ -833,12 +841,22 @@ internal class ScannedBottleEnrichmentCoordinator(
         }
         val extraction = extractionCall.result
         val suggestions = (extraction as? BottleDetailExtractionResult.Found)?.suggestions
-        val deterministicExtraction = suggestions?.extractionMethod == BottleExtractionMethod.DETERMINISTIC_SOURCE
+        val extractionMethod = suggestions?.extractionMethod
+        val deterministicExtraction = extractionMethod == BottleExtractionMethod.DETERMINISTIC_SOURCE
+        val sourceOnlyPartial = extractionMethod == BottleExtractionMethod.DETERMINISTIC_SOURCE_PARTIAL
+        val modelFallback = extractionMethod == BottleExtractionMethod.DETERMINISTIC_FALLBACK_AFTER_MODEL
+        val modelWithSourceFacts = extractionMethod == BottleExtractionMethod.MODEL_WITH_DETERMINISTIC_FACTS
         onDebugEvent(BottleLookupDebugEvent(
             stage = BottleLookupDebugStage.DETAIL_EXTRACTION,
-            provider = if (deterministicExtraction) "Deterministic source parser" else extractor.name,
-            result = if (deterministicExtraction) "DETERMINISTIC_COMPLETE" else extraction.toDebugCode(extractionCall.httpStatus),
-            durationMillis = extractionCall.durationMillis.takeUnless { deterministicExtraction },
+            provider = if (deterministicExtraction || sourceOnlyPartial) "Deterministic source parser" else extractor.name,
+            result = when {
+                deterministicExtraction -> "DETERMINISTIC_COMPLETE"
+                sourceOnlyPartial -> "DETERMINISTIC_PARTIAL"
+                modelFallback -> "DETERMINISTIC_FALLBACK_AFTER_MODEL"
+                modelWithSourceFacts -> "MODEL_AND_SOURCE_FACTS_COMPLETE"
+                else -> extraction.toDebugCode(extractionCall.httpStatus)
+            },
+            durationMillis = extractionCall.durationMillis.takeUnless { deterministicExtraction || sourceOnlyPartial },
             httpStatus = extractionCall.httpStatus,
             sourceUrls = listOf(page.sourceUrl),
             factFields = suggestions?.facts?.map { it.field.wireValue }.orEmpty(),
@@ -853,6 +871,9 @@ internal class ScannedBottleEnrichmentCoordinator(
                 (extraction as? BottleDetailExtractionResult.Rejected)?.let { add(it.reason.debugCode) }
                 (extraction as? BottleDetailExtractionResult.LocalFailure)?.let { add(it.code.wireValue) }
                 if (deterministicExtraction) add("MODEL_NOT_NEEDED_FOR_EXPLICIT_CORE_FACTS")
+                if (sourceOnlyPartial) add("MODEL_NOT_CONFIGURED_FOR_PARTIAL_SOURCE_FACTS")
+                if (modelFallback) add("MODEL_ATTEMPTED_DETERMINISTIC_FALLBACK")
+                if (modelWithSourceFacts) add("MODEL_FACTS_MERGED_WITH_VERIFIED_SOURCE_FACTS")
             },
         ))
         return outcome.copy(extraction = extraction)
