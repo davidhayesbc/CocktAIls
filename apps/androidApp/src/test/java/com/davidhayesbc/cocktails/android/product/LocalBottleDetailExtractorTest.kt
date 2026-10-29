@@ -176,6 +176,42 @@ class LocalBottleDetailExtractorTest {
     }
 
     @Test
+    fun barcodeBoundTableFactsSurviveStructuredIdentityBindingWhenModelCompletesAnotherTableField() = runBlocking {
+        val barcode = "5011333150725"
+        val partialMarkdown = COOK_STREET_AUCHENTOSHAN
+            .replace("| Alcohol: | 43% |", "")
+            .replace("| Category: | Single Malt |", "| Category: | Single Malt |\n| Brand: | Auchentoshan |")
+        val identity = StructuredBottleIdentity(
+            barcode,
+            "Auchentoshan Three Wood",
+            "barcode $barcode; product Auchentoshan Three Wood",
+        )
+        val page = cookStreetAuchentoshanPage(partialMarkdown).copy(
+            title = "Auchentoshan Three Wood Single Malt Scotch Whisky",
+            structuredBottleIdentities = listOf(identity),
+        )
+        val result = LocalBottleDetailExtractor({ "/model.gguf" }, LocalInferenceRunner { _, _, _, _ ->
+            """{"facts":[{"field":"brand","value":"Auchentoshan","evidence":"| Brand: | Auchentoshan |"}]}"""
+        }).extract(page, LOCAL_MODEL_LABEL, barcode) as BottleDetailExtractionResult.Found
+
+        assertEquals(
+            mapOf(
+                BottleFactField.PRODUCT_NAME to identity.productName,
+                BottleFactField.QUANTITY to "750 mL",
+                BottleFactField.BRAND to "Auchentoshan",
+            ),
+            result.suggestions.facts.associate { it.field to it.value },
+        )
+        assertEquals(barcode, result.suggestions.targetBarcode)
+        assertEquals(identity.evidence, result.suggestions.identityEvidence)
+        assertFalse(BottleFactField.PRODUCT_NAME in result.suggestions.unresolvedFields)
+        assertFalse(BottleFactField.QUANTITY in result.suggestions.unresolvedFields)
+        assertFalse(BottleFactField.BRAND in result.suggestions.unresolvedFields)
+        assertTrue(BottleFactField.ABV_PERCENT in result.suggestions.unresolvedFields)
+        assertEquals(BottleExtractionMethod.MODEL_WITH_DETERMINISTIC_FACTS, result.suggestions.extractionMethod)
+    }
+
+    @Test
     fun markdownFactsAreBoundOnlyToOneUniqueTargetBarcodeProductTable() {
         assertEquals(null, barcodeBoundMarkdownProduct("5011333150725", COOK_STREET_AUCHENTOSHAN.replace("5011333150725", "5011333150733")))
 

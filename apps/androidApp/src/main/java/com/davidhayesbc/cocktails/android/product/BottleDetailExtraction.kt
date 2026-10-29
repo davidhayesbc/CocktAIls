@@ -28,6 +28,9 @@ internal data class BottleFactEvidence(
     val field: BottleFactField,
     val value: String,
     val quote: String,
+    /** Present only when the deterministic Markdown table parser bound this fact to one UPC record. */
+    val barcodeBoundProductCode: String? = null,
+    val barcodeBoundProductName: String? = null,
 )
 
 internal enum class BottleExtractionMethod {
@@ -372,7 +375,7 @@ internal fun bindStructuredProductIdentity(
     val mismatchedModelName = modelName != null && !structuredProductNamesAgree(modelName.value, identity.productName)
     val structuredNameFact = BottleFactEvidence(BottleFactField.PRODUCT_NAME, identity.productName, identity.evidence)
     val unboundFacts = result.suggestions.facts.filter { fact ->
-        fact.field != BottleFactField.PRODUCT_NAME && !factQuoteIsBoundToProductIdentity(fact, identity.productName)
+        fact.field != BottleFactField.PRODUCT_NAME && !factIsBoundToStructuredIdentity(fact, requiredBarcode, identity.productName)
     }
     // A locally verified barcode/name pair resolves PRODUCT_NAME even when the model's own
     // proposal for that field was rejected. Keep the rejection in diagnostics, not in review state.
@@ -412,6 +415,16 @@ internal fun factQuoteIsBoundToProductIdentity(fact: BottleFactEvidence, product
                 !Regex("(?i)\\b(?:related|similar|recommended|recommendation|alternative|other\\s+products?)\\b")
                     .containsMatchIn(passage)
         }
+
+private fun factIsBoundToStructuredIdentity(
+    fact: BottleFactEvidence,
+    requiredBarcode: String,
+    productName: String,
+): Boolean {
+    val sameBarcodeTableRecord = fact.barcodeBoundProductCode?.let(::normalizeGtinForLookup) == normalizeGtinForLookup(requiredBarcode) &&
+        fact.barcodeBoundProductName?.let { structuredProductNamesAgree(it, productName) } == true
+    return sameBarcodeTableRecord || factQuoteIsBoundToProductIdentity(fact, productName)
+}
 
 internal fun parseBottleFactCandidate(
     rawCandidate: String,

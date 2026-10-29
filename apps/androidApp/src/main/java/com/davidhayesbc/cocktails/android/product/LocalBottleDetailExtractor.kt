@@ -300,7 +300,7 @@ internal class LocalBottleDetailExtractor(
         }
 
         val resultWithVerifiedFacts = if (safeDeterministicFallback != null && parsed is BottleDetailExtractionResult.Found) {
-            mergeVerifiedSourceAndModelFacts(safeDeterministicFallback, parsed, requestedFactFields, providerLabel)
+            mergeVerifiedSourceAndModelFacts(safeDeterministicFallback, parsed, requestedFactFields, providerLabel, markdownProduct)
         } else parsed
 
         if (structuredIdentity == null && requiredBarcode == null) return resultWithVerifiedFacts
@@ -330,7 +330,9 @@ private fun BarcodeBoundMarkdownProduct.toDeterministicExtraction(
         provider = "Verified source table",
         model = "Deterministic extraction",
         sourceUrl = sourceUrl,
-        facts = facts,
+        facts = facts.map { fact ->
+            fact.copy(barcodeBoundProductCode = barcode, barcodeBoundProductName = productName)
+        },
         unresolvedFields = unresolvedFields,
         targetBarcode = barcode,
         identityEvidence = identityEvidence,
@@ -358,11 +360,22 @@ internal fun mergeVerifiedSourceAndModelFacts(
     modelResult: BottleDetailExtractionResult.Found,
     requestedFields: Set<BottleFactField>,
     modelProvider: String,
+    barcodeBoundMarkdownProduct: BarcodeBoundMarkdownProduct? = null,
 ): BottleDetailExtractionResult.Found {
     val sourceFacts = verifiedSource.suggestions.facts
     val sourceFields = sourceFacts.map(BottleFactEvidence::field).toSet()
     val acceptedModelFacts = modelResult.suggestions.facts.filter { fact ->
         fact.field in requestedFields && fact.field !in sourceFields
+    }.map { fact ->
+        val quoteBelongsToBarcodeBoundTable = barcodeBoundMarkdownProduct?.let { product ->
+            fact.quote.trim() in product.sourceSection.lineSequence().map(String::trim).toSet()
+        } == true
+        if (quoteBelongsToBarcodeBoundTable) {
+            fact.copy(
+                barcodeBoundProductCode = barcodeBoundMarkdownProduct?.barcode,
+                barcodeBoundProductName = barcodeBoundMarkdownProduct?.productName,
+            )
+        } else fact
     }
     val ignoredModelFacts = modelResult.suggestions.facts.filterNot(acceptedModelFacts::contains)
     val combinedFacts = sourceFacts + acceptedModelFacts
