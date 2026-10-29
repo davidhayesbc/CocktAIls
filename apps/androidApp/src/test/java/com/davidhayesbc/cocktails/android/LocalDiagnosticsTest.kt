@@ -232,6 +232,23 @@ class LocalDiagnosticsTest {
         dir.deleteRecursively()
     }
 
+    @Test fun exportForDraftNeverFallsBackToAnotherDraftsGlobalLatestLookup() {
+        val (dir, store) = tempStore()
+        val first = BottleLookupDebugReport(1, "preview", 13, "5011333150725", "5011333150725", false, true, true, true, "On-device Qwen3", "Qwen3", null)
+        val second = BottleLookupDebugReport(2, "preview", 13, "5011733110725", "5011733110725", false, true, true, true, "On-device Qwen3", "Qwen3", null)
+        store.recordBottleLookup(first, "draft-first")
+        store.recordBottleLookup(second, "draft-second")
+
+        val firstExport = store.exportForDraft("draft-first")
+        assertTrue(firstExport.contains("5011333150725"))
+        assertFalse(firstExport.contains("5011733110725"))
+        val absentExport = store.exportForDraft("draft-without-report")
+        assertFalse(absentExport.contains("latestBottleLookup"))
+        assertFalse(absentExport.contains("5011733110725"))
+        assertTrue(store.export().contains("5011733110725"))
+        dir.deleteRecursively()
+    }
+
     @Test fun lookupTimingSeparatesQueueNetworkAndAiWithoutDoubleCountingModelSubstages() {
         val report = BottleLookupDebugReport(1, "preview", 9, "5011333150725", "5011333150725", true, true, true, true, "On-device Qwen3", "Qwen3-0.6B-Q8_0", null)
         report.setQueueWaitMillis(5)

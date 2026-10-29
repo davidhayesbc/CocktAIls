@@ -99,6 +99,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -233,6 +234,7 @@ import com.davidhayesbc.cocktails.android.product.LocalModelFileStore
 import com.davidhayesbc.cocktails.android.product.DetailedBottleLookupDebugSessionStore
 import com.davidhayesbc.cocktails.android.product.DetailedCaptureStatus
 import com.davidhayesbc.cocktails.android.product.combineBottleDiagnostics
+import com.davidhayesbc.cocktails.android.product.isDiagnosticsCopyWithinLimit
 import com.davidhayesbc.cocktails.android.product.LocalModelInstallResult
 import com.davidhayesbc.cocktails.android.product.LocalBottleDetailExtractor
 import com.davidhayesbc.cocktails.android.product.LazyLlamaCppLocalInferenceRunner
@@ -297,6 +299,28 @@ private data class InstalledAppVersion(
     val code: Long,
     val buildStatus: String,
 )
+
+private data class DiagnosticsDialogSnapshot(
+    val standard: String,
+    val lookupPreview: String?,
+    val detailedCaptureCount: Int,
+    val detailedStatus: DetailedCaptureStatus?,
+    val detailedReports: List<String>,
+)
+
+private suspend fun loadDiagnosticsDialogSnapshot(
+    draftId: String?,
+    detailedStore: DetailedBottleLookupDebugSessionStore,
+): DiagnosticsDialogSnapshot = withContext(Dispatchers.IO) {
+    val detailedReports = detailedStore.reportContents(draftId)
+    DiagnosticsDialogSnapshot(
+        standard = if (draftId == null) LocalDiagnostics.export() else LocalDiagnostics.exportForDraft(draftId),
+        lookupPreview = if (draftId == null) LocalDiagnostics.latestBottleLookupPreview() else LocalDiagnostics.latestBottleLookupPreviewForDraft(draftId),
+        detailedCaptureCount = detailedReports.size,
+        detailedStatus = draftId?.let { detailedStore.statusForDraft(it) },
+        detailedReports = detailedReports,
+    )
+}
 
 internal data class BottleWebSearchState(
     val searching: Boolean = false,
@@ -410,6 +434,9 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var settingsDetailedCaptureStatus by remember { mutableStateOf(detailedLookupCaptureStore.sessionStatus()) }
     var detailedDebugModeMessage by remember { mutableStateOf<String?>(null) }
     var diagnosticsExportContents by remember { mutableStateOf<String?>(null) }
+    var diagnosticsPreview by remember { mutableStateOf("{}") }
+    var diagnosticsLookupPreview by remember { mutableStateOf<String?>(null) }
+    var diagnosticsDetailedCaptureCount by remember { mutableStateOf(0) }
 
     var pendingBottleEnrichmentJobs by remember(bottleEnrichmentQueue) {
         mutableStateOf(bottleEnrichmentQueue.jobs().associateBy { it.draftId })
@@ -461,7 +488,11 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     LaunchedEffect(showDiagnostics, showDiagnosticsForDraftId) {
         while (showDiagnostics) {
             val draftId = showDiagnosticsForDraftId
-            detailedCaptureStatus = draftId?.let { detailedLookupCaptureStore.statusForDraft(it) }
+            val snapshot = loadDiagnosticsDialogSnapshot(draftId, detailedLookupCaptureStore)
+            diagnosticsPreview = snapshot.standard
+            diagnosticsLookupPreview = snapshot.lookupPreview
+            diagnosticsDetailedCaptureCount = snapshot.detailedCaptureCount
+            detailedCaptureStatus = snapshot.detailedStatus
             delay(500)
         }
         detailedCaptureStatus = null
@@ -2455,28 +2486,37 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
 
     if (showDiagnostics) {
         val selectedDraftId = showDiagnosticsForDraftId
-        val lookupPreview = selectedDraftId?.let(LocalDiagnostics::latestBottleLookupPreviewForDraft)
-            ?: if (selectedDraftId == null) LocalDiagnostics.latestBottleLookupPreview() else null
-        val detailedReports = detailedLookupCaptureStore.reportContents(selectedDraftId)
         DiagnosticsDialog(
-            preview = LocalDiagnostics.preview(),
-            lookupPreview = lookupPreview,
+            preview = diagnosticsPreview,
+            lookupPreview = diagnosticsLookupPreview,
             lookupSubject = if (selectedDraftId == null) "Latest bottle lookup report" else "Lookup report for this bottle",
             lookupMissingMessage = if (selectedDraftId == null) "No barcode lookup report yet." else "No lookup report has been saved for this bottle yet.",
             lookupCopyMessage = lookupReportCopyMessage,
-            detailedCaptureCount = detailedReports.size,
+            detailedCaptureCount = diagnosticsDetailedCaptureCount,
             onCopy = {
-                val content = combineBottleDiagnostics(LocalDiagnostics.export(), detailedReports)
-                copyDiagnosticsToClipboard(context, content)
-                lookupReportCopyMessage = if (detailedReports.isEmpty()) {
-                    "Diagnostics copied. No detailed capture is available for this selection."
-                } else {
-                    "Diagnostics copied with ${detailedReports.size} detailed capture${if (detailedReports.size == 1) "" else "s"}. Review before sharing."
+                coroutineScope.launch {
+                    val snapshot = loadDiagnosticsDialogSnapshot(selectedDraftId, detailedLookupCaptureStore)
+                    diagnosticsPreview = snapshot.standard
+                    diagnosticsLookupPreview = snapshot.lookupPreview
+                    diagnosticsDetailedCaptureCount = snapshot.detailedCaptureCount
+                    val content = combineBottleDiagnostics(snapshot.standard, snapshot.detailedReports)
+                    lookupReportCopyMessage = when {
+                        !isDiagnosticsCopyWithinLimit(content) -> "Copy is too large for Android's clipboard. Use Export diagnostics instead."
+                        !copyDiagnosticsToClipboard(context, content) -> "Copy failed. Use Export diagnostics instead."
+                        snapshot.detailedCaptureCount == 0 -> "Diagnostics copied. No detailed capture is available for this selection."
+                        else -> "Diagnostics copied with ${snapshot.detailedCaptureCount} detailed capture${if (snapshot.detailedCaptureCount == 1) "" else "s"}. Review before sharing."
+                    }
                 }
             },
             onExport = {
-                diagnosticsExportContents = combineBottleDiagnostics(LocalDiagnostics.export(), detailedReports)
-                diagnosticsExportLauncher.launch("CocktAIls-Diagnostics.json")
+                coroutineScope.launch {
+                    val snapshot = loadDiagnosticsDialogSnapshot(selectedDraftId, detailedLookupCaptureStore)
+                    diagnosticsPreview = snapshot.standard
+                    diagnosticsLookupPreview = snapshot.lookupPreview
+                    diagnosticsDetailedCaptureCount = snapshot.detailedCaptureCount
+                    diagnosticsExportContents = combineBottleDiagnostics(snapshot.standard, snapshot.detailedReports)
+                    diagnosticsExportLauncher.launch("CocktAIls-Diagnostics.json")
+                }
             },
             onDismiss = { showDiagnostics = false; showDiagnosticsForDraftId = null },
         )
@@ -5525,40 +5565,54 @@ internal fun DiagnosticsDialog(
     onExport: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Local diagnostics") },
-        text = {
-            Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()).testTag("diagnostics-dialog-scroll"), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(lookupSubject, style = MaterialTheme.typography.titleSmall)
-                Text(lookupPreview ?: lookupMissingMessage, style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("latest-lookup-report-preview"))
-                Text("Stored only on this phone. Nothing is uploaded automatically. Copy and Export include the standard diagnostics and any available detailed source/model captures.")
-                Text(
-                    if (detailedCaptureCount > 0) "Detailed captures included: $detailedCaptureCount. They may contain public page excerpts and model output; review before sharing."
-                    else "Detailed captures included: none available for this selection. Turn on Debug mode in More before an eligible on-device lookup to record them.",
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.testTag("detailed-capture-inclusion-status"),
-                )
-                Text("Crash details include app/device version, camera event categories, and stack frames. Lookup reports include scanned barcode digits, provider/model status, safe source URLs, timings, HTTP statuses, and fixed rejection codes.")
-                Text("API keys and headers, photos, prompts, household/member data, recipes, private notes, and location are excluded. Detailed page/model text is locally retained only when Debug mode was on for that attempt.")
-                Text("This captures uncaught Java/Kotlin exceptions. It does not collect logcat and may not capture native crashes or ANRs.", style = MaterialTheme.typography.bodySmall)
-                Text(preview, style = MaterialTheme.typography.bodySmall)
-                lookupCopyMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.testTag("diagnostics-action-message")) }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp), contentAlignment = Alignment.Center) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().widthIn(max = 560.dp).heightIn(max = maxHeight * 0.94f),
+                shape = RoundedCornerShape(28.dp),
+                color = MaterialTheme.colorScheme.surface,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                tonalElevation = 6.dp,
+            ) {
+                Column(Modifier.fillMaxWidth().padding(20.dp)) {
+                    Text("Local diagnostics", style = MaterialTheme.typography.headlineSmall)
+                    Spacer(Modifier.height(12.dp))
+                    Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).testTag("diagnostics-dialog-scroll"), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(lookupSubject, style = MaterialTheme.typography.titleSmall)
+                        Text(lookupPreview ?: lookupMissingMessage, style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("latest-lookup-report-preview"))
+                        Text("Stored only on this phone. Nothing is uploaded automatically. Copy and Export include the standard diagnostics and any available detailed source/model captures.")
+                        Text(
+                            if (detailedCaptureCount > 0) "Detailed captures included: $detailedCaptureCount. They may contain public page excerpts and model output; review before sharing."
+                            else "Detailed captures included: none available for this selection. Turn on Debug mode in More before an eligible on-device lookup to record them.",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.testTag("detailed-capture-inclusion-status"),
+                        )
+                        Text("Crash details include app/device version, camera event categories, and stack frames. Lookup reports include scanned barcode digits, provider/model status, safe source URLs, timings, HTTP statuses, and fixed rejection codes.")
+                        Text("API keys and headers, photos, prompts, household/member data, recipes, private notes, and location are excluded. Detailed page/model text is locally retained only when Debug mode was on for that attempt.")
+                        Text("This captures uncaught Java/Kotlin exceptions. It does not collect logcat and may not capture native crashes or ANRs.", style = MaterialTheme.typography.bodySmall)
+                        Text(preview, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    lookupCopyMessage?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.fillMaxWidth().testTag("diagnostics-action-message"))
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = onCopy, modifier = Modifier.fillMaxWidth().testTag("copy-diagnostics")) { Text("Copy diagnostics") }
+                        Button(onClick = onExport, modifier = Modifier.fillMaxWidth().testTag("export-diagnostics")) { Text("Export diagnostics") }
+                    }
+                }
             }
-        },
-        confirmButton = {
-            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedButton(onClick = onCopy, modifier = Modifier.fillMaxWidth().testTag("copy-diagnostics")) { Text("Copy diagnostics") }
-                Button(onClick = onExport, modifier = Modifier.fillMaxWidth().testTag("export-diagnostics")) { Text("Export diagnostics") }
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Done") } },
-    )
+        }
+    }
 }
 
-internal fun copyDiagnosticsToClipboard(context: Context, content: String) {
-    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    clipboard.setPrimaryClip(ClipData.newPlainText("CocktAIls detailed bottle lookup capture", content))
+internal fun copyDiagnosticsToClipboard(context: Context, content: String): Boolean {
+    if (!isDiagnosticsCopyWithinLimit(content)) return false
+    return runCatching {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("CocktAIls diagnostics", content))
+    }.isSuccess
 }
 
 @Composable

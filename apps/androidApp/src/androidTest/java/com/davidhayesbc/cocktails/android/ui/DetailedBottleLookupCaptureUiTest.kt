@@ -57,15 +57,15 @@ class DetailedBottleLookupCaptureUiTest {
         val enabled = mutableStateOf(false)
         setContent { DebugSettingsHost(enabled.value, onChange = { enabled.value = it }) }
 
-        composeRule.onNodeWithTag("detailed-debug-mode-disclosure").assertIsDisplayed().assertTextContains("Nothing is uploaded")
-        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("OFF")
+        composeRule.onNodeWithTag("detailed-debug-mode-disclosure").assertIsDisplayed().assertTextContains("Nothing is uploaded", substring = true)
+        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("OFF", substring = true)
         composeRule.onNodeWithTag("detailed-debug-mode-toggle").assertIsDisplayed().performClick()
         composeRule.waitUntil(5_000) { enabled.value }
-        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("ON")
+        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("ON", substring = true)
         saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-debug-mode-on.png")
         composeRule.onNodeWithTag("detailed-debug-mode-toggle").performClick()
         composeRule.waitUntil(5_000) { !enabled.value }
-        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("OFF")
+        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("OFF", substring = true)
         saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-debug-mode-off.png")
     }
 
@@ -76,13 +76,13 @@ class DetailedBottleLookupCaptureUiTest {
         composeRule.onNodeWithText("More").performClick()
         composeRule.onNodeWithTag("detailed-debug-mode-settings").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("detailed-debug-mode-toggle").assertIsDisplayed()
-        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("OFF")
+        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("OFF", substring = true)
         saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-debug-mode-settings-real-route.png")
         composeRule.onNodeWithTag("detailed-debug-mode-toggle").performClick()
         composeRule.waitUntil(5_000) {
             DetailedBottleLookupDebugSessionStore(context.noBackupFilesDir).sessionStatus().sessionActive
         }
-        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("ON")
+        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("ON", substring = true)
         saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-debug-mode-settings-on-real-route.png")
         composeRule.onNodeWithTag("detailed-debug-mode-toggle").performClick()
         composeRule.waitUntil(5_000) {
@@ -97,30 +97,53 @@ class DetailedBottleLookupCaptureUiTest {
         store.disableDebugMode()
         assertTrue(store.deleteAll())
         assertEquals(DetailedCaptureArmResult.ARMED, store.enableDebugMode("instrumentation"))
-        val draftId = "debug-ui-${UUID.randomUUID()}"
-        val attempt = UUID.randomUUID().toString()
-        val recorder = store.claim(draftId, attempt, "5011333150725", "instrumentation", 1L, "Qwen3-0.6B-Q8_0", allowNextLookup = true)
-            ?: error("Eligible on-device test attempt should be captured")
-        recorder.recordValidatorInput("On-device Qwen3", "5011333150725", "Public product source excerpt.", "Product", emptyList(), null)
-        recorder.recordModelResponse("On-device Qwen3", "Qwen3-0.6B-Q8_0", "partial token-limit output", generationFinishReason = "TOKEN_LIMIT", outputTokenLimitReached = true)
-        recorder.finish("FAILED")
-
         composeRule.onNodeWithText("More").performClick()
-        composeRule.onNodeWithTag("detailed-debug-mode-settings").performScrollTo()
-        composeRule.waitUntil(5_000) {
-            composeRule.onNodeWithTag("detailed-debug-mode-status").fetchSemanticsNode().config.toString().contains("ON")
-        }
         composeRule.onNodeWithText("View or export diagnostics").performScrollTo().performClick()
-        composeRule.onNodeWithTag("detailed-capture-inclusion-status").assertTextContains("Detailed captures included: 1")
+        composeRule.onNodeWithTag("detailed-capture-inclusion-status").assertTextContains("Detailed captures included: none", substring = true)
+
+        assertEquals(DetailedCaptureArmResult.ARMED, store.enableDebugMode("instrumentation"))
+        val draftA = "debug-ui-a-${UUID.randomUUID()}"
+        val draftB = "debug-ui-b-${UUID.randomUUID()}"
+        val attemptA = UUID.randomUUID().toString()
+        val attemptB = UUID.randomUUID().toString()
+        val recorderB = store.claim(draftB, attemptB, "5011733110725", "instrumentation", 1L, "Qwen3-0.6B-Q8_0", allowNextLookup = true)
+            ?: error("Second eligible on-device test attempt should be captured")
+        recorderB.recordModelResponse("On-device Qwen3", "Qwen3-0.6B-Q8_0", "second bottle marker", generationFinishReason = "END_OF_SEQUENCE")
+        recorderB.finish("COMPLETE")
+        val recorderA = store.claim(draftA, attemptA, "5011333150725", "instrumentation", 1L, "Qwen3-0.6B-Q8_0", allowNextLookup = true)
+            ?: error("First eligible on-device test attempt should be captured")
+        recorderA.recordValidatorInput("On-device Qwen3", "5011333150725", "Public product source excerpt.", "Product", emptyList(), null)
+        recorderA.recordModelResponse("On-device Qwen3", "Qwen3-0.6B-Q8_0", "first bottle token-limit marker", generationFinishReason = "TOKEN_LIMIT", outputTokenLimitReached = true)
+        recorderA.finish("FAILED")
+        composeRule.waitUntil(5_000) { store.reportContents().size == 2 }
+        composeRule.onNodeWithTag("detailed-capture-inclusion-status").assertTextContains("Detailed captures included: 2", substring = true)
         saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-capture-diagnostics-with-report.png")
         composeRule.onNodeWithTag("copy-diagnostics").performClick()
 
         val clipboard = composeRule.activity.getSystemService(ClipboardManager::class.java)
+        composeRule.waitUntil(5_000) {
+            clipboard.primaryClip?.getItemAt(0)?.text?.toString()?.contains(draftA) == true
+        }
         val copied = clipboard.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
-        assertTrue(copied.contains(draftId))
-        assertTrue(copied.contains(attempt))
-        assertTrue(copied.contains("partial token-limit output"))
+        assertTrue(copied.contains(draftA))
+        assertTrue(copied.contains(draftB))
+        assertTrue(copied.contains(attemptA))
+        assertTrue(copied.contains(attemptB))
+        assertTrue(copied.contains("first bottle token-limit marker"))
+        assertTrue(copied.contains("second bottle marker"))
         assertTrue(copied.contains("TOKEN_LIMIT"))
+        val captureA = store.captureStatuses().single { it.draftId == draftA }.captureId!!
+        assertTrue(store.deleteCapture(captureA))
+        composeRule.waitUntil(5_000) { store.reportContents().size == 1 }
+        composeRule.onNodeWithTag("detailed-capture-inclusion-status").assertTextContains("Detailed captures included: 1", substring = true)
+        composeRule.onNodeWithTag("copy-diagnostics").performClick()
+        composeRule.waitUntil(5_000) {
+            val current = clipboard.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+            !current.contains(draftA) && current.contains(draftB)
+        }
+        val refreshedCopy = clipboard.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+        assertFalse("Deleted report must not be copied from the previously opened dialog snapshot", refreshedCopy.contains(draftA))
+        assertTrue(refreshedCopy.contains(draftB))
         assertTrue(store.disableDebugMode())
         assertTrue(store.deleteAll())
     }
@@ -138,7 +161,7 @@ class DetailedBottleLookupCaptureUiTest {
             }
         }
 
-        composeRule.onNodeWithTag("detailed-capture-inclusion-status").assertTextContains("Detailed captures included: 1")
+        composeRule.onNodeWithTag("detailed-capture-inclusion-status").assertTextContains("Detailed captures included: 1", substring = true)
         composeRule.onAllNodesWithText("Copy standard lookup summary").assertCountEquals(0)
         composeRule.onNodeWithTag("copy-diagnostics").assertIsDisplayed().performClick()
         composeRule.waitUntil(5_000) { copied.value }
@@ -153,6 +176,28 @@ class DetailedBottleLookupCaptureUiTest {
     }
 
     @Test
+    fun diagnosticsActionsStaySeparateAndReachableWithLargeText() {
+        val density = composeRule.activity.resources.displayMetrics.density
+        setContent {
+            CompositionLocalProvider(LocalDensity provides Density(density, 1.5f)) {
+                CocktailsTheme(darkTheme = true) {
+                    Surface(Modifier.fillMaxSize().systemBarsPadding(), color = MaterialTheme.colorScheme.background) {
+                        DiagnosticsDialogHost(
+                            detailed = "{\"modelResponse\":\"${"long diagnostic text ".repeat(120)}\"}",
+                            onCopied = {},
+                            onExport = {},
+                        )
+                    }
+                }
+            }
+        }
+        val copy = composeRule.onNodeWithTag("copy-diagnostics").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val export = composeRule.onNodeWithTag("export-diagnostics").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertFalse("Copy and Export actions must have separate bounds", copy.overlaps(export))
+        saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-capture-diagnostics-large-text.png")
+    }
+
+    @Test
     fun largeTextSettingsDisclosureAndToggleRemainReachable() {
         val density = composeRule.activity.resources.displayMetrics.density
         setContent {
@@ -162,7 +207,7 @@ class DetailedBottleLookupCaptureUiTest {
         }
         composeRule.onNodeWithTag("detailed-debug-mode-disclosure").assertIsDisplayed()
         composeRule.onNodeWithTag("detailed-debug-mode-toggle").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("ON")
+        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("ON", substring = true)
         saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-debug-mode-large-text.png")
     }
 

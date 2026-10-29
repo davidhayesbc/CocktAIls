@@ -97,6 +97,18 @@ internal class DiagnosticStore(
             ?.let { runCatching { it.readText(StandardCharsets.UTF_8) }.getOrNull() }
     }
 
+    /** Global diagnostics with the lookup slot replaced by this draft's report, never the global latest. */
+    fun exportForDraft(draftId: String): String = synchronized(lock) {
+        if (!draftId.matches(DRAFT_ID_PATTERN)) return@synchronized "{}"
+        val selectedReport = latestBottleLookupPreviewForDraft(draftId)
+            ?.let { runCatching { Json.parseToJsonElement(it) }.getOrNull() }
+        val scoped = read().toMutableMap().apply {
+            remove("latestBottleLookup")
+            if (selectedReport != null) put("latestBottleLookup", selectedReport)
+        }
+        Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), JsonObject(scoped))
+    }
+
     fun clearBottleLookupForDraft(draftId: String): Boolean = synchronized(lock) {
         if (!draftId.matches(DRAFT_ID_PATTERN)) return@synchronized false
         val report = draftLookupFile(draftId)
@@ -279,6 +291,7 @@ internal object LocalDiagnostics {
     fun latestBottleLookupPreview(): String? = runCatching { store?.latestBottleLookupPreview() }.getOrNull()
     fun latestBottleLookupPreviewForDraft(draftId: String): String? =
         runCatching { store?.latestBottleLookupPreviewForDraft(draftId) }.getOrNull()
+    fun exportForDraft(draftId: String): String = runCatching { store?.exportForDraft(draftId).orEmpty() }.getOrDefault("{}")
     fun clearBottleLookupForDraft(draftId: String): Boolean =
         runCatching { store?.clearBottleLookupForDraft(draftId) ?: false }.getOrDefault(false)
     fun preview(): String = runCatching { store?.preview().orEmpty() }.getOrDefault("Diagnostics are unavailable.")

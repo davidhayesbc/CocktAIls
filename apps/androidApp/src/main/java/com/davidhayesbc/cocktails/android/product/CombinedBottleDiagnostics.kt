@@ -8,6 +8,11 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 
+internal const val MAX_DIAGNOSTICS_COPY_BYTES = 512 * 1024
+
+internal fun isDiagnosticsCopyWithinLimit(content: String): Boolean =
+    content.encodeToByteArray().size <= MAX_DIAGNOSTICS_COPY_BYTES
+
 /** Combines ordinary diagnostics with only the detailed captures explicitly enabled by the user. */
 internal fun combineBottleDiagnostics(standardReport: String, detailedReports: List<String>): String {
     val standard = runCatching { Json.parseToJsonElement(standardReport).jsonObject }

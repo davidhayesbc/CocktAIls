@@ -41,4 +41,10 @@ class CombinedBottleDiagnosticsTest {
         assertFalse(combined["detailedCapturesIncluded"]!!.jsonPrimitive.boolean)
         assertFalse(combined.toString().contains("not json"))
     }
+
+    @Test
+    fun clipboardSizeGuardRejectsPayloadsAboveSafeIpcLimit() {
+        assertTrue(isDiagnosticsCopyWithinLimit("x".repeat(MAX_DIAGNOSTICS_COPY_BYTES)))
+        assertFalse(isDiagnosticsCopyWithinLimit("x".repeat(MAX_DIAGNOSTICS_COPY_BYTES + 1)))
+    }
 }

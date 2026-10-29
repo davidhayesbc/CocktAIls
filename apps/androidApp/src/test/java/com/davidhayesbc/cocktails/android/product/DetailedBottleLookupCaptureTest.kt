@@ -5,6 +5,9 @@ import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -13,6 +16,36 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DetailedBottleLookupCaptureTest {
+    @Test
+    fun legacyBoundedSessionsMigrateOffAndPreserveSavedReports() {
+        val root = Files.createTempDirectory("detailed-capture-legacy-migration").toFile()
+        val store = DetailedBottleLookupDebugSessionStore(root, nowMillis = { 50_000L })
+        store.enableDebugMode("preview")
+        val recorder = store.claim("kept-report", "00000000-0000-0000-0000-000000000901", "5011333150725", "preview", 1, "Qwen", allowNextLookup = true)!!
+        recorder.recordModelResponse("On-device Qwen3", "Qwen", "preserved report")
+        recorder.finish("FAILED")
+
+        val sessionFile = File(root, "detailed-lookup-debug-session.json")
+        val legacyCases = listOf(
+            "active" to "\"active\":true,\"expiresAtMillis\":999999,\"claimedCount\":0",
+            "expired" to "\"active\":true,\"expiresAtMillis\":1,\"claimedCount\":0",
+            "exhausted" to "\"active\":true,\"expiresAtMillis\":999999,\"claimedCount\":5",
+            "inactive" to "\"active\":false,\"expiresAtMillis\":999999,\"claimedCount\":0",
+        )
+        legacyCases.forEachIndexed { index, (_, consentFields) ->
+            sessionFile.writeText("""{"formatVersion":1,"sessionId":"legacy-$index",$consentFields,"startedAtMillis":10,"appVersion":"old"}""")
+            val reopened = DetailedBottleLookupDebugSessionStore(root, nowMillis = { 50_000L }, processSessionId = "after-upgrade")
+            assertFalse("Legacy bounded consent must require a new explicit opt-in: ${legacyCases[index].first}", reopened.sessionStatus(50_000L).sessionActive)
+            val migrated = Json.parseToJsonElement(sessionFile.readText()).jsonObject
+            assertEquals("2", migrated["formatVersion"]?.jsonPrimitive?.content)
+            assertEquals("PERSISTENT", migrated["captureMode"]?.jsonPrimitive?.content)
+            assertEquals("false", migrated["active"]?.jsonPrimitive?.content)
+            assertNull(reopened.claim("new-draft", "00000000-0000-0000-0000-000000000902", "5011333150725", "preview", 1, "Qwen", allowNextLookup = true))
+            assertTrue(reopened.reportContents("kept-report").single().contains("preserved report"))
+        }
+        root.deleteRecursively()
+    }
+
     @Test
     fun persistentDebugToggleSurvivesRestartAndTurningOffKeepsExistingReports() {
         val root = Files.createTempDirectory("detailed-capture-persistent-toggle").toFile()
@@ -44,15 +77,16 @@ class DetailedBottleLookupCaptureTest {
     @Test
     fun retainedCaptureRingEvictsOldestFinishedReportButNeverAnInFlightReport() {
         val root = Files.createTempDirectory("detailed-capture-ring").toFile()
-        val store = DetailedBottleLookupDebugSessionStore(root, processSessionId = "test-process")
-        assertEquals(DetailedCaptureArmResult.ARMED, store.enableDebugMode("preview"))
+        var now = 10_000L
+        val store = DetailedBottleLookupDebugSessionStore(root, nowMillis = { now }, processSessionId = "test-process")
+        assertEquals(DetailedCaptureArmResult.ARMED, store.enableDebugMode("preview", now))
         val inFlight = mutableListOf<DetailedBottleLookupRecorder>()
         repeat(DetailedBottleLookupDebugSessionStore.MAX_RETAINED_CAPTURES) { index ->
-            inFlight += store.claim("bottle-$index", "00000000-0000-0000-0000-${(index + 201).toString().padStart(12, '0')}", "5011333150725", "preview", 32, "Qwen", allowNextLookup = true)!!
+            inFlight += store.claim("bottle-$index", "00000000-0000-0000-0000-${(index + 201).toString().padStart(12, '0')}", "5011333150725", "preview", 32, "Qwen", now++, allowNextLookup = true)!!
         }
-        assertNull("Do not evict reports while every retained slot is in flight", store.claim("bottle-busy", "00000000-0000-0000-0000-000000000299", "5011333150725", "preview", 32, "Qwen", allowNextLookup = true))
+        assertNull("Do not evict reports while every retained slot is in flight", store.claim("bottle-busy", "00000000-0000-0000-0000-000000000299", "5011333150725", "preview", 32, "Qwen", now++, allowNextLookup = true))
         inFlight.forEach { it.finish("COMPLETE") }
-        val next = store.claim("bottle-new", "00000000-0000-0000-0000-000000000300", "5011333150725", "preview", 32, "Qwen", allowNextLookup = true)
+        val next = store.claim("bottle-new", "00000000-0000-0000-0000-000000000300", "5011333150725", "preview", 32, "Qwen", now++, allowNextLookup = true)
         assertNotNull(next)
         next!!.recordModelResponse("On-device Qwen3", "Qwen", "new-response")
         next.finish("COMPLETE")

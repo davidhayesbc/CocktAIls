@@ -180,15 +180,15 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithText("More").performClick()
         composeRule.onNodeWithTag("household-scroll").performScrollToNode(hasText("View or export diagnostics"))
         composeRule.onNodeWithText("View or export diagnostics").performClick()
-        composeRule.onNodeWithTag("copy-bottle-lookup-report").assertIsDisplayed()
+        composeRule.onNodeWithTag("copy-diagnostics").assertIsDisplayed()
         composeRule.onNodeWithTag("diagnostics-dialog-scroll").performScrollToNode(hasTestTag("latest-lookup-report-preview"))
         val lookupPreviewNode = composeRule.onNodeWithTag("latest-lookup-report-preview")
         lookupPreviewNode.assertIsDisplayed()
         val previewText = lookupPreviewNode.fetchSemanticsNode().config[SemanticsProperties.Text]
             .joinToString(separator = "") { it.text }
         assertTrue("Lookup preview did not show the scanned barcode", previewText.contains("5011333150725"))
-        composeRule.onNodeWithTag("copy-bottle-lookup-report").assertIsDisplayed()
-        composeRule.onNodeWithTag("copy-bottle-lookup-report").performClick()
+        composeRule.onNodeWithTag("copy-diagnostics").assertIsDisplayed()
+        composeRule.onNodeWithTag("copy-diagnostics").performClick()
 
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
@@ -197,12 +197,12 @@ class OfflineRecipeSmokeTest {
         assertTrue(copied.contains("CANDIDATE_1_GENERIC_BARCODE_LOOKUP"))
         assertFalse(copied.contains("/barcode-lookup"))
         assertFalse(copied.contains("Authorization"))
-        assertTrue(copied.contains("No keys"))
-        val copyConfirmation = "Standard lookup summary copied. It does not contain detailed source or model text."
+        assertTrue(copied.contains("latestBottleLookup"))
+        val copyConfirmation = "Diagnostics copied"
         composeRule.waitUntil(timeoutMillis = 5_000) {
-            composeRule.onAllNodesWithText(copyConfirmation).fetchSemanticsNodes().isNotEmpty()
+            composeRule.onAllNodesWithText(copyConfirmation, substring = true).fetchSemanticsNodes().isNotEmpty()
         }
-        composeRule.onNodeWithText(copyConfirmation).assertIsDisplayed()
+        composeRule.onNodeWithText(copyConfirmation, substring = true).assertIsDisplayed()
     }
 
     @Test

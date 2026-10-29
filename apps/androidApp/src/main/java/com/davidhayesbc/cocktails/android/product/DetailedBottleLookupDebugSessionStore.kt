@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 
@@ -35,7 +36,8 @@ internal class DetailedBottleLookupDebugSessionStore(
         if (existing?.get("active")?.jsonPrimitive?.content == "true") return@synchronized DetailedCaptureArmResult.ALREADY_ARMED
         legacy.cancelNextLookup()
         val root = buildJsonObject {
-            put("formatVersion", 1)
+            put("formatVersion", SESSION_FORMAT_VERSION)
+            put("captureMode", PERSISTENT_CAPTURE_MODE)
             put("sessionId", UUID.randomUUID().toString())
             put("active", true)
             put("startedAtMillis", now.coerceAtLeast(0))
@@ -221,9 +223,27 @@ internal class DetailedBottleLookupDebugSessionStore(
     private val sessionFile get() = File(directory, SESSION_FILE)
     private val sessionTemp get() = File(directory, "$SESSION_FILE.tmp")
 
+    /** Old time-bounded one-shot consent is never promoted to persistent capture on upgrade. */
     private fun readSession(): JsonObject? = runCatching {
-        if (!sessionFile.isFile || sessionFile.length() !in 1..4096) null
-        else Json.parseToJsonElement(sessionFile.readText()).jsonObject
+        if (!sessionFile.isFile || sessionFile.length() !in 1..4096) return null
+        val session = Json.parseToJsonElement(sessionFile.readText()).jsonObject
+        val version = session["formatVersion"]?.jsonPrimitive?.intOrNull
+        if (version == SESSION_FORMAT_VERSION && session["captureMode"]?.jsonPrimitive?.content == PERSISTENT_CAPTURE_MODE) {
+            session
+        } else if (version != null && version < SESSION_FORMAT_VERSION) {
+            val migrated = buildJsonObject {
+                put("formatVersion", SESSION_FORMAT_VERSION)
+                put("captureMode", PERSISTENT_CAPTURE_MODE)
+                put("sessionId", session["sessionId"]?.jsonPrimitive?.content ?: UUID.randomUUID().toString())
+                put("active", false)
+                session.number("startedAtMillis")?.let { put("startedAtMillis", it) }
+                session["appVersion"]?.jsonPrimitive?.content?.let { put("appVersion", it.take(80)) }
+                put("migratedFromBoundedConsent", true)
+            }
+            if (writeSession(migrated)) migrated else null
+        } else {
+            null
+        }
     }.getOrNull()
 
     private fun writeSession(value: JsonObject): Boolean = runCatching {
@@ -237,6 +257,8 @@ internal class DetailedBottleLookupDebugSessionStore(
 
     companion object {
         const val MAX_RETAINED_CAPTURES = 10
+        private const val SESSION_FORMAT_VERSION = 2
+        private const val PERSISTENT_CAPTURE_MODE = "PERSISTENT"
         private const val SESSION_FILE = "detailed-lookup-debug-session.json"
         private const val LEGACY_FILE = "detailed-lookup-capture.json"
         private const val RECORDS_DIR = "detailed-lookup-captures"
