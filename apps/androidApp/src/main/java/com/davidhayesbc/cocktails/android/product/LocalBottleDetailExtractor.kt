@@ -135,6 +135,21 @@ internal class LocalBottleDetailExtractor(
                     LOCAL_SYSTEM_PROMPT,
                     userPrompt,
                     LOCAL_MAX_OUTPUT_TOKENS,
+                    onTokenLimitOutput = { output ->
+                        try {
+                            detailedCapture?.recordModelResponse(
+                                providerLabel,
+                                LOCAL_MODEL_LABEL,
+                                output,
+                                generationFinishReason = "TOKEN_LIMIT",
+                                outputTokenLimitReached = true,
+                            )
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            // Optional detailed capture failures must not alter extraction results.
+                        }
+                    },
                 ) { event ->
                     if (event.result == "FAILED" || event.result == "TIMEOUT") runnerReportedFailure = true
                     if (event.result == "RUNNING") currentFailureStage = event.stage
@@ -372,6 +387,7 @@ internal interface DiagnosticLocalInferenceRunner : LocalInferenceRunner {
         systemPrompt: String,
         userPrompt: String,
         maxTokens: Int,
+        onTokenLimitOutput: (String) -> Unit = {},
         onEvent: (BottleLookupDebugEvent) -> Unit,
     ): String
 }
@@ -413,10 +429,11 @@ internal class LlamaCppLocalInferenceRunner internal constructor(
         systemPrompt: String,
         userPrompt: String,
         maxTokens: Int,
+        onTokenLimitOutput: (String) -> Unit,
         onEvent: (BottleLookupDebugEvent) -> Unit,
     ): String = LocalInferenceLifecycle.withExclusiveModel {
         require(generationTimeoutMs > 0)
-        generateWithExclusiveModel(modelPath, systemPrompt, userPrompt, maxTokens, onEvent)
+        generateWithExclusiveModel(modelPath, systemPrompt, userPrompt, maxTokens, onTokenLimitOutput, onEvent)
     }
 
     private suspend fun generateWithExclusiveModel(
@@ -424,6 +441,7 @@ internal class LlamaCppLocalInferenceRunner internal constructor(
         systemPrompt: String,
         userPrompt: String,
         maxTokens: Int,
+        onTokenLimitOutput: (String) -> Unit,
         onEvent: (BottleLookupDebugEvent) -> Unit,
     ): String {
         require(maxTokens in 1..LOCAL_MAX_OUTPUT_TOKENS)
@@ -639,6 +657,8 @@ internal class LlamaCppLocalInferenceRunner internal constructor(
             }
             when (generationStats?.finishReason) {
                 InferenceEngine.GenerationFinishReason.TOKEN_LIMIT -> {
+                    val partialOutput = chunks.joinToString("").take(MAX_LOCAL_OUTPUT_CHARS)
+                    onTokenLimitOutput(partialOutput)
                     emit(
                         activeStage,
                         "FAILED",
@@ -737,8 +757,9 @@ internal class LazyLlamaCppLocalInferenceRunner(context: Context) : DiagnosticLo
         systemPrompt: String,
         userPrompt: String,
         maxTokens: Int,
+        onTokenLimitOutput: (String) -> Unit,
         onEvent: (BottleLookupDebugEvent) -> Unit,
-    ): String = delegate.generateWithDiagnostics(modelPath, systemPrompt, userPrompt, maxTokens, onEvent)
+    ): String = delegate.generateWithDiagnostics(modelPath, systemPrompt, userPrompt, maxTokens, onTokenLimitOutput, onEvent)
 }
 
 private const val RUNTIME_INITIALIZATION_TIMEOUT_MS = 30_000L

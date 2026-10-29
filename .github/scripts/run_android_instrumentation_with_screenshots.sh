@@ -23,7 +23,9 @@ readonly screenshot_names=(
   detailed-lookup-capture-preview.png
   detailed-lookup-capture-preview-actions.png
   detailed-lookup-capture-preview-large-font.png
-  detailed-lookup-capture-consent.png
+  detailed-lookup-debug-mode-consent.png
+  detailed-lookup-debug-mode-armed.png
+  detailed-lookup-debug-mode-captured.png
 )
 readonly required_visual_screenshots=(
   onboarding-integrated-setup.png
@@ -35,7 +37,9 @@ readonly required_visual_screenshots=(
   detailed-lookup-capture-preview.png
   detailed-lookup-capture-preview-actions.png
   detailed-lookup-capture-preview-large-font.png
-  detailed-lookup-capture-consent.png
+  detailed-lookup-debug-mode-consent.png
+  detailed-lookup-debug-mode-armed.png
+  detailed-lookup-debug-mode-captured.png
 )
 
 readonly test_log="$RUNNER_TEMP/cocktails-instrumentation.log"

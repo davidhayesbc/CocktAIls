@@ -185,6 +185,8 @@ import com.davidhayesbc.cocktails.android.product.automaticBottleExtractor
 import com.davidhayesbc.cocktails.android.product.scannedBottleSearchQuery
 import com.davidhayesbc.cocktails.android.product.sourceMentionsScannedBarcode
 import com.davidhayesbc.cocktails.android.product.structuredBottleIdentityForPage
+import com.davidhayesbc.cocktails.android.product.resolveStructuredBottleIdentityForPage
+import com.davidhayesbc.cocktails.android.product.normalizePublicHttpsUrl
 import com.davidhayesbc.cocktails.android.product.FirecrawlCredentialStore
 import com.davidhayesbc.cocktails.android.product.OllamaCloudCredentialStore
 import com.davidhayesbc.cocktails.android.product.BottleEnrichmentJob
@@ -392,9 +394,11 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         )
     }
     var detailedCaptureStatus by remember { mutableStateOf<DetailedCaptureStatus?>(null) }
+    var settingsDetailedCaptureStatus by remember { mutableStateOf(detailedLookupCaptureStore.currentStatus()) }
     var detailedCapturePreview by remember { mutableStateOf<String?>(null) }
-    var showDetailedCaptureConsent by remember { mutableStateOf(false) }
+    var showDetailedDebugModeConsent by remember { mutableStateOf(false) }
     var detailedCaptureMessage by remember { mutableStateOf<String?>(null) }
+    var detailedDebugModeMessage by remember { mutableStateOf<String?>(null) }
 
     var pendingBottleEnrichmentJobs by remember(bottleEnrichmentQueue) {
         mutableStateOf(bottleEnrichmentQueue.jobs().associateBy { it.draftId })
@@ -540,6 +544,12 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         mutableStateOf(repository.preferredMemberId()?.takeIf { preferred -> members.any { it.id == preferred } } ?: members.firstOrNull()?.id.orEmpty())
     }
     var selectedPage by remember { mutableStateOf(Page.MAKE) }
+    LaunchedEffect(selectedPage, detailedLookupCaptureStore) {
+        while (selectedPage == Page.MORE) {
+            settingsDetailedCaptureStatus = detailedLookupCaptureStore.currentStatus()
+            delay(500)
+        }
+    }
     var showShop by remember { mutableStateOf(false) }
     var showAddIngredient by remember { mutableStateOf(false) }
     var showBarcodeScanner by remember { mutableStateOf(false) }
@@ -1075,6 +1085,39 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             bottleWebSearchStates = bottleWebSearchStates + (draftId to (bottleWebSearchStates[draftId] ?: BottleWebSearchState()).copy(message = "The local enrichment queue is full or could not be saved. Your draft is unchanged."))
             return
         }
+        val captureVersion = installedAppVersion
+        val detailedCapture = queueJob.attemptToken?.let { attemptToken -> detailedLookupCaptureStore.claim(
+            draftId = draftId,
+            attemptToken = attemptToken,
+            barcode = currentDraft.barcode.orEmpty(),
+            appVersion = captureVersion.name,
+            appVersionCode = captureVersion.code,
+            model = LOCAL_MODEL_LABEL,
+            allowNextLookup = true,
+        ) }
+        if (detailedCapture != null) {
+            val state = bottleWebSearchStates[draftId] ?: BottleWebSearchState()
+            val selectedIndex = state.hits.indexOfFirst { normalizePublicHttpsUrl(it.url) == normalizePublicHttpsUrl(page.sourceUrl) }
+                .takeIf { it >= 0 }
+            detailedCapture.recordSearchSelection(
+                state.hits,
+                selectedIndex,
+                if (selectedIndex != null) "SELECTED_EXACT_MATCH" else "SELECTED_FALLBACK",
+            )
+            val identityResolution = currentDraft.barcode?.let { resolveStructuredBottleIdentityForPage(it, page) }
+            detailedCapture.recordFetchedPage(
+                0,
+                page.sourceUrl,
+                page.title,
+                when {
+                    identityResolution?.identity != null -> "STRUCTURED_PRODUCT_MATCH"
+                    state.barcodeVerifiedInPage -> "VERIFIED"
+                    else -> "MISSING"
+                },
+                page.structuredBottleIdentities,
+                identityResolution?.status,
+            )
+        }
         refreshPendingBottleEnrichmentJobs()
         bottleWebSearchStates = bottleWebSearchStates + (draftId to (bottleWebSearchStates[draftId] ?: BottleWebSearchState()).copy(
             extracting = true,
@@ -1088,9 +1131,10 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 val requiredBarcode = bottleWebSearchStates[draftId]?.takeIf { it.automatedScan }?.let { currentDraft.barcode }
                 BottleEnrichmentSerialGate.processWide.withSlot {
                     LocalBottleDetailExtractor({ modelFile.absolutePath }, runner)
-                        .extract(page, LOCAL_MODEL_LABEL, requiredBarcode)
+                        .extractWithDetailedCapture(page, LOCAL_MODEL_LABEL, requiredBarcode, detailedCapture)
                 }
             } catch (cancelled: CancellationException) {
+                detailedCapture?.finish("CANCELLED")
                 throw cancelled
             } catch (_: Exception) {
                 BottleDetailExtractionResult.LocalFailure(LocalInferenceFailureCode.INFERENCE_FAILED)
@@ -1099,6 +1143,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 is BottleDetailExtractionResult.Found -> if (pendingBottleEvidenceStore.save(draftId, extracted.suggestions)) extracted else BottleDetailExtractionResult.InvalidResponse
                 else -> extracted
             }
+            detailedCapture?.finish(if (result is BottleDetailExtractionResult.Found) "COMPLETE" else "FAILED")
             if (result is BottleDetailExtractionResult.Found) bottleEnrichmentQueue.remove(queueJob.id)
             else bottleEnrichmentQueue.pause(queueJob.id, System.currentTimeMillis())
             refreshPendingBottleEnrichmentJobs()
@@ -2283,6 +2328,37 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     showDiagnostics = true
                 },
                 installedAppVersion = installedAppVersion,
+                detailedCaptureStatus = settingsDetailedCaptureStatus,
+                detailedCaptureBottleLabel = settingsDetailedCaptureStatus?.draftId?.let { captureDraftId ->
+                    bottleIntakeSession?.drafts?.firstOrNull { it.id == captureDraftId }?.let { draft ->
+                        "Bottle ${draft.position + 1} · ${draft.productName ?: draft.ingredientName}"
+                    }
+                },
+                detailedCaptureMessage = detailedDebugModeMessage,
+                detailedCaptureEnabled = localAiEnabled && localModelFileStore.installedModel() != null,
+                onEnableDetailedCapture = {
+                    showDetailedDebugModeConsent = true
+                    detailedDebugModeMessage = null
+                },
+                onDisableDetailedCapture = {
+                    val cancelled = detailedLookupCaptureStore.cancelNextLookup()
+                    settingsDetailedCaptureStatus = detailedLookupCaptureStore.currentStatus()
+                    detailedDebugModeMessage = if (cancelled) "Debug mode is off. No lookup was captured." else "This lookup has already started. Its capture remains available only on this phone until expiry or deletion."
+                },
+                onPreviewDetailedCapture = { draftId ->
+                    val preview = detailedLookupCaptureStore.previewForDraft(draftId)
+                    if (preview == null) {
+                        detailedDebugModeMessage = "No live detailed capture is available for that bottle."
+                    } else {
+                        showDiagnosticsForDraftId = draftId
+                        detailedCapturePreview = preview
+                    }
+                },
+                onDeleteDetailedCapture = { draftId ->
+                    val deleted = detailedLookupCaptureStore.deleteForDraft(draftId)
+                    settingsDetailedCaptureStatus = detailedLookupCaptureStore.currentStatus()
+                    detailedDebugModeMessage = if (deleted) "Detailed capture deleted from this phone." else "The detailed capture could not be fully deleted. Try again."
+                },
                 openFoodFactsEnabled = openFoodFactsEnabled,
                 onOpenFoodFactsEnabledChanged = { enabled ->
                     context.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE).edit().putBoolean("open_food_facts_enabled", enabled).apply()
@@ -2390,7 +2466,11 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             lookupCopyMessage = lookupReportCopyMessage,
             detailedCaptureStatus = detailedCaptureStatus,
             detailedCaptureMessage = detailedCaptureMessage,
-            onArmDetailedCapture = { showDetailedCaptureConsent = selectedDraftId != null },
+            onOpenDetailedDebugModeSettings = {
+                selectedPage = Page.MORE
+                showDiagnostics = false
+                showDiagnosticsForDraftId = null
+            },
             onPreviewDetailedCapture = {
                 detailedCapturePreview = selectedDraftId?.let(detailedLookupCaptureStore::previewForDraft)
                 if (detailedCapturePreview == null) detailedCaptureMessage = "No detailed capture is available for this bottle."
@@ -2408,7 +2488,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 } else {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     clipboard.setPrimaryClip(ClipData.newPlainText("CocktAIls bottle lookup report", report))
-                    lookupReportCopyMessage = "Lookup report copied. Review it before sharing."
+                    lookupReportCopyMessage = "Standard lookup summary copied. It does not contain detailed source or model text."
                 }
             },
             onExport = { diagnosticsExportLauncher.launch("CocktAIls-Diagnostics.json") },
@@ -2427,33 +2507,21 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         )
     }
 
-    if (showDetailedCaptureConsent) {
-        DetailedLookupCaptureConsentDialog(
+    if (showDetailedDebugModeConsent) {
+        DetailedCaptureDebugModeConsentDialog(
             onConfirm = {
-                val draftId = showDiagnosticsForDraftId
-                if (draftId == null) {
-                    detailedCaptureMessage = "Open diagnostics from the bottle you want to capture."
-                } else {
-                    val job = bottleEnrichmentQueue.status(draftId)
-                    if (job?.status == BottleEnrichmentStatus.RUNNING) {
-                        detailedCaptureMessage = "This lookup is already running. Wait for it to finish, then arm capture before retrying this bottle."
-                    } else {
-                        val token = job?.takeIf { it.status == BottleEnrichmentStatus.QUEUED }?.attemptToken
-                        when (detailedLookupCaptureStore.arm(draftId, token, "pending")) {
-                            DetailedCaptureArmResult.ARMED -> {
-                                detailedCaptureStatus = detailedLookupCaptureStore.statusForDraft(draftId)
-                                detailedCaptureMessage = "One lookup attempt is armed for this bottle. The opt-in expires after 24 hours."
-                            }
-                            DetailedCaptureArmResult.ALREADY_ARMED -> detailedCaptureMessage = "A detailed capture is already armed for this bottle."
-                            DetailedCaptureArmResult.CAPTURE_EXISTS -> detailedCaptureMessage = "Delete the existing detailed capture before arming another one."
-                            DetailedCaptureArmResult.INVALID_DRAFT -> detailedCaptureMessage = "This bottle draft cannot be captured."
-                            DetailedCaptureArmResult.STORAGE_ERROR -> detailedCaptureMessage = "The capture could not be armed in private storage."
-                        }
+                when (detailedLookupCaptureStore.armNextLookup(installedAppVersion.name)) {
+                    DetailedCaptureArmResult.ARMED, DetailedCaptureArmResult.ALREADY_ARMED -> {
+                        settingsDetailedCaptureStatus = detailedLookupCaptureStore.currentStatus()
+                        detailedDebugModeMessage = "Debug mode is on for the next eligible on-device lookup. It expires in 24 hours if unused."
                     }
+                    DetailedCaptureArmResult.CAPTURE_EXISTS -> detailedDebugModeMessage = "Review or delete the existing bottle capture before enabling another."
+                    DetailedCaptureArmResult.INVALID_DRAFT -> detailedDebugModeMessage = "Debug mode could not be enabled for this lookup."
+                    DetailedCaptureArmResult.STORAGE_ERROR -> detailedDebugModeMessage = "Debug mode could not be saved in private app storage."
                 }
-                showDetailedCaptureConsent = false
+                showDetailedDebugModeConsent = false
             },
-            onDismiss = { showDetailedCaptureConsent = false },
+            onDismiss = { showDetailedDebugModeConsent = false },
         )
     }
 
@@ -4117,7 +4185,7 @@ private fun BottleReviewCard(
                             }
                         }
                         if (webSearchState.automatedScan) {
-                            TextButton(onClick = onOpenLookupReport, modifier = Modifier.testTag("open-bottle-lookup-report")) { Text("View or copy lookup debug report") }
+                            TextButton(onClick = onOpenLookupReport, modifier = Modifier.testTag("open-bottle-lookup-report")) { Text("View or copy standard lookup summary") }
                         }
                     }
                 }
@@ -4366,7 +4434,7 @@ private fun BottleDraftCard(
             webSearchState.message?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             if (webSearchState.automatedScan) {
                 TextButton(onClick = onOpenLookupReport, modifier = Modifier.testTag("open-bottle-lookup-report")) {
-                    Text("View or copy lookup debug report")
+                    Text("View or copy standard lookup summary")
                 }
             }
             webSearchState.hits.forEach { hit ->
@@ -5228,6 +5296,70 @@ private fun AddNoteDialog(onDismiss: () -> Unit, onSave: (Int?, String) -> Unit)
 }
 
 @Composable
+internal fun DetailedCaptureDebugModeSettings(
+    status: DetailedCaptureStatus?,
+    bottleLabel: String?,
+    message: String?,
+    enabled: Boolean,
+    onEnable: () -> Unit,
+    onDisable: () -> Unit,
+    onPreview: (String) -> Unit,
+    onDelete: (String) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.testTag("detailed-debug-mode-settings")) {
+        Text("Debug mode", style = MaterialTheme.typography.titleLarge)
+        Text(
+            "Enable before retrying a lookup. It captures the next on-device Qwen3 lookup attempt that starts, from any bottle; the first eligible attempt claims it and later bottles are not captured. The arm expires after 24 hours if unused. A captured attempt stays in private no-backup storage for up to 24 hours; cleanup is attempted on access, app launch, and periodically, but Android may defer it while the app is stopped. The capture contains bounded public source text, model output (including token-limited partial output), and barcode/identity decisions. Public page and model text may contain unexpected content. Best-effort secret-like text redaction is applied and marked, but may not catch every sensitive string. API keys, headers, prompts, photos, home/pantry/member data, recipes, and private notes are excluded. Nothing is uploaded. Preview the exact capture before copying or sharing; recipients may retain a copy they already opened or saved.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.testTag("detailed-debug-mode-disclosure"),
+        )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text("Capture one on-device lookup", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    when {
+                        status?.nextLookupArmed == true -> "ON · waiting for the next eligible Qwen3 lookup · expires ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(status.expiresAtMillis))}"
+                        status?.draftId != null && status.state == "CAPTURING" -> "CAPTURING · ${bottleLabel ?: "Bottle lookup"} · stays on this phone"
+                        status?.draftId != null -> "SAVED · ${bottleLabel ?: "Bottle lookup"} · ${status.state.lowercase().replace('_', ' ')}"
+                        else -> "OFF · no detailed capture is saved"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("detailed-debug-mode-status"),
+                )
+            }
+            Switch(
+                checked = status?.nextLookupArmed == true,
+                enabled = status?.nextLookupArmed == true || (status == null && enabled),
+                onCheckedChange = { checked -> if (checked) onEnable() else onDisable() },
+                modifier = Modifier.testTag("detailed-debug-mode-toggle"),
+            )
+        }
+        if (!enabled && status?.nextLookupArmed != true && status?.draftId == null) {
+            Text("Enable on-device model suggestions in More and install the Qwen3 model before arming debug mode.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        status?.draftId?.let { draftId ->
+            if (status.state == "CAPTURING") {
+                Text("The captured lookup is still running. Its report will appear here when it finishes.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else if (status.state == "ARMED") {
+                Text("A bottle-specific capture from an earlier app version is armed.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                TextButton(onClick = { onDelete(draftId) }, modifier = Modifier.testTag("delete-captured-debug-report")) { Text("Cancel old capture") }
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        onClick = { onPreview(draftId) },
+                        modifier = Modifier.weight(1f).testTag("preview-captured-debug-report"),
+                    ) { Text("Preview and copy debug report") }
+                    TextButton(onClick = { onDelete(draftId) }, modifier = Modifier.testTag("delete-captured-debug-report")) { Text("Delete") }
+                }
+            }
+        }
+        message?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("detailed-debug-mode-message")) }
+    }
+}
+
+@Composable
 private fun HouseholdScreen(
     modifier: Modifier,
     members: List<MemberProfile>,
@@ -5240,6 +5372,14 @@ private fun HouseholdScreen(
     onImportRecipes: () -> Unit,
     shareMessage: String?,
     installedAppVersion: InstalledAppVersion,
+    detailedCaptureStatus: DetailedCaptureStatus?,
+    detailedCaptureBottleLabel: String?,
+    detailedCaptureMessage: String?,
+    detailedCaptureEnabled: Boolean,
+    onEnableDetailedCapture: () -> Unit,
+    onDisableDetailedCapture: () -> Unit,
+    onPreviewDetailedCapture: (String) -> Unit,
+    onDeleteDetailedCapture: (String) -> Unit,
     openFoodFactsEnabled: Boolean,
     onOpenFoodFactsEnabledChanged: (Boolean) -> Unit,
     firecrawlSearchEnabled: Boolean,
@@ -5384,6 +5524,16 @@ private fun HouseholdScreen(
             }
         }
         localModelMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        DetailedCaptureDebugModeSettings(
+            status = detailedCaptureStatus,
+            bottleLabel = detailedCaptureBottleLabel,
+            message = detailedCaptureMessage,
+            enabled = detailedCaptureEnabled,
+            onEnable = onEnableDetailedCapture,
+            onDisable = onDisableDetailedCapture,
+            onPreview = onPreviewDetailedCapture,
+            onDelete = onDeleteDetailedCapture,
+        )
         Text("Manual sharing", style = MaterialTheme.typography.titleLarge)
         Button(onClick = onExport, modifier = Modifier.fillMaxWidth()) { Text("Export household backup") }
         OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth()) { Text("Import household backup") }
@@ -5491,7 +5641,7 @@ internal fun DiagnosticsDialog(
     lookupCopyMessage: String?,
     detailedCaptureStatus: DetailedCaptureStatus?,
     detailedCaptureMessage: String?,
-    onArmDetailedCapture: () -> Unit,
+    onOpenDetailedDebugModeSettings: () -> Unit,
     onPreviewDetailedCapture: () -> Unit,
     onDeleteDetailedCapture: () -> Unit,
     onCopyLookup: () -> Unit,
@@ -5512,11 +5662,10 @@ internal fun DiagnosticsDialog(
                 Text("Reports exclude API keys and headers, raw responses, page text, prompts, bottle names, recipes, household/member data, photos, location, and exception messages.")
                 if (lookupSubject == "Lookup report for this bottle") {
                     Spacer(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-                Text("One-attempt detailed capture", style = MaterialTheme.typography.titleSmall)
-                Text("Optional. Captures the bounded source text actually checked, model reply, barcode/structured identity checks, search-result title/snippet selection details, and app/model version for this bottle's next lookup attempt. The capture is available for up to 24 hours in private no-backup app storage. The app attempts cleanup at launch, on access, and periodically; Android may defer cleanup while the app is stopped. Public page, search, and model text can contain unexpected content. Best-effort secret-like text redaction is marked in the capture and can affect exact replay. It does not include API keys, request headers, prompts, photos, household data, or notes. Nothing is sent automatically. Preview the capture before copying or sharing it. A share copy expires at the earlier of one hour or the capture expiry, and this app denies new URI opens after expiry. A recipient that already opened or saved a copy may retain it; cleanup may be delayed while the app is stopped.", style = MaterialTheme.typography.bodySmall)
+                    Text("Detailed source and model text are never included in this standard summary. To capture one attempt, open More → Debug mode before retrying the bottle.", style = MaterialTheme.typography.bodySmall)
                     detailedCaptureStatus?.let { status ->
                         Text(
-                            "Capture ${status.state.lowercase().replace('_', ' ')} · expires ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(status.expiresAtMillis))}",
+                            "Detailed capture ${status.state.lowercase().replace('_', ' ')} · expires ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(status.expiresAtMillis))}",
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.testTag("detailed-capture-status"),
                         )
@@ -5538,18 +5687,16 @@ internal fun DiagnosticsDialog(
                     onClick = onCopyLookup,
                     enabled = lookupPreview != null,
                     modifier = Modifier.fillMaxWidth().testTag("copy-bottle-lookup-report"),
-                ) { Text("Copy lookup debug report") }
+                ) { Text("Copy standard lookup summary") }
                 lookupCopyMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
                 if (lookupSubject == "Lookup report for this bottle") {
                     if (detailedCaptureStatus == null) {
-                        OutlinedButton(onClick = onArmDetailedCapture, modifier = Modifier.fillMaxWidth().testTag("arm-detailed-lookup-capture")) {
-                            Text("Capture one lookup attempt")
+                        OutlinedButton(onClick = onOpenDetailedDebugModeSettings, modifier = Modifier.fillMaxWidth().testTag("open-debug-mode-settings")) {
+                            Text("Set up detailed capture in More")
                         }
                     } else if (detailedCaptureStatus.state == "ARMED") {
-                        Text("Capture is armed for this bottle's next lookup attempt.", style = MaterialTheme.typography.bodySmall)
-                        TextButton(onClick = onDeleteDetailedCapture, modifier = Modifier.testTag("delete-detailed-lookup-capture")) {
-                            Text("Cancel capture")
-                        }
+                        Text("Use More → Debug mode to check whether the next on-device lookup is armed.", style = MaterialTheme.typography.bodySmall)
+                        TextButton(onClick = onDeleteDetailedCapture, modifier = Modifier.testTag("delete-detailed-lookup-capture")) { Text("Cancel old capture") }
                     } else {
                         OutlinedButton(onClick = onPreviewDetailedCapture, modifier = Modifier.fillMaxWidth().testTag("preview-detailed-lookup-capture")) {
                             Text("Preview detailed capture")
@@ -5573,26 +5720,26 @@ internal fun DiagnosticsDialog(
 }
 
 @Composable
-internal fun DetailedLookupCaptureConsentDialog(
+internal fun DetailedCaptureDebugModeConsentDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Capture one lookup attempt?") },
+        title = { Text("Enable debug mode?") },
         text = {
             Column(
                 Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text("For the selected bottle only, the next lookup attempt will save the exact bounded validator text and model response, plus source selection and structured barcode/name inputs used by that attempt.")
-                Text("The capture stays in this app's private no-backup storage and is available for up to 24 hours. The app attempts cleanup at launch, on access, and periodically; Android may defer cleanup while the app is stopped. It may include unexpected text from public web pages or the model. Best-effort secret-like text redaction is applied and marked, so some captures may not replay byte-for-byte.")
-                Text("No prompts, API keys, request headers, photos, household records, member data, location, or private notes are captured. Nothing is uploaded. You must preview before copying or sharing; sharing uses Android's file permission and happens only when you tap Share. This app denies new opens after the share copy expires, but a recipient who already opened or saved a copy may retain it.")
-                Text("Only one attempt is captured. Retry the selected bottle after arming. Delete the capture from its preview or clear diagnostics.")
+                Text("The next eligible on-device Qwen3 lookup attempt from any bottle will be captured. Only one attempt is captured; it will not automatically capture retries or later bottles.")
+                Text("The arm expires after 24 hours if unused. A captured report stays in this phone's private no-backup storage for up to 24 hours. Cleanup is attempted on access, app launch, and periodically; Android may defer cleanup while the app is stopped.")
+                Text("The report includes bounded public page text, the model response (including partial output if generation reaches its token limit), and barcode/identity decisions. Public pages and model output may contain unexpected content. Best-effort secret-like text redaction is applied and marked, but may not catch every sensitive string. Review the exact report before copying or sharing.")
+                Text("API keys, request headers, prompts, photos, home or pantry data, member details, recipes, and private notes are excluded. Nothing is uploaded automatically. A recipient may retain a copy they already opened or saved.")
             }
         },
         confirmButton = {
-            Button(onClick = onConfirm, modifier = Modifier.testTag("confirm-arm-detailed-lookup-capture")) { Text("Arm one attempt") }
+            Button(onClick = onConfirm, modifier = Modifier.testTag("confirm-enable-detailed-debug-mode")) { Text("Enable for next lookup") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )

@@ -11,6 +11,48 @@ import org.junit.Test
 
 class DetailedBottleLookupCaptureTest {
     @Test
+    fun nextLookupDebugModeIsClaimedByExactlyOneEligibleOnDeviceAttempt() {
+        val root = Files.createTempDirectory("detailed-capture-next-lookup").toFile()
+        val file = File(root, "capture.json")
+        val store = DetailedBottleLookupCaptureStore(file, { 1_000L }, processSessionId = "test")
+        assertEquals(DetailedCaptureArmResult.ARMED, store.armNextLookup("preview", 1_000L))
+        assertTrue(store.currentStatus(1_000L)?.nextLookupArmed == true)
+
+        assertNull(store.claim("cloud-draft", "00000000-0000-0000-0000-000000000091", "5011333150725", "preview", 1, "Ollama", 1_000L))
+        val first = store.claim("local-draft-a", "00000000-0000-0000-0000-000000000092", "5011333150725", "preview", 1, "Qwen", 1_000L, allowNextLookup = true)
+        assertNotNull(first)
+        assertNull(store.claim("local-draft-b", "00000000-0000-0000-0000-000000000093", "088352109084", "preview", 1, "Qwen", 1_000L, allowNextLookup = true))
+        assertEquals("local-draft-a", store.currentStatus(1_000L)?.draftId)
+        first!!.recordModelResponse("On-device Qwen3", "Qwen", "partial response", generationFinishReason = "TOKEN_LIMIT", outputTokenLimitReached = true)
+        first.finish("FAILED")
+
+        val preview = store.previewForDraft("local-draft-a", 1_000L)!!
+        assertTrue(preview.contains("partial response"))
+        assertTrue(preview.contains("\"generationFinishReason\": \"TOKEN_LIMIT\""))
+        assertTrue(preview.contains("\"outputTokenLimitReached\": true"))
+        assertFalse(store.currentStatus(1_000L)?.nextLookupArmed == true)
+        root.deleteRecursively()
+    }
+
+    @Test
+    fun nextLookupDebugModeCanBeCancelledAndUnusedArmExpires() {
+        val root = Files.createTempDirectory("detailed-capture-next-expiry").toFile()
+        var now = 5_000L
+        val file = File(root, "capture.json")
+        val store = DetailedBottleLookupCaptureStore(file, { now }, processSessionId = "test")
+        assertEquals(DetailedCaptureArmResult.ARMED, store.armNextLookup("preview", now))
+        assertTrue(store.cancelNextLookup())
+        assertFalse(file.exists())
+        assertNull(store.currentStatus(now))
+
+        assertEquals(DetailedCaptureArmResult.ARMED, store.armNextLookup("preview", now))
+        now += DetailedBottleLookupCaptureStore.RETENTION_MILLIS + 1
+        assertNull(store.currentStatus(now))
+        assertFalse(file.exists())
+        root.deleteRecursively()
+    }
+
+    @Test
     fun withoutExplicitArmNoAttemptContentIsWritten() {
         val root = Files.createTempDirectory("detailed-capture-disabled").toFile()
         val file = File(root, "capture.json")

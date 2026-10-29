@@ -105,7 +105,15 @@ internal class BottleScanEnrichmentWorker(
                     .getString("ollama_cloud_model", null)
                 null -> null
             }
-            val detailedCapture = detailedCaptureStore.claim(draftId, attemptToken, barcode, appVersionName, appVersionCode, captureModel)
+            val detailedCapture = detailedCaptureStore.claim(
+                draftId,
+                attemptToken,
+                barcode,
+                appVersionName,
+                appVersionCode,
+                captureModel,
+                allowNextLookup = plan.extractor == AutomaticBottleExtractor.ON_DEVICE,
+            )
             report.setQueueWaitMillis(queueWaitMillis)
             report.record(BottleLookupDebugEvent(
                 stage = BottleLookupDebugStage.QUEUE_WAIT,

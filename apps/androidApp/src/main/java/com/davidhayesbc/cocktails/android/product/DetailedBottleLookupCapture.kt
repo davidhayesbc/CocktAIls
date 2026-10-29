@@ -37,7 +37,14 @@ internal interface DetailedBottleLookupRecorder {
         structuredIdentityStatus: StructuredIdentityStatus?,
         selectedStructuredIdentity: StructuredBottleIdentity? = null,
     )
-    fun recordModelResponse(provider: String, model: String, response: String, envelopeStatus: Int? = null)
+    fun recordModelResponse(
+        provider: String,
+        model: String,
+        response: String,
+        envelopeStatus: Int? = null,
+        generationFinishReason: String? = null,
+        outputTokenLimitReached: Boolean = false,
+    )
     fun finish(result: String)
 }
 
@@ -45,11 +52,12 @@ internal enum class DetailedCaptureArmResult { ARMED, ALREADY_ARMED, CAPTURE_EXI
 
 internal data class DetailedCaptureStatus(
     val state: String,
-    val draftId: String,
+    val draftId: String?,
     val attemptToken: String?,
     val expiresAtMillis: Long,
     val startedAtMillis: Long?,
     val model: String?,
+    val nextLookupArmed: Boolean = false,
 )
 
 /**
@@ -94,6 +102,35 @@ internal class DetailedBottleLookupCaptureStore(
         if (saved) DetailedCaptureArmResult.ARMED else DetailedCaptureArmResult.STORAGE_ERROR
     }
 
+    /** Arms exactly the next eligible on-device lookup attempt; the first claimant wins atomically. */
+    fun armNextLookup(appVersion: String, now: Long = nowMillis()): DetailedCaptureArmResult = synchronized(LOCK) {
+        val existing = readLive(now)
+        if (existing != null) {
+            return@synchronized if (existing.string("state") == ARMED && existing.string("scope") == NEXT_LOOKUP) {
+                DetailedCaptureArmResult.ALREADY_ARMED
+            } else {
+                DetailedCaptureArmResult.CAPTURE_EXISTS
+            }
+        }
+        val saved = write(buildJsonObject {
+            put("formatVersion", 1)
+            put("captureId", UUID.randomUUID().toString())
+            put("scope", NEXT_LOOKUP)
+            put("state", ARMED)
+            put("armedAtMillis", now.coerceAtLeast(0))
+            put("expiresAtMillis", (now + RETENTION_MILLIS).coerceAtLeast(now))
+            put("appVersion", safeIdentifier(appVersion, 80))
+        })
+        if (saved) DetailedCaptureArmResult.ARMED else DetailedCaptureArmResult.STORAGE_ERROR
+    }
+
+    /** Turning debug mode off cancels only an unclaimed next-lookup arm. */
+    fun cancelNextLookup(): Boolean = synchronized(LOCK) {
+        val current = readStoredObject(file)
+        if (current?.string("scope") != NEXT_LOOKUP || current.string("state") != ARMED) return@synchronized false
+        deleteIfPresent(file) && deleteIfPresent(temporaryCaptureFile())
+    }
+
     /** Bind a pending capture immediately before WorkManager schedules that exact attempt. */
     fun bindArmedAttempt(draftId: String, attemptToken: String, now: Long = nowMillis()): Boolean = synchronized(LOCK) {
         if (!safeDraftId(draftId) || !safeAttemptToken(attemptToken)) return@synchronized false
@@ -116,13 +153,17 @@ internal class DetailedBottleLookupCaptureStore(
         appVersionCode: Long,
         model: String?,
         now: Long = nowMillis(),
+        allowNextLookup: Boolean = false,
     ): DetailedBottleLookupRecorder? = synchronized(LOCK) {
         val current = readLive(now) ?: return@synchronized null
-        if (current.string("state") != ARMED || current.string("draftId") != draftId ||
-            current.string("attemptToken") != attemptToken || !safeDraftId(draftId) || !safeAttemptToken(attemptToken)
-        ) return@synchronized null
+        val isNextLookup = current.string("scope") == NEXT_LOOKUP && current.string("state") == ARMED && current.string("draftId") == null
+        val isSpecificAttempt = current.string("state") == ARMED && current.string("draftId") == draftId && current.string("attemptToken") == attemptToken
+        if ((!isSpecificAttempt && !(allowNextLookup && isNextLookup)) || !safeDraftId(draftId) || !safeAttemptToken(attemptToken)) return@synchronized null
         val captureId = current.string("captureId") ?: return@synchronized null
         val started = current.withString("state", CAPTURING)
+            .withString("scope", CAPTURED_ATTEMPT)
+            .withString("draftId", draftId)
+            .withString("attemptToken", attemptToken)
             .withString("appVersion", safeIdentifier(appVersion, 80))
             .withString("model", safeIdentifier(model.orEmpty(), 128))
             .withString("processSessionId", processSessionId)
@@ -144,15 +185,25 @@ internal class DetailedBottleLookupCaptureStore(
         if (!safeDraftId(draftId)) return@synchronized null
         var current = readLive(now)?.takeIf { it.string("draftId") == draftId } ?: return@synchronized null
         current = markInterruptedAfterProcessRestart(current, now)
+        status(current)
+    }
+
+    fun currentStatus(now: Long = nowMillis()): DetailedCaptureStatus? = synchronized(LOCK) {
+        var current = readLive(now) ?: return@synchronized null
+        current = markInterruptedAfterProcessRestart(current, now)
+        status(current)
+    }
+
+    private fun status(current: JsonObject) =
         DetailedCaptureStatus(
             state = current.string("state") ?: "UNKNOWN",
-            draftId = draftId,
+            draftId = current.string("draftId"),
             attemptToken = current.string("attemptToken"),
             expiresAtMillis = current.number("expiresAtMillis") ?: 0,
             startedAtMillis = current.number("startedAtMillis"),
             model = current.string("model"),
+            nextLookupArmed = current.string("scope") == NEXT_LOOKUP && current.string("state") == ARMED,
         )
-    }
 
     /** Call only after an explicit preview action. */
     fun previewForDraft(draftId: String, now: Long = nowMillis()): String? = synchronized(LOCK) {
@@ -393,7 +444,17 @@ internal class DetailedBottleLookupCaptureStore(
         }
     }
 
-    private fun recordModelResponse(captureId: String, draftId: String, attemptToken: String, provider: String, model: String, response: String, httpStatus: Int?): Boolean {
+    private fun recordModelResponse(
+        captureId: String,
+        draftId: String,
+        attemptToken: String,
+        provider: String,
+        model: String,
+        response: String,
+        httpStatus: Int?,
+        generationFinishReason: String?,
+        outputTokenLimitReached: Boolean,
+    ): Boolean {
         val bounded = response.take(MAX_MODEL_RESPONSE_CHARS)
         val safe = redactCaptureText(bounded)
         return append(captureId, draftId, attemptToken, "modelResponse") {
@@ -404,6 +465,8 @@ internal class DetailedBottleLookupCaptureStore(
                 put("responseRedacted", safe.second)
                 put("responseTruncated", response.length > MAX_MODEL_RESPONSE_CHARS)
                 httpStatus?.takeIf { it in 100..599 }?.let { put("httpStatus", it) }
+                generationFinishReason?.takeIf { it in SAFE_GENERATION_FINISH_REASONS }?.let { put("generationFinishReason", it) }
+                if (outputTokenLimitReached) put("outputTokenLimitReached", true)
             }
         }
     }
@@ -411,7 +474,10 @@ internal class DetailedBottleLookupCaptureStore(
     private fun finish(captureId: String, draftId: String, attemptToken: String, result: String): Boolean = synchronized(LOCK) {
         val current = readLive(nowMillis()) ?: return@synchronized false
         if (!owns(current, captureId, draftId, attemptToken) || current.string("state") != CAPTURING) return@synchronized false
-        write(current.withString("state", result.takeIf { it in SAFE_FINISH_STATES } ?: "COMPLETE")
+        val safeResult = result.takeIf { it in SAFE_FINISH_STATES } ?: "COMPLETE"
+        val tokenLimited = current["modelResponse"]?.jsonObject?.get("outputTokenLimitReached")?.jsonPrimitive?.contentOrNull == "true"
+        val finishedState = if (safeResult == "COMPLETE" && tokenLimited) "PARTIAL" else safeResult
+        write(current.withString("state", finishedState)
             .withNumber("finishedAtMillis", nowMillis().coerceAtLeast(0)))
     }
 
@@ -427,7 +493,9 @@ internal class DetailedBottleLookupCaptureStore(
             current.string("draftId")?.let(::removeShareCopies)
             return null
         }
-        if (expiry <= now || current.string("draftId")?.let(::safeDraftId) != true) {
+        val validDraft = current.string("draftId")?.let(::safeDraftId) == true
+        val validNextLookup = current.string("scope") == NEXT_LOOKUP && current.string("state") == ARMED && current.string("draftId") == null
+        if (expiry <= now || (!validDraft && !validNextLookup)) {
             deleteIfPresent(file)
             deleteIfPresent(temporaryCaptureFile())
             current.string("draftId")?.let(::removeShareCopies)
@@ -554,8 +622,18 @@ internal class DetailedBottleLookupCaptureStore(
             )
         }
 
-        override fun recordModelResponse(provider: String, model: String, response: String, envelopeStatus: Int?) {
-            store.recordModelResponse(captureId, draftId, attemptToken, provider, model, response, envelopeStatus)
+        override fun recordModelResponse(
+            provider: String,
+            model: String,
+            response: String,
+            envelopeStatus: Int?,
+            generationFinishReason: String?,
+            outputTokenLimitReached: Boolean,
+        ) {
+            store.recordModelResponse(
+                captureId, draftId, attemptToken, provider, model, response, envelopeStatus,
+                generationFinishReason, outputTokenLimitReached,
+            )
         }
 
         override fun finish(result: String) { store.finish(captureId, draftId, attemptToken, result) }
@@ -576,12 +654,15 @@ internal class DetailedBottleLookupCaptureStore(
         private const val SHARE_RETENTION_MILLIS = 60 * 60 * 1000L
         private const val ARMED = "ARMED"
         private const val CAPTURING = "CAPTURING"
+        private const val NEXT_LOOKUP = "NEXT_LOOKUP"
+        private const val CAPTURED_ATTEMPT = "CAPTURED_ATTEMPT"
+        private val SAFE_GENERATION_FINISH_REASONS = setOf("END_OF_SEQUENCE", "TOKEN_LIMIT", "CANCELLED", "DECODE_ERROR", "UNKNOWN")
         private val LOCK = Any()
         private val PROCESS_SESSION_ID = UUID.randomUUID().toString()
         private val SAFE_DECISIONS = setOf("NO_USABLE_SOURCE", "SELECTED_EXACT_MATCH", "SELECTED_FALLBACK", "NO_SEARCH_RESULTS")
         private val SAFE_BARCODE_DECISIONS = setOf("VERIFIED", "STRUCTURED_PRODUCT_MATCH", "MISSING", "MISMATCH", "AMBIGUOUS", "INVALID_TARGET")
         private val SAFE_IDENTITY_STATUSES = StructuredIdentityStatus.entries.mapTo(mutableSetOf()) { it.debugCode }
-        private val SAFE_FINISH_STATES = setOf("COMPLETE", "INTERRUPTED", "FAILED", "CANCELLED")
+        private val SAFE_FINISH_STATES = setOf("COMPLETE", "PARTIAL", "INTERRUPTED", "FAILED", "CANCELLED")
         private val SAFE_DRAFT = Regex("[A-Za-z0-9-]{1,100}")
         private val SAFE_ATTEMPT = Regex("[0-9a-fA-F-]{36}")
 

@@ -13,6 +13,7 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.hasTestTag
@@ -89,17 +90,65 @@ class DetailedBottleLookupCaptureUiTest {
     }
 
     @Test
-    fun captureIsNotArmedUntilConsentIsConfirmed() {
+    fun settingsDebugModeRequiresConsentAndShowsItsOneShotStatus() {
         setContent { ConsentDialogHost() }
 
-        composeRule.onAllNodes(hasTestTag("detailed-capture-status")).assertCountEquals(0)
-        composeRule.onNodeWithTag("arm-detailed-lookup-capture").assertIsDisplayed().performClick()
-        composeRule.onNodeWithText("Capture one lookup attempt?").assertIsDisplayed()
-        saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-capture-consent.png")
-        composeRule.onAllNodes(hasTestTag("detailed-capture-status")).assertCountEquals(0)
-        composeRule.onNodeWithTag("confirm-arm-detailed-lookup-capture").assertIsDisplayed().performClick()
-        composeRule.onNodeWithTag("detailed-capture-status").performScrollTo().assertIsDisplayed()
-            .assertTextContains("Capture armed", substring = true)
+        composeRule.onNodeWithTag("detailed-debug-mode-settings").assertIsDisplayed()
+        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("OFF", substring = true)
+        composeRule.onNodeWithTag("detailed-debug-mode-toggle").assertIsDisplayed().performClick()
+        composeRule.onNodeWithText("Enable debug mode?").assertIsDisplayed()
+        saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-debug-mode-consent.png")
+        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("OFF", substring = true)
+        composeRule.onNodeWithTag("confirm-enable-detailed-debug-mode").assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("ON", substring = true)
+        saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-debug-mode-armed.png")
+    }
+
+    @Test
+    fun settingsShowsBottleScopedCapturedReportPreviewAction() {
+        val previewedDraft = mutableStateOf<String?>(null)
+        setContent {
+            CocktailsTheme(darkTheme = true) {
+                DetailedCaptureDebugModeSettings(
+                    status = DetailedCaptureStatus("FAILED", "draft-captured", "00000000-0000-0000-0000-000000000099", 2_000_000L, 1_000_000L, "Qwen3-0.6B-Q8_0"),
+                    bottleLabel = "Bottle 3 · Auchentoshan Three Wood",
+                    message = null,
+                    enabled = true,
+                    onEnable = {},
+                    onDisable = {},
+                    onPreview = { previewedDraft.value = it },
+                    onDelete = {},
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag("detailed-debug-mode-status")
+            .assertTextContains("Bottle 3 · Auchentoshan Three Wood", substring = true)
+            .assertTextContains("failed", substring = true)
+        saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-debug-mode-captured.png")
+        composeRule.onNodeWithTag("preview-captured-debug-report").assertIsDisplayed().performClick()
+        assertEquals("draft-captured", previewedDraft.value)
+    }
+
+    @Test
+    fun settingsDoesNotArmDebugCaptureWithoutInstalledEnabledLocalModel() {
+        setContent {
+            CocktailsTheme(darkTheme = true) {
+                DetailedCaptureDebugModeSettings(
+                    status = null,
+                    bottleLabel = null,
+                    message = null,
+                    enabled = false,
+                    onEnable = {},
+                    onDisable = {},
+                    onPreview = {},
+                    onDelete = {},
+                )
+            }
+        }
+        composeRule.onNodeWithTag("detailed-debug-mode-toggle").assertIsNotEnabled()
+        composeRule.onNodeWithText("Enable on-device model suggestions in More and install the Qwen3 model before arming debug mode.")
+            .assertIsDisplayed()
     }
 
     @Test
@@ -211,7 +260,7 @@ class DetailedBottleLookupCaptureUiTest {
                         lookupCopyMessage = null,
                         detailedCaptureStatus = status,
                         detailedCaptureMessage = null,
-                        onArmDetailedCapture = {},
+                        onOpenDetailedDebugModeSettings = {},
                         onPreviewDetailedCapture = { preview.value = content },
                         onDeleteDetailedCapture = {},
                         onCopyLookup = {},
@@ -269,29 +318,24 @@ class DetailedBottleLookupCaptureUiTest {
     @Composable
     private fun ConsentDialogHost() {
         val consent = androidx.compose.runtime.remember { mutableStateOf(false) }
-        val armed = androidx.compose.runtime.remember { mutableStateOf(false) }
+        val status = androidx.compose.runtime.remember { mutableStateOf<DetailedCaptureStatus?>(null) }
         CocktailsTheme(darkTheme = true) {
-            DiagnosticsDialog(
-                preview = "Local diagnostics",
-                lookupPreview = "Latest report",
-                lookupSubject = "Lookup report for this bottle",
-                lookupMissingMessage = "No lookup report",
-                lookupCopyMessage = null,
-                detailedCaptureStatus = if (armed.value) {
-                    DetailedCaptureStatus("ARMED", "draft-ui-test", null, 2_000_000L, null, null)
-                } else null,
-                detailedCaptureMessage = null,
-                onArmDetailedCapture = { consent.value = true },
-                onPreviewDetailedCapture = {},
-                onDeleteDetailedCapture = {},
-                onCopyLookup = {},
-                onExport = {},
-                onClear = { true },
-                onDismiss = {},
+            DetailedCaptureDebugModeSettings(
+                status = status.value,
+                bottleLabel = null,
+                message = null,
+                enabled = true,
+                onEnable = { consent.value = true },
+                onDisable = { status.value = null },
+                onPreview = {},
+                onDelete = {},
             )
             if (consent.value) {
-                DetailedLookupCaptureConsentDialog(
-                    onConfirm = { consent.value = false; armed.value = true },
+                DetailedCaptureDebugModeConsentDialog(
+                    onConfirm = {
+                        consent.value = false
+                        status.value = DetailedCaptureStatus("ARMED", null, null, 2_000_000L, null, null, nextLookupArmed = true)
+                    },
                     onDismiss = { consent.value = false },
                 )
             }

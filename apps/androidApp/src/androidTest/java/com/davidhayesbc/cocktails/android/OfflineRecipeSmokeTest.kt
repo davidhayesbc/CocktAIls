@@ -198,7 +198,7 @@ class OfflineRecipeSmokeTest {
         assertFalse(copied.contains("/barcode-lookup"))
         assertFalse(copied.contains("Authorization"))
         assertTrue(copied.contains("No keys"))
-        val copyConfirmation = "Lookup report copied. Review it before sharing."
+        val copyConfirmation = "Standard lookup summary copied. It does not contain detailed source or model text."
         composeRule.waitUntil(timeoutMillis = 5_000) {
             composeRule.onAllNodesWithText(copyConfirmation).fetchSemanticsNodes().isNotEmpty()
         }

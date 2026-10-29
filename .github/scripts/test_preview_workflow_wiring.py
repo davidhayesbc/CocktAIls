@@ -54,15 +54,22 @@ class PreviewWorkflowWiringTest(unittest.TestCase):
         self.assertIn("detailed-lookup-capture-preview.png", collector)
         self.assertIn("detailed-lookup-capture-preview-actions.png", collector)
         self.assertIn("detailed-lookup-capture-preview-large-font.png", collector)
-        self.assertIn("detailed-lookup-capture-consent.png", collector)
+        self.assertIn("detailed-lookup-debug-mode-consent.png", collector)
+        self.assertIn("detailed-lookup-debug-mode-armed.png", collector)
+        self.assertIn("detailed-lookup-debug-mode-captured.png", collector)
         required_visuals = collector.split("readonly required_visual_screenshots=(", 1)[1].split(")", 1)[0]
         self.assertIn("onboarding-label-crop-dialog.png", required_visuals)
         self.assertIn("onboarding-label-photo-preview.png", required_visuals)
         self.assertIn("onboarding-review-real-route.png", required_visuals)
         self.assertIn("detailed-lookup-capture-preview-actions.png", required_visuals)
         self.assertIn("detailed-lookup-capture-preview-large-font.png", required_visuals)
+        self.assertIn("detailed-lookup-debug-mode-consent.png", required_visuals)
+        self.assertIn("detailed-lookup-debug-mode-armed.png", required_visuals)
+        self.assertIn("detailed-lookup-debug-mode-captured.png", required_visuals)
         self.assertIn("${{ runner.temp }}/onboarding-*.png", workflow)
         self.assertIn("${{ runner.temp }}/detailed-lookup-capture-*.png", workflow)
+        self.assertIn("${{ runner.temp }}/detailed-lookup-debug-mode-*.png", workflow)
+        self.assertIn("${{ runner.temp }}/detailed-lookup-debug-mode-*.png", workflow)
         self.assertIn('shell cmd uimode night yes', ANDROID_WORKFLOW.read_text())
 
 

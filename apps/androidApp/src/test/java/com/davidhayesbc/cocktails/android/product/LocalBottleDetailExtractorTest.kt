@@ -476,15 +476,24 @@ class LocalBottleDetailExtractorTest {
                 InferenceEngine.GenerationFinishReason.TOKEN_LIMIT,
             ),
         )
+        val captureRoot = Files.createTempDirectory("token-limit-capture").toFile()
+        val captureStore = DetailedBottleLookupCaptureStore(File(captureRoot, "capture.json"), { 1_000L }, processSessionId = "test")
+        assertEquals(DetailedCaptureArmResult.ARMED, captureStore.armNextLookup("preview.20", 1_000L))
+        val detailedCapture = captureStore.claim(
+            "draft-token-limit", "00000000-0000-0000-0000-000000000098", barcode, "preview.20", 20,
+            LOCAL_MODEL_LABEL, 1_000L, allowNextLookup = true,
+        )!!
         val events = mutableListOf<BottleLookupDebugEvent>()
         try {
             val result = LocalBottleDetailExtractor({ modelFile.absolutePath }, LlamaCppLocalInferenceRunner(engine))
-                .extractWithDiagnostics(
+                .extractWithDetailedCapture(
                     WebPageText("Auchentoshan Three Wood", "https://shop.example/three-wood", "Auchentoshan Three Wood", "Firecrawl", listOf(identity)),
                     LOCAL_MODEL_LABEL,
                     barcode,
+                    detailedCapture,
                     events::add,
                 )
+            detailedCapture.finish("COMPLETE")
 
             assertTrue(result is BottleDetailExtractionResult.Found)
             val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
@@ -495,7 +504,14 @@ class LocalBottleDetailExtractorTest {
             assertEquals("TOKEN_LIMIT", generation.finishReason)
             assertTrue(generation.reasonCodes.contains("LOCAL_GENERATION_TOKEN_LIMIT"))
             assertTrue(events.any { "STRUCTURED_FACTS_FALLBACK_AFTER_TRUNCATION" in it.reasonCodes })
+            val preview = captureStore.previewForDraft("draft-token-limit", 1_000L)!!
+            assertTrue(preview.contains("\\\"facts\\\":["))
+            assertTrue(preview.contains("\"generationFinishReason\": \"TOKEN_LIMIT\""))
+            assertTrue(preview.contains("\"outputTokenLimitReached\": true"))
+            assertTrue(preview.contains("\"state\": \"PARTIAL\""))
+            assertEquals("PARTIAL", captureStore.statusForDraft("draft-token-limit", 1_000L)?.state)
         } finally {
+            captureRoot.deleteRecursively()
             modelFile.delete()
         }
     }
@@ -926,6 +942,7 @@ class LocalBottleDetailExtractorTest {
             systemPrompt: String,
             userPrompt: String,
             maxTokens: Int,
+            onTokenLimitOutput: (String) -> Unit,
             onEvent: (BottleLookupDebugEvent) -> Unit,
         ): String {
             onEvent(BottleLookupDebugEvent(BottleLookupDebugStage.LOCAL_GENERATION, "On-device Qwen3", "RUNNING"))
