@@ -218,6 +218,11 @@ import com.davidhayesbc.cocktails.android.product.NormalizedLabelCrop
 import com.davidhayesbc.cocktails.android.product.SharedPreferencesBottleEnrichmentQueueStorage
 import com.davidhayesbc.cocktails.android.product.FirecrawlSearchProvider
 import com.davidhayesbc.cocktails.android.product.OllamaCloudBottleDetailExtractor
+import com.davidhayesbc.cocktails.android.product.BAR_EXPORT_FILENAME
+import com.davidhayesbc.cocktails.android.product.BAR_EXPORT_MIME_TYPE
+import com.davidhayesbc.cocktails.android.product.barExportCompletionMessage
+import com.davidhayesbc.cocktails.android.product.buildBarExportJson
+import com.davidhayesbc.cocktails.android.product.writeBarExport
 import com.davidhayesbc.cocktails.android.product.BottleDetailExtractionResult
 import com.davidhayesbc.cocktails.android.product.BottleDetailSuggestions
 import com.davidhayesbc.cocktails.android.product.acceptedProductSourcesForBottle
@@ -845,6 +850,9 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     val favoriteFamilyIds = remember(repository, selectedMemberId, favoritesVersion) { repository.favoriteFamilyIds(selectedMemberId) }
     var pantry by remember { mutableStateOf(emptyList<PantryEntry>()) }
     var shareMessage by remember { mutableStateOf<String?>(null) }
+    var barExportMessage by remember { mutableStateOf<String?>(null) }
+    var barExportContents by remember { mutableStateOf<String?>(null) }
+    var barExportPending by remember { mutableStateOf(false) }
     var stagedBundle by remember { mutableStateOf<HouseholdBundle?>(null) }
     var stagedPreview by remember { mutableStateOf<HouseholdImportPreview?>(null) }
     var stagedRecipeTable by remember { mutableStateOf<RecipeImportTable?>(null) }
@@ -1424,6 +1432,57 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     }
                     "Household backup saved. Keep it somewhere both phones can access."
                 }.getOrElse { "Export failed: ${it.message ?: "could not write the backup"}" }
+            }
+        }
+    }
+
+    val barExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(BAR_EXPORT_MIME_TYPE)) { uri ->
+        val contents = barExportContents
+        barExportContents = null
+        barExportPending = false
+        if (uri == null) {
+            barExportMessage = barExportCompletionMessage(destinationChosen = false, writeSucceeded = null)
+        } else {
+            coroutineScope.launch {
+                val succeeded = runCatching {
+                    withContext(Dispatchers.IO) {
+                        val output = context.contentResolver.openOutputStream(uri, "w") ?: return@withContext false
+                        writeBarExport(output, contents ?: return@withContext false)
+                    }
+                }.getOrDefault(false)
+                barExportMessage = barExportCompletionMessage(destinationChosen = true, writeSucceeded = succeeded)
+            }
+        }
+    }
+
+    fun beginBarExport() {
+        if (barExportPending) return
+        val locationId = selectedLocationId
+        if (locationId.isBlank()) {
+            barExportMessage = "Choose a home before exporting its bar."
+            return
+        }
+        barExportPending = true
+        barExportMessage = "Preparing confirmed bottles from the selected home…"
+        coroutineScope.launch {
+            val prepared = runCatching {
+                withContext(Dispatchers.IO) {
+                    buildBarExportJson(repository.pantry(locationId), System.currentTimeMillis())
+                }
+            }
+            prepared.onSuccess { json ->
+                barExportContents = json
+                barExportMessage = null
+                runCatching { barExportLauncher.launch(BAR_EXPORT_FILENAME) }
+                    .onFailure {
+                        barExportContents = null
+                        barExportPending = false
+                        barExportMessage = barExportCompletionMessage(destinationChosen = true, writeSucceeded = false)
+                    }
+            }.onFailure {
+                barExportContents = null
+                barExportPending = false
+                barExportMessage = barExportCompletionMessage(destinationChosen = true, writeSucceeded = false)
             }
         }
     }
@@ -2370,6 +2429,9 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 selectedMemberId = selectedMemberId,
                 onManageMembers = { showAddMember = true },
                 onExport = { exportLauncher.launch("CocktAIls-Household-Backup.json") },
+                onExportBar = ::beginBarExport,
+                barExportPending = barExportPending,
+                barExportMessage = barExportMessage,
                 onImport = { importLauncher.launch(arrayOf("application/json", "text/json", "*/*")) },
                 onImportRecipes = { recipeImportLauncher.launch(arrayOf("text/csv", "application/json", "text/*", "*/*")) },
                 shareMessage = shareMessage,
@@ -3581,6 +3643,7 @@ private fun providerOutcomeLabel(job: BottleEnrichmentJob?, web: Boolean): Strin
         BottleProviderOutcome.QUOTA -> "Stopped · quota or rate limit"
         BottleProviderOutcome.AUTHENTICATION_REQUIRED -> "Needs authentication"
         BottleProviderOutcome.SKIPPED_NO_SOURCE -> "Not run · no verified source"
+        BottleProviderOutcome.SKIPPED_DETERMINISTIC -> "Not needed · source labels were sufficient"
         BottleProviderOutcome.NOT_CONFIGURED -> "Not run · not configured"
         BottleProviderOutcome.DISABLED -> "Off"
         BottleProviderOutcome.PAUSED -> "Paused"
@@ -5344,6 +5407,9 @@ private fun HouseholdScreen(
     onOpenLocationSettings: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onExport: () -> Unit,
+    onExportBar: () -> Unit,
+    barExportPending: Boolean,
+    barExportMessage: String?,
     onImport: () -> Unit,
     onImportRecipes: () -> Unit,
     shareMessage: String?,
@@ -5505,6 +5571,18 @@ private fun HouseholdScreen(
             onDisable = onDisableDetailedCapture,
         )
         Text("Manual sharing", style = MaterialTheme.typography.titleLarge)
+        Text("Export Bar", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Save confirmed bottles in the currently selected home as versioned JSON. Unfinished intake drafts, photos, and private notes are excluded.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedButton(
+            onClick = onExportBar,
+            enabled = !barExportPending,
+            modifier = Modifier.fillMaxWidth().testTag("export-bar"),
+        ) { Text(if (barExportPending) "Preparing bar export…" else "Export Bar") }
+        barExportMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("bar-export-message")) }
         Button(onClick = onExport, modifier = Modifier.fillMaxWidth()) { Text("Export household backup") }
         OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth()) { Text("Import household backup") }
         OutlinedButton(onClick = onImportRecipes, modifier = Modifier.fillMaxWidth()) { Text("Import recipes from CSV or JSON") }

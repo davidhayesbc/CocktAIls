@@ -293,6 +293,7 @@ selectPantryForLocation:
 SELECT inventory_item.id AS inventory_id, inventory_item.product_id, ingredient.id AS ingredient_id,
        ingredient.canonical_name, ingredient.category, ingredient_product.product_name,
        ingredient_product.brand, ingredient_product.barcode, inventory_item.level,
+       ingredient_product.bottle_quantity, ingredient_product.abv_percent,
        COALESCE(ingredient_product.photo_data,
            (SELECT photo_data FROM ingredient_product WHERE ingredient_id = ingredient.id ORDER BY created_at LIMIT 1)
        ) AS photo_data

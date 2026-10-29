@@ -26,6 +26,190 @@ import java.io.File
 import java.nio.file.Files
 
 class LocalBottleDetailExtractorTest {
+    private companion object {
+        val COOK_STREET_AUCHENTOSHAN = """
+            Free in-store pickup
+
+            Free local delivery on orders over 80
+
+            Free in-store pickup
+
+            Free local delivery on orders over 80
+
+            Free in-store pickup
+
+            Free local delivery on orders over 80
+
+            Free in-store pickup
+
+            Free local delivery on orders over 80
+
+            Free in-store pickup
+
+            ### AUCHENTOSHAN - THREE WOOD
+
+            | Price: | 89.99 ~~89.99~~ |
+            | Deposit: | 0.10 |
+            | Category: | Single Malt |
+            | Country: | |
+            | Color: | |
+            | Varietal: | |
+            | Region: | |
+            | Size / Unit: | 750ML |
+            | SKU: | 138495 |
+            | UPC: | 5011333150725 |
+            | Alcohol: | 43% |
+            | Availability: | 2 |
+
+            Add to Cart
+            Continue Shopping
+            Product tasting notes and store hours.
+        """.trimIndent()
+    }
+
+    private fun cookStreetAuchentoshanPage(markdown: String = COOK_STREET_AUCHENTOSHAN): WebPageText = WebPageText(
+        title = "Cook St. Liquor",
+        sourceUrl = "https://shop.cookstliquor.com/products/auchentoshan-three-wood",
+        markdown = markdown,
+        provider = "Firecrawl",
+    )
+
+    @Test
+    fun exactCookStreetProductTableProducesEvidenceBackedFactsWithoutWastingModelTokens() = runBlocking {
+        var modelCalled = false
+        val events = mutableListOf<BottleLookupDebugEvent>()
+        val result = LocalBottleDetailExtractor({ null }, LocalInferenceRunner { _, _, _, _ ->
+            modelCalled = true
+            error("The explicit UPC-bound product table already contains all supported core facts")
+        }).extractWithDiagnostics(
+            cookStreetAuchentoshanPage(),
+            LOCAL_MODEL_LABEL,
+            "5011333150725",
+            events::add,
+        )
+
+        assertFalse("Deterministic facts should avoid an unnecessary slow or truncated generation", modelCalled)
+        assertTrue(result is BottleDetailExtractionResult.Found)
+        val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
+        assertEquals(BottleExtractionMethod.DETERMINISTIC_SOURCE, suggestions.extractionMethod)
+        assertEquals("Verified source table", suggestions.provider)
+        assertEquals("Deterministic extraction", suggestions.model)
+        assertEquals("5011333150725", suggestions.targetBarcode)
+        assertEquals("### AUCHENTOSHAN - THREE WOOD", suggestions.identityEvidence?.lineSequence()?.first())
+        assertEquals(
+            mapOf(
+                BottleFactField.PRODUCT_NAME to "AUCHENTOSHAN - THREE WOOD",
+                BottleFactField.QUANTITY to "750 mL",
+                BottleFactField.ABV_PERCENT to "43%",
+            ),
+            suggestions.facts.associate { it.field to it.value },
+        )
+        assertEquals("No unlabeled brand split or stock-count inference is allowed", setOf(BottleFactField.BRAND), suggestions.unresolvedFields)
+        assertFalse(suggestions.facts.any { it.field == BottleFactField.QUANTITY && it.value == "1" })
+        assertTrue(suggestions.facts.all { fact -> fact.quote in COOK_STREET_AUCHENTOSHAN })
+        assertTrue(events.any {
+            it.stage == BottleLookupDebugStage.LOCAL_GENERATION && it.result == "SKIPPED" &&
+                "DETERMINISTIC_CORE_FACTS_COMPLETE" in it.reasonCodes
+        })
+        assertTrue(events.any {
+            it.stage == BottleLookupDebugStage.LOCAL_DETERMINISTIC_FACTS && it.result == "FOUND" &&
+                "BARCODE_BOUND_MARKDOWN_TABLE" in it.reasonCodes
+        })
+    }
+
+    @Test
+    fun incompleteBarcodeTableScopesPromptAndPreservesRulesWhenModelRepeatsBoilerplateClaims() = runBlocking {
+        val page = cookStreetAuchentoshanPage(COOK_STREET_AUCHENTOSHAN.replace("| Alcohol: | 43% |", ""))
+        var prompt = ""
+        var outputLimit = 0
+        val modelReply = """{"facts":[{"field":"product_name","value":"AUCHENTOSHAN - THREE WOOD","evidence":"Free in-store pickup"},{"field":"quantity","value":"1","evidence":"Free local delivery on orders over 80"},{"field":"abv_percent","value":"43%","evidence":"Alcohol: 43%"},{"field":"product_name","value":"AUCHENTOSHAN - THREE WOOD","evidence":"Free in-store pickup"}]}"""
+        val result = LocalBottleDetailExtractor({ "/model.gguf" }, LocalInferenceRunner { _, _, userPrompt, maxTokens ->
+            prompt = userPrompt
+            outputLimit = maxTokens
+            modelReply
+        }).extract(page, LOCAL_MODEL_LABEL, "5011333150725") as BottleDetailExtractionResult.Found
+
+        assertEquals(160, outputLimit)
+        assertFalse("Repeated delivery and pickup boilerplate stays outside the model input", prompt.contains("Free in-store pickup"))
+        assertFalse(prompt.contains("Free local delivery"))
+        assertTrue(prompt.contains("| Size / Unit: | 750ML |"))
+        assertTrue(prompt.contains("| UPC: |") && prompt.contains("[barcode omitted]"))
+        assertTrue(prompt.contains("Requested fields: brand, abv_percent"))
+        assertEquals("AUCHENTOSHAN - THREE WOOD", result.suggestions.facts.single { it.field == BottleFactField.PRODUCT_NAME }.value)
+        assertEquals("750 mL", result.suggestions.facts.single { it.field == BottleFactField.QUANTITY }.value)
+        assertTrue(result.suggestions.facts.none { it.value == "1" || it.field == BottleFactField.ABV_PERCENT })
+        assertFalse("A rejected AI quantity must not mark the labeled size unresolved", BottleFactField.QUANTITY in result.suggestions.unresolvedFields)
+        assertTrue(BottleFactField.ABV_PERCENT in result.suggestions.unresolvedFields)
+        assertEquals(BottleExtractionMethod.DETERMINISTIC_SOURCE, result.suggestions.extractionMethod)
+        assertTrue(result.suggestions.fieldRejections.any {
+            it.field == BottleFactField.QUANTITY && it.reason == BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE
+        })
+    }
+
+    @Test
+    fun markdownFactsAreBoundOnlyToOneUniqueTargetBarcodeProductTable() {
+        assertEquals(null, barcodeBoundMarkdownProduct("5011333150725", COOK_STREET_AUCHENTOSHAN.replace("5011333150725", "5011333150733")))
+
+        val repeatedTarget = COOK_STREET_AUCHENTOSHAN + "\n\n### Another listing\n\n| UPC: | 5011333150725 |\n|---|---|\n| Size / Unit: | 700 mL |\n| Alcohol: | 40% |"
+        assertTrue("Two records with one code are ambiguous", barcodeBoundMarkdownProduct("5011333150725", repeatedTarget) == null)
+
+        val secondProductBarcode = "\n\n### Related Reserve\n\n| UPC: | 5011333150732 |\n|---|---|\n| Size / Unit: | 700 mL |\n| Alcohol: | 40% |"
+        assertTrue("A mixed-code page cannot lend facts across products", barcodeBoundMarkdownProduct("5011333150725", COOK_STREET_AUCHENTOSHAN + secondProductBarcode) == null)
+    }
+
+    @Test
+    fun markdownProductHeadingCanBindItsOwnTableDespiteGenericRetailerPageTitle() {
+        val barcode = "5011333150725"
+        val parsed = parseBottleFactCandidate(
+            """{"facts":[{"field":"product_name","value":"AUCHENTOSHAN - THREE WOOD","evidence":"### AUCHENTOSHAN - THREE WOOD"},{"field":"abv_percent","value":"43%","evidence":"| Alcohol: | 43% |"}]}""",
+            "On-device Qwen3", LOCAL_MODEL_LABEL, "https://shop.cookstliquor.com/products/auchentoshan-three-wood",
+            COOK_STREET_AUCHENTOSHAN, requiredBarcode = null,
+        )
+
+        val bound = bindPageBarcodeIdentity(parsed, barcode, cookStreetAuchentoshanPage()) as BottleDetailExtractionResult.Found
+        assertEquals(barcode, bound.suggestions.targetBarcode)
+        assertEquals("AUCHENTOSHAN - THREE WOOD", bound.suggestions.facts.first { it.field == BottleFactField.PRODUCT_NAME }.value)
+        assertTrue(bound.suggestions.facts.any { it.field == BottleFactField.ABV_PERCENT })
+        assertTrue(bound.suggestions.identityEvidence?.contains(barcode) == true)
+
+        val unrelated = parseBottleFactCandidate(
+            """{"facts":[{"field":"product_name","value":"AUCHENTOSHAN - THREE WOOD","evidence":"### AUCHENTOSHAN - THREE WOOD"},{"field":"abv_percent","value":"40%","evidence":"Other Gin 40% ABV"}]}""",
+            "On-device Qwen3", LOCAL_MODEL_LABEL, "https://shop.cookstliquor.com/products/auchentoshan-three-wood",
+            COOK_STREET_AUCHENTOSHAN + "\nOther Gin 40% ABV",
+        ) as BottleDetailExtractionResult.Found
+        val unrelatedBound = bindPageBarcodeIdentity(unrelated, barcode, cookStreetAuchentoshanPage()) as BottleDetailExtractionResult.Found
+        assertFalse(unrelatedBound.suggestions.facts.any { it.field == BottleFactField.ABV_PERCENT })
+        assertTrue(BottleFactField.ABV_PERCENT in unrelatedBound.suggestions.unresolvedFields)
+    }
+
+    @Test
+    fun conflictingLabeledRowsStayUnresolvedAndAvailabilityNeverBecomesBottleQuantity() {
+        val conflict = COOK_STREET_AUCHENTOSHAN
+            .replace("| Size / Unit: | 750ML |", "| Size / Unit: | 750ML |\n| Size / Unit: | 700ML |")
+            .replace("| Alcohol: | 43% |", "| Alcohol: | 43% |\n| Alcohol: | 40% |")
+        val parsed = barcodeBoundMarkdownProduct("5011333150725", conflict)!!
+        assertFalse(parsed.hasCoreFacts)
+        assertEquals(listOf("AUCHENTOSHAN - THREE WOOD"), parsed.facts.filter { it.field == BottleFactField.PRODUCT_NAME }.map { it.value })
+        assertTrue(BottleFactField.QUANTITY in parsed.unresolvedFields)
+        assertTrue(BottleFactField.ABV_PERCENT in parsed.unresolvedFields)
+        assertTrue(parsed.fieldRejections.all { it.reason == BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES })
+        assertFalse(parsed.facts.any { it.value == "2" || it.value == "1" })
+    }
+
+    @Test
+    fun repeatedModelFieldsAreNotSilentlyDeduplicated() {
+        val source = "North Star Gin 40% ABV."
+        val result = parseBottleFactCandidate(
+            """{"facts":[{"field":"product_name","value":"North Star Gin","evidence":"North Star Gin"},{"field":"product_name","value":"North Star Gin","evidence":"North Star Gin"},{"field":"abv_percent","value":"40%","evidence":"North Star Gin 40% ABV"}]}""",
+            "On-device Qwen3", LOCAL_MODEL_LABEL, "https://example.org/gin", source,
+        ) as BottleDetailExtractionResult.Found
+
+        assertTrue(result.suggestions.facts.none { it.field == BottleFactField.PRODUCT_NAME })
+        assertTrue(BottleFactField.PRODUCT_NAME in result.suggestions.unresolvedFields)
+        assertTrue(BottleFactRejection(BottleFactField.PRODUCT_NAME, BottleExtractionRejectionReason.INVALID_FACT_SHAPE) in result.suggestions.fieldRejections)
+        assertEquals(listOf(BottleFactField.ABV_PERCENT), result.suggestions.facts.map(BottleFactEvidence::field))
+    }
+
     @Test
     fun optedInCaptureReceivesExactValidatorInputAndModelReplyAtTheirPipelineStages() = runBlocking {
         val root = Files.createTempDirectory("extractor-capture").toFile()

@@ -30,6 +30,11 @@ internal data class BottleFactEvidence(
     val quote: String,
 )
 
+internal enum class BottleExtractionMethod {
+    MODEL,
+    DETERMINISTIC_SOURCE,
+}
+
 /** Privacy-safe rejection metadata. Never stores the rejected candidate value or evidence quote. */
 internal data class BottleFactRejection(
     val field: BottleFactField,
@@ -53,6 +58,7 @@ internal data class BottleDetailSuggestions(
     val identityEvidence: String? = null,
     val retrievalProvider: String = "Unknown",
     val fieldRejections: List<BottleFactRejection> = emptyList(),
+    val extractionMethod: BottleExtractionMethod = BottleExtractionMethod.MODEL,
 )
 
 internal enum class BottleExtractionRejectionReason(val debugCode: String) {
@@ -480,9 +486,24 @@ internal fun parseBottleFactCandidate(
             }).distinct(),
         )
     }
+    val duplicateFields = facts.groupBy(BottleFactEvidence::field)
+        .filterValues { it.size > 1 }
+        .keys
+    duplicateFields.forEach { field ->
+        rejected += BottleExtractionRejectionReason.INVALID_FACT_SHAPE
+        fieldRejections += BottleFactRejection(field, BottleExtractionRejectionReason.INVALID_FACT_SHAPE)
+    }
+    val uniqueFacts = facts.filterNot { it.field in duplicateFields }
+    if (uniqueFacts.isEmpty()) {
+        return BottleDetailExtractionResult.Rejected(
+            rejected.firstOrNull() ?: BottleExtractionRejectionReason.NO_SUPPORTED_FIELDS,
+            fieldRejections.map(BottleFactRejection::field).toSet(),
+            fieldRejections.toList(),
+        )
+    }
     val rejectedFields = fieldRejections.map(BottleFactRejection::field).toSet()
     val unresolvedFields = (unresolvedBottleSourceFields(sourceText) + rejectedFields).toMutableSet()
-    var candidateFacts = facts
+    var candidateFacts = uniqueFacts
     var identityEvidence: String? = null
     if (requiredBarcode != null) {
         val expectedCode = normalizeGtinForLookup(requiredBarcode)
@@ -496,13 +517,13 @@ internal fun parseBottleFactCandidate(
         }
         val identityQuote = identity.string("evidence")?.trim()?.takeIf { it.isNotEmpty() && it.length <= MAX_EVIDENCE_QUOTE_CHARS }
             ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.BARCODE_EVIDENCE_MISSING)
-        val nameFact = facts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }
+        val nameFact = uniqueFacts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }
             ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.PRODUCT_NAME_MISSING)
         if (scannedProductIdentityPassage(requiredBarcode, nameFact.value, sourceText, identityQuote) == null) {
             return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
         }
         identityEvidence = identityQuote
-        val unrelatedFields = facts.filter { fact ->
+        val unrelatedFields = uniqueFacts.filter { fact ->
             fact.field != BottleFactField.PRODUCT_NAME &&
                 !fact.quote.contains(nameFact.value, ignoreCase = true) &&
                 !sourceMentionsScannedBarcode(requiredBarcode, fact.quote)
@@ -599,8 +620,11 @@ private fun evidencedAbvNumbers(evidence: String): Set<Double> {
     val number = "(\\d{1,3}(?:[.,]\\d{1,2})?)"
     val unitAfter = Regex("""(?i)(?<![\d.,])$number\s*%\s*$unit\b""")
     val unitBefore = Regex("""(?i)$unit\s*[:=]?\s*$number\s*%""")
-    return (unitAfter.findAll(evidence).mapNotNull { it.groups[1]?.value } +
-        unitBefore.findAll(evidence).mapNotNull { it.groups[1]?.value })
+    // A markdown table separates the label and value into adjacent cells. Normalize only the
+    // presentation delimiter for this check; the stored evidence remains the exact source quote.
+    val normalizedEvidence = evidence.replace('|', ' ')
+    return (unitAfter.findAll(normalizedEvidence).mapNotNull { it.groups[1]?.value } +
+        unitBefore.findAll(normalizedEvidence).mapNotNull { it.groups[1]?.value })
         .mapNotNull { it.replace(',', '.').toDoubleOrNull() }
         .toSet()
 }

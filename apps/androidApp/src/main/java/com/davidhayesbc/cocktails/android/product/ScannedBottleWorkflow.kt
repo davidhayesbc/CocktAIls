@@ -4,6 +4,7 @@ import com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup
 import com.davidhayesbc.cocktails.core.model.BottleIntakeDraft
 import com.davidhayesbc.cocktails.core.model.ProductFactSourceDraft
 import kotlinx.coroutines.CancellationException
+import java.util.Locale
 
 /** Changes barcode identity while keeping fields the user explicitly entered. */
 internal fun BottleIntakeDraft.correctedForBarcode(
@@ -110,6 +111,156 @@ internal fun resolveStructuredBottleIdentityForPage(barcode: String, page: WebPa
 internal fun structuredBottleIdentityForPage(barcode: String, page: WebPageText): StructuredBottleIdentity? =
     resolveStructuredBottleIdentityForPage(barcode, page).identity
 
+/**
+ * A product table can bind a printed heading and explicitly labeled facts to one exact UPC.
+ * This intentionally accepts only a single Markdown product table with one UPC row and a
+ * directly preceding heading. It does not infer bottle quantity from availability or prose.
+ */
+internal data class BarcodeBoundMarkdownProduct(
+    val barcode: String,
+    val productName: String,
+    val nameEvidence: String,
+    val identityEvidence: String,
+    val sourceSection: String,
+    val facts: List<BottleFactEvidence>,
+    val unresolvedFields: Set<BottleFactField>,
+    val fieldRejections: List<BottleFactRejection>,
+) {
+    val hasCoreFacts: Boolean
+        get() = setOf(BottleFactField.PRODUCT_NAME, BottleFactField.QUANTITY, BottleFactField.ABV_PERCENT)
+            .all { field -> facts.any { it.field == field } && field !in unresolvedFields }
+}
+
+internal fun barcodeBoundMarkdownProduct(barcode: String, sourceText: String): BarcodeBoundMarkdownProduct? {
+    val expected = normalizeGtinForLookup(barcode) ?: return null
+    if (scannedBarcodePageDecision(barcode, sourceText) != ScannedBarcodePageDecision.VERIFIED) return null
+    val lines = sourceText.replace("\r\n", "\n").replace('\r', '\n').lines()
+    val records = mutableListOf<BarcodeBoundMarkdownProduct>()
+    var index = 0
+    while (index < lines.size) {
+        if (!isMarkdownTableRow(lines[index])) {
+            index++
+            continue
+        }
+        val start = index
+        while (index < lines.size && isMarkdownTableRow(lines[index])) index++
+        val end = index
+        val rows = (start until end).mapNotNull { rowIndex ->
+            val cells = markdownTableCells(lines[rowIndex]) ?: return@mapNotNull null
+            if (cells.size < 2 || cells.all { it.matches(Regex("^:?-{3,}:?$")) }) return@mapNotNull null
+            cells
+        }
+        val barcodeRows = rows.filter { isBarcodeLabel(it[0]) }
+        if (barcodeRows.size != 1) continue
+        val rowCodeCandidates = sourceBarcodeCandidates(barcodeRows.single()[1]).toList()
+        if (rowCodeCandidates.size != 1 || rowCodeCandidates.single() != expected) continue
+        if (sourceBarcodeCandidates(lines.subList(start, end).joinToString("\n")).toSet() != setOf(expected)) continue
+
+        var headingIndex = start - 1
+        while (headingIndex >= 0 && lines[headingIndex].isBlank()) headingIndex--
+        if (headingIndex < 0) continue
+        val heading = MARKDOWN_PRODUCT_HEADING.matchEntire(lines[headingIndex]) ?: continue
+        val productName = cleanMarkdownHeading(heading.groupValues[1])
+        if (productName.isBlank() || productName.length > 120 ||
+            Regex("(?i)\\b(?:related|similar|recommended|recommendation|alternative|other\\s+products?)\\b")
+                .containsMatchIn(productName)
+        ) continue
+        // Do not let a heading reach forward across descriptive copy into a different table.
+        if (lines.subList(headingIndex + 1, start).any(String::isNotBlank)) continue
+
+        val upcLine = lines.subList(start, end).singleOrNull { line ->
+            val cells = markdownTableCells(line) ?: return@singleOrNull false
+            cells.size >= 2 && isBarcodeLabel(cells[0]) && sourceBarcodeCandidates(cells[1]).toList() == listOf(expected)
+        } ?: continue
+        val identityEvidence = "${lines[headingIndex].trim()}\n${upcLine.trim()}"
+        if (identityEvidence.length > 320 || sourceBarcodeCandidates(identityEvidence).toSet() != setOf(expected)) continue
+
+        val facts = mutableListOf(BottleFactEvidence(BottleFactField.PRODUCT_NAME, productName, lines[headingIndex].trim()))
+        val unresolved = linkedSetOf(BottleFactField.BRAND)
+        val rejections = mutableListOf<BottleFactRejection>()
+        val sizeRows = rows.filter { isSizeLabel(it[0]) }
+        val quantity = sizeRows.singleOrNull()?.let { row -> parseExplicitBottleSize(row[1]) }
+        if (quantity != null) {
+            val line = lines.subList(start, end).first { candidate ->
+                val cells = markdownTableCells(candidate)
+                cells != null && cells.size >= 2 && isSizeLabel(cells[0]) && parseExplicitBottleSize(cells[1]) == quantity
+            }
+            facts += BottleFactEvidence(BottleFactField.QUANTITY, quantity, line.trim())
+        } else {
+            unresolved += BottleFactField.QUANTITY
+            if (sizeRows.isNotEmpty()) rejections += BottleFactRejection(
+                BottleFactField.QUANTITY,
+                if (sizeRows.size > 1) BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES
+                else BottleExtractionRejectionReason.INVALID_QUANTITY_EVIDENCE,
+            )
+        }
+        val alcoholRows = rows.filter { isAlcoholLabel(it[0]) }
+        val abv = alcoholRows.singleOrNull()?.let { parseExplicitAbv(it[1]) }
+        if (abv != null) {
+            val line = lines.subList(start, end).first { candidate ->
+                val cells = markdownTableCells(candidate)
+                cells != null && cells.size >= 2 && isAlcoholLabel(cells[0]) && parseExplicitAbv(cells[1]) == abv
+            }
+            facts += BottleFactEvidence(BottleFactField.ABV_PERCENT, abv, line.trim())
+        } else {
+            unresolved += BottleFactField.ABV_PERCENT
+            if (alcoholRows.isNotEmpty()) rejections += BottleFactRejection(
+                BottleFactField.ABV_PERCENT,
+                if (alcoholRows.size > 1) BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES
+                else BottleExtractionRejectionReason.INVALID_ABV_EVIDENCE,
+            )
+        }
+        records += BarcodeBoundMarkdownProduct(
+            barcode = expected,
+            productName = productName,
+            nameEvidence = lines[headingIndex].trim(),
+            identityEvidence = identityEvidence,
+            sourceSection = (listOf(lines[headingIndex].trim()) + lines.subList(start, end).map(String::trim))
+                .filter(String::isNotEmpty).joinToString("\n"),
+            facts = facts,
+            unresolvedFields = unresolved,
+            fieldRejections = rejections,
+        )
+    }
+    return records.singleOrNull()
+}
+
+private val MARKDOWN_PRODUCT_HEADING = Regex("^\\s{0,3}#{1,6}\\s+(.+?)\\s*#*\\s*$")
+private fun isMarkdownTableRow(line: String): Boolean = line.trim().startsWith('|') && line.trim().endsWith('|')
+private fun markdownTableCells(line: String): List<String>? {
+    val trimmed = line.trim()
+    if (!isMarkdownTableRow(trimmed)) return null
+    return trimmed.removePrefix("|").removeSuffix("|").split('|').map(String::trim)
+}
+private fun cleanMarkdownHeading(value: String): String = value
+    .replace(Regex("^\\*{1,3}|\\*{1,3}$"), "")
+    .replace(Regex("^_{1,3}|_{1,3}$"), "")
+    .trim()
+private fun normalizedTableLabel(value: String): String = value.lowercase(Locale.ROOT)
+    .replace(Regex("[*_`]"), "")
+    .trim().trimEnd(':').replace(Regex("\\s+"), " ")
+private fun isBarcodeLabel(value: String): Boolean = normalizedTableLabel(value) in setOf(
+    "upc", "ean", "gtin", "barcode", "product code",
+)
+private fun isSizeLabel(value: String): Boolean = normalizedTableLabel(value) in setOf(
+    "size", "size / unit", "size/unit", "bottle size", "volume",
+)
+private fun isAlcoholLabel(value: String): Boolean = normalizedTableLabel(value) in setOf(
+    "alcohol", "alcohol by volume", "abv", "alc/vol", "alc. / vol.",
+)
+private fun parseExplicitBottleSize(value: String): String? {
+    val match = Regex("(?i)^\\s*(\\d{1,4}(?:[.,]\\d{1,2})?)\\s*(mL|L)\\s*$").matchEntire(value) ?: return null
+    val amount = match.groupValues[1].replace(',', '.')
+    val unit = if (match.groupValues[2].equals("l", ignoreCase = true)) "L" else "mL"
+    return "$amount $unit"
+}
+private fun parseExplicitAbv(value: String): String? {
+    val match = Regex("^\\s*(\\d{1,2}(?:[.,]\\d{1,2})?)\\s*%\\s*$").matchEntire(value) ?: return null
+    val amount = match.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return null
+    if (amount !in 0.1..99.9) return null
+    return "${match.groupValues[1].replace(',', '.')}%"
+}
+
 /** Produces a bounded source passage tying a product name to one exact barcode for local validation. */
 internal fun scannedProductIdentityEvidence(barcode: String, productName: String, sourceText: String): String? {
     val expected = normalizeGtinForLookup(barcode) ?: return null
@@ -137,14 +288,25 @@ internal fun bindPageBarcodeIdentity(
     if (result !is BottleDetailExtractionResult.Found) return result
     val nameFact = result.suggestions.facts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }
         ?: return rejectWithIdentityReasons(result, BottleExtractionRejectionReason.PRODUCT_NAME_MISSING)
-    val title = page.title
-    if (!title.isNullOrBlank() && !structuredProductNamesAgree(nameFact.value, title)) {
-        return rejectWithIdentityReasons(result, BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
+    val markdownProduct = barcodeBoundMarkdownProduct(requiredBarcode, page.markdown)
+    val identityEvidence = if (markdownProduct != null) {
+        if (!structuredProductNamesAgree(nameFact.value, markdownProduct.productName)) {
+            return rejectWithIdentityReasons(result, BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
+        }
+        markdownProduct.identityEvidence
+    } else {
+        val title = page.title
+        if (!title.isNullOrBlank() && !structuredProductNamesAgree(nameFact.value, title)) {
+            return rejectWithIdentityReasons(result, BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
+        }
+        scannedProductIdentityEvidence(requiredBarcode, nameFact.value, page.markdown)
+            ?: return rejectWithIdentityReasons(result, BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
     }
-    val identityEvidence = scannedProductIdentityEvidence(requiredBarcode, nameFact.value, page.markdown)
-        ?: return rejectWithIdentityReasons(result, BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
     val unboundFacts = result.suggestions.facts.filter { fact ->
-        fact.field != BottleFactField.PRODUCT_NAME && !factQuoteIsBoundToProductIdentity(fact, nameFact.value)
+        fact.field != BottleFactField.PRODUCT_NAME && when {
+            markdownProduct != null -> fact.quote.trim() !in markdownProduct.sourceSection.lineSequence().map(String::trim)
+            else -> !factQuoteIsBoundToProductIdentity(fact, nameFact.value)
+        }
     }
     val unresolvedFields = result.suggestions.unresolvedFields + unboundFacts.map(BottleFactEvidence::field)
     val acceptedFacts = result.suggestions.facts.filter { fact ->
@@ -450,7 +612,9 @@ internal fun bottleProviderOutcomes(
     }
 
     val ai = when (val extraction = outcome?.extraction) {
-        is BottleDetailExtractionResult.Found -> BottleProviderOutcome.COMPLETE
+        is BottleDetailExtractionResult.Found -> if (
+            extraction.suggestions.extractionMethod == BottleExtractionMethod.DETERMINISTIC_SOURCE
+        ) BottleProviderOutcome.SKIPPED_DETERMINISTIC else BottleProviderOutcome.COMPLETE
         is BottleDetailExtractionResult.Rejected, BottleDetailExtractionResult.InvalidResponse -> BottleProviderOutcome.FAILED
         BottleDetailExtractionResult.SetupRequired, BottleDetailExtractionResult.InvalidModel -> BottleProviderOutcome.NOT_CONFIGURED
         BottleDetailExtractionResult.AuthenticationRequired -> BottleProviderOutcome.AUTHENTICATION_REQUIRED
@@ -669,11 +833,12 @@ internal class ScannedBottleEnrichmentCoordinator(
         }
         val extraction = extractionCall.result
         val suggestions = (extraction as? BottleDetailExtractionResult.Found)?.suggestions
+        val deterministicExtraction = suggestions?.extractionMethod == BottleExtractionMethod.DETERMINISTIC_SOURCE
         onDebugEvent(BottleLookupDebugEvent(
             stage = BottleLookupDebugStage.DETAIL_EXTRACTION,
-            provider = extractor.name,
-            result = extraction.toDebugCode(extractionCall.httpStatus),
-            durationMillis = extractionCall.durationMillis,
+            provider = if (deterministicExtraction) "Deterministic source parser" else extractor.name,
+            result = if (deterministicExtraction) "DETERMINISTIC_COMPLETE" else extraction.toDebugCode(extractionCall.httpStatus),
+            durationMillis = extractionCall.durationMillis.takeUnless { deterministicExtraction },
             httpStatus = extractionCall.httpStatus,
             sourceUrls = listOf(page.sourceUrl),
             factFields = suggestions?.facts?.map { it.field.wireValue }.orEmpty(),
@@ -687,6 +852,7 @@ internal class ScannedBottleEnrichmentCoordinator(
                 suggestions?.unresolvedFields?.forEach { add("${it.wireValue.uppercase()}_UNRESOLVED") }
                 (extraction as? BottleDetailExtractionResult.Rejected)?.let { add(it.reason.debugCode) }
                 (extraction as? BottleDetailExtractionResult.LocalFailure)?.let { add(it.code.wireValue) }
+                if (deterministicExtraction) add("MODEL_NOT_NEEDED_FOR_EXPLICIT_CORE_FACTS")
             },
         ))
         return outcome.copy(extraction = extraction)

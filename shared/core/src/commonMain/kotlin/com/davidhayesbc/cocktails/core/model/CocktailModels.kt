@@ -58,6 +58,8 @@ data class PantryEntry(
     val brand: String?,
     val barcode: String?,
     val photoData: ByteArray? = null,
+    val bottleSize: String? = null,
+    val abvPercent: String? = null,
 )
 
 data class LocalProductBarcodeMatch(

@@ -15,6 +15,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.hasTestTag
@@ -79,6 +80,7 @@ import com.davidhayesbc.cocktails.android.product.ScannedBottleEnrichmentCoordin
 import com.davidhayesbc.cocktails.android.product.ScannedBottlePlan
 import kotlinx.coroutines.runBlocking
 import java.io.File
+import java.io.FileInputStream
 import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import com.davidhayesbc.cocktails.core.data.CatalogInstallResult
 import com.davidhayesbc.cocktails.core.data.LocalCocktailRepository
@@ -123,6 +125,42 @@ class OfflineRecipeSmokeTest {
 
     @get:Rule(order = 1)
     val composeRule = createAndroidComposeRule<MainActivity>()
+
+    @Test
+    fun morePageExposesScopedBarExportWithoutEnteringAnImportOrBackupFlow() {
+        composeRule.onNodeWithText("More").performClick()
+        composeRule.onNodeWithTag("household-scroll").performScrollToNode(hasTestTag("export-bar"))
+        composeRule.onNodeWithText(
+            "Save confirmed bottles in the currently selected home as versioned JSON. Unfinished intake drafts, photos, and private notes are excluded.",
+        ).assertIsDisplayed()
+        composeRule.onNodeWithTag("export-bar").assertIsDisplayed().assertTextContains("Export Bar")
+        captureOnboardingScreenshot("more-export-bar.png")
+    }
+
+    @Test
+    fun barExportRemainsReachableAtLargeSystemTextScale() {
+        val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
+        val descriptor = automation.executeShellCommand("settings get system font_scale")
+        val originalScale = try {
+            FileInputStream(descriptor.fileDescriptor).bufferedReader().use { it.readText().trim() }
+                .takeIf { it.matches(Regex("\\d+(?:\\.\\d+)?")) } ?: "1.0"
+        } finally {
+            descriptor.close()
+        }
+        try {
+            automation.executeShellCommand("settings put system font_scale 1.3").close()
+            composeRule.activityRule.scenario.recreate()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText("More").performClick()
+            composeRule.onNodeWithTag("household-scroll").performScrollToNode(hasTestTag("export-bar"))
+            composeRule.onNodeWithTag("export-bar").assertIsDisplayed().assertTextContains("Export Bar")
+            captureOnboardingScreenshot("more-export-bar-large-text.png")
+        } finally {
+            automation.executeShellCommand("settings put system font_scale $originalScale").close()
+            composeRule.activityRule.scenario.recreate()
+            composeRule.waitForIdle()
+        }
+    }
 
     @Test
     fun onDeviceModelControlsAreHonestWhenNoWeightsAreInstalled() {

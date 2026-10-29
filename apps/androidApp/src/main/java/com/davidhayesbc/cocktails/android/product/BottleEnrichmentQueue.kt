@@ -43,6 +43,7 @@ internal enum class BottleProviderOutcome {
     QUOTA,
     AUTHENTICATION_REQUIRED,
     SKIPPED_NO_SOURCE,
+    SKIPPED_DETERMINISTIC,
     NOT_CONFIGURED,
     DISABLED,
     PAUSED,

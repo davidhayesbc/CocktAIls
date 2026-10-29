@@ -955,6 +955,8 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                 brand = it.brand,
                 barcode = it.barcode,
                 photoData = it.photo_data,
+                bottleSize = it.bottle_quantity,
+                abvPercent = it.abv_percent,
             )
         }
 
