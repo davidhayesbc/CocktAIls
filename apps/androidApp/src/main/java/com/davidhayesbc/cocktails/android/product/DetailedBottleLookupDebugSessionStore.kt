@@ -6,13 +6,12 @@ import java.util.UUID
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 
-/** A short, explicit local debug window which can retain several independent lookup attempts. */
+/** Persistent local debug toggle with a bounded, expiring ring of independent lookup attempts. */
 internal class DetailedBottleLookupDebugSessionStore(
     private val directory: File,
     private val shareCacheDirectory: File? = null,
@@ -26,75 +25,59 @@ internal class DetailedBottleLookupDebugSessionStore(
     )
 
     init {
-        // Do not silently carry the older one-attempt consent into a multi-attempt session.
+        // An old one-time arm must not silently enable persistent debug capture.
         legacy.cancelNextLookup()
     }
 
-    fun startSession(appVersion: String, now: Long = nowMillis()): DetailedCaptureArmResult = synchronized(LOCK) {
+    fun enableDebugMode(appVersion: String, now: Long = nowMillis()): DetailedCaptureArmResult = synchronized(LOCK) {
         cleanupExpired(now)
         val existing = readSession()
-        if (existing != null && existing.get("active")?.jsonPrimitive?.content != "false" && (existing.number("expiresAtMillis") ?: 0) > now) return@synchronized DetailedCaptureArmResult.ALREADY_ARMED
-        // An old one-shot arm must not unexpectedly capture outside the new bounded session.
+        if (existing?.get("active")?.jsonPrimitive?.content == "true") return@synchronized DetailedCaptureArmResult.ALREADY_ARMED
         legacy.cancelNextLookup()
         val root = buildJsonObject {
             put("formatVersion", 1)
             put("sessionId", UUID.randomUUID().toString())
             put("active", true)
             put("startedAtMillis", now.coerceAtLeast(0))
-            put("expiresAtMillis", (now + SESSION_MILLIS).coerceAtLeast(now))
-            put("claimedCount", 0)
             put("appVersion", appVersion.filter { it.isLetterOrDigit() || it in ".-_+" }.take(80))
         }
         if (writeSession(root)) DetailedCaptureArmResult.ARMED else DetailedCaptureArmResult.STORAGE_ERROR
     }
 
     /** Off stops new claims. Attempts already claimed retain their own recorder and may finish. */
-    fun stopSession(now: Long = nowMillis()): Boolean = synchronized(LOCK) {
-        val session = readSession() ?: return@synchronized false
-        val expiry = session.number("expiresAtMillis") ?: return@synchronized false
-        if (expiry <= now) {
-            deleteIfPresent(sessionFile) && deleteIfPresent(sessionTemp)
-        } else {
-            // Persist an explicit off state; do not remove captures or invalidate in-flight recorders.
-            writeSession(buildJsonObject {
-                session.forEach { (key, value) -> put(key, value) }
-                put("active", false)
-            })
-        }
+    fun disableDebugMode(): Boolean = synchronized(LOCK) {
+        val session = readSession() ?: return@synchronized true
+        if (session["active"]?.jsonPrimitive?.content != "true") return@synchronized true
+        writeSession(buildJsonObject {
+            session.forEach { (key, value) -> put(key, value) }
+            put("active", false)
+        })
     }
 
     fun sessionStatus(now: Long = nowMillis()): DetailedCaptureStatus {
         synchronized(LOCK) {
             cleanupExpired(now)
             val session = readSession()
-            val active = session?.get("active")?.jsonPrimitive?.content != "false" &&
-                (session?.number("expiresAtMillis") ?: 0) > now
+            val active = session?.get("active")?.jsonPrimitive?.content == "true"
             val statuses = captureStatuses(now)
-            val sessionId = session?.get("sessionId")?.jsonPrimitive?.content
-            val count = session?.numberInt("claimedCount")
-                ?: statuses.count { it.debugSessionId == sessionId && sessionId != null }
+            val count = statuses.size
             return DetailedCaptureStatus(
-                state = when {
-                    active && count >= MAX_SESSION_CAPTURES -> "LIMIT_REACHED"
-                    active && statuses.size >= MAX_RETAINED_CAPTURES -> "STORAGE_LIMIT_REACHED"
-                    active -> "ACTIVE"
-                    else -> "OFF"
-                },
+                state = if (active) "ACTIVE" else "OFF",
                 draftId = null,
                 attemptToken = null,
-                expiresAtMillis = session?.number("expiresAtMillis") ?: 0,
+                expiresAtMillis = 0,
                 startedAtMillis = session?.number("startedAtMillis"),
                 model = null,
-                nextLookupArmed = active && count < MAX_SESSION_CAPTURES,
+                nextLookupArmed = false,
                 sessionActive = active,
-                sessionExpiresAtMillis = session?.number("expiresAtMillis"),
+                sessionExpiresAtMillis = null,
                 captureCount = count,
-                captureLimit = MAX_SESSION_CAPTURES,
+                captureLimit = MAX_RETAINED_CAPTURES,
             )
         }
     }
 
-    /** Capture only local-model attempts that claim while the session is active. */
+    /** Capture only local-model attempts that claim while the persistent setting is active. */
     fun claim(
         draftId: String,
         attemptToken: String,
@@ -108,20 +91,18 @@ internal class DetailedBottleLookupDebugSessionStore(
         if (!allowNextLookup) return@synchronized null
         cleanupExpired(now)
         val session = readSession() ?: return@synchronized null
-        if (session.get("active")?.jsonPrimitive?.content == "false" || (session.number("expiresAtMillis") ?: 0) <= now) return@synchronized null
+        if (session.get("active")?.jsonPrimitive?.content != "true") return@synchronized null
         if (!safeId(draftId) || !safeId(attemptToken)) return@synchronized null
         val statuses = captureStatuses(now)
         if (statuses.any { it.draftId == draftId && it.attemptToken == attemptToken }) return@synchronized null
         val sessionId = session["sessionId"]?.jsonPrimitive?.content ?: return@synchronized null
-        val claimedCount = session.numberInt("claimedCount") ?: statuses.count { it.debugSessionId == sessionId }
-        if (claimedCount >= MAX_SESSION_CAPTURES || statuses.size >= MAX_RETAINED_CAPTURES) return@synchronized null
-        // Persist the budget before the report file so deletion cannot reset the session cap.
-        // A crash in between may conservatively consume a slot, but can never capture too many.
-        val updatedSession = buildJsonObject {
-            session.forEach { (key, value) -> put(key, value) }
-            put("claimedCount", claimedCount + 1)
+        if (statuses.size >= MAX_RETAINED_CAPTURES) {
+            val evictable = statuses
+                .filter { status -> status.state != "CAPTURING" && status.captureId != null }
+                .minByOrNull { it.startedAtMillis ?: Long.MAX_VALUE }
+                ?: return@synchronized null
+            if (!deleteCapture(evictable.captureId!!)) return@synchronized null
         }
-        if (!writeSession(updatedSession)) return@synchronized null
         val captureId = UUID.randomUUID().toString()
         val store = childStore(captureId)
         if (store.arm(draftId, attemptToken, appVersion, now, captureIdOverride = captureId, debugSessionId = sessionId) != DetailedCaptureArmResult.ARMED) return@synchronized null
@@ -155,33 +136,16 @@ internal class DetailedBottleLookupDebugSessionStore(
         (statuses + listOfNotNull(old)).sortedByDescending { it.startedAtMillis ?: 0 }
     }
 
-    fun previewForCapture(captureId: String, now: Long = nowMillis()): String? =
-        storeForCapture(captureId)?.let { store -> draftForCapture(captureId)?.let { store.previewForDraft(it, now) } }
-
-    fun previewForDraft(draftId: String, now: Long = nowMillis()): String? {
-        val status = statusForDraft(draftId, now) ?: return null
-        return status.captureId?.let { previewForCapture(it, now) } ?: legacy.previewForDraft(draftId, now)
+    fun reportContents(draftId: String? = null, now: Long = nowMillis()): List<String> = synchronized(LOCK) {
+        captureStatuses(now)
+            .filter { draftId == null || it.draftId == draftId }
+            .mapNotNull { status ->
+                val owner = status.draftId ?: return@mapNotNull null
+                val id = status.captureId
+                if (id == null) legacy.reportContentForDraft(owner, now)
+                else storeForCapture(id)?.reportContentForDraft(owner, now)
+            }
     }
-
-    fun isReviewedPreviewCurrent(draftId: String, preview: String, now: Long = nowMillis()): Boolean {
-        val id = previewCaptureId(preview) ?: return legacy.isReviewedPreviewCurrent(draftId, preview, now)
-        val status = captureStatuses(now).firstOrNull { it.captureId == id && it.draftId == draftId } ?: return false
-        return storeForCapture(id)?.isReviewedPreviewCurrent(draftId, preview, now) == true
-    }
-
-    fun copyReviewedPreview(preview: String, copy: (String) -> Unit): Boolean {
-        val id = previewCaptureId(preview) ?: return false
-        val status = captureStatuses().firstOrNull { it.captureId == id } ?: return false
-        return storeForCapture(id)?.copyReviewedPreviewForDraft(status.draftId ?: return false, preview, copy = copy) == true
-    }
-
-    fun exportReviewedPreview(preview: String, cacheDirectory: File): File? {
-        val id = previewCaptureId(preview) ?: return null
-        val status = captureStatuses().firstOrNull { it.captureId == id } ?: return null
-        return storeForCapture(id)?.exportReviewedCopyForDraft(status.draftId ?: return null, preview, cacheDirectory)
-    }
-
-    fun captureIdInPreview(preview: String): String? = previewCaptureId(preview)
 
     fun deleteCapture(captureId: String): Boolean = synchronized(LOCK) {
         if (!captureId.matches(UUID_PATTERN)) return@synchronized false
@@ -211,7 +175,8 @@ internal class DetailedBottleLookupDebugSessionStore(
         }
         recordsDirectory.listFiles().orEmpty().filterNot { it.name.matches(RECORD_NAME) }.forEach { success = deleteIfPresent(it) && success }
         stores.clear()
-        success = deleteIfPresent(sessionFile) && success
+        val active = readSession()?.get("active")?.jsonPrimitive?.content == "true"
+        if (!active) success = deleteIfPresent(sessionFile) && success
         success = deleteIfPresent(sessionTemp) && success
         val shareDir = shareCacheDirectory?.let { File(it, "detailed-lookup-share") }
         shareDir?.listFiles().orEmpty().forEach { success = deleteIfPresent(it) && success }
@@ -220,8 +185,6 @@ internal class DetailedBottleLookupDebugSessionStore(
 
     fun cleanupExpired(now: Long = nowMillis()): Boolean = synchronized(LOCK) {
         var success = legacy.cleanupExpired(now)
-        val session = readSession()
-        if (session != null && (session.number("expiresAtMillis") ?: 0) <= now) success = deleteIfPresent(sessionFile) && success
         success = deleteIfPresent(sessionTemp) && success
         success = cleanupExpiredChildren(now) && success
         success
@@ -248,7 +211,6 @@ internal class DetailedBottleLookupDebugSessionStore(
         if (id.matches(UUID_PATTERN) && recordFile(id).isFile) childStore(id)
         else if (legacy.currentStatus()?.captureId == id) legacy else null
 
-    private fun draftForCapture(id: String): String? = captureStatuses().firstOrNull { it.captureId == id }?.draftId
     private fun childStore(id: String) = synchronized(LOCK) {
         stores.getOrPut(id) {
             DetailedBottleLookupCaptureStore(recordFile(id), nowMillis, shareCacheDirectory = shareCacheDirectory, processSessionId = processSessionId)
@@ -273,14 +235,7 @@ internal class DetailedBottleLookupDebugSessionStore(
 
     private fun deleteIfPresent(file: File) = !file.exists() || runCatching { file.delete() && !file.exists() }.getOrDefault(false)
 
-    private fun previewCaptureId(preview: String): String? = runCatching {
-        Json.parseToJsonElement(preview).jsonObject["captureId"]?.jsonPrimitive?.content
-            ?.takeIf { it.matches(UUID_PATTERN) }
-    }.getOrNull()
-
     companion object {
-        const val SESSION_MILLIS = 2 * 60 * 60 * 1000L
-        const val MAX_SESSION_CAPTURES = 5
         const val MAX_RETAINED_CAPTURES = 10
         private const val SESSION_FILE = "detailed-lookup-debug-session.json"
         private const val LEGACY_FILE = "detailed-lookup-capture.json"
@@ -292,6 +247,5 @@ internal class DetailedBottleLookupDebugSessionStore(
         private val LOCK = Any()
         private fun safeId(value: String) = value.length in 1..100 && value.matches(Regex("[A-Za-z0-9_-]{1,100}"))
         private fun JsonObject.number(key: String) = this[key]?.jsonPrimitive?.longOrNull
-        private fun JsonObject.numberInt(key: String) = this[key]?.jsonPrimitive?.intOrNull
     }
 }

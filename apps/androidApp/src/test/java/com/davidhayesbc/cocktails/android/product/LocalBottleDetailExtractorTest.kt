@@ -517,6 +517,54 @@ class LocalBottleDetailExtractorTest {
     }
 
     @Test
+    fun persistentDebugModeCapturesWorkerClaimThroughTruncatedLocalOutputAndCombinedReport() = runBlocking {
+        val root = Files.createTempDirectory("debug-mode-worker-token-limit").toFile()
+        val modelFile = validHeaderModelFile()
+        val store = DetailedBottleLookupDebugSessionStore(root, processSessionId = "worker-test")
+        assertEquals(DetailedCaptureArmResult.ARMED, store.enableDebugMode("preview.17"))
+        val plan = ScannedBottlePlan(openFoodFactsEnabled = false, firecrawlEnabled = true, extractor = AutomaticBottleExtractor.ON_DEVICE)
+        val attemptToken = "00000000-0000-0000-0000-000000000777"
+        val capture = claimDetailedLookupCaptureForWorker(
+            store = store,
+            plan = plan,
+            draftId = "draft-token-limit-worker",
+            attemptToken = attemptToken,
+            barcode = "5011333150725",
+            appVersion = "preview.17",
+            appVersionCode = 17,
+            model = LOCAL_MODEL_LABEL,
+        ) ?: error("The eligible on-device worker attempt should claim a capture")
+        val engine = FakeInferenceEngine(
+            output = "{\"facts\":[",
+            generationStats = InferenceEngine.GenerationStats(160, InferenceEngine.GenerationFinishReason.TOKEN_LIMIT),
+        )
+        try {
+            val result = LocalBottleDetailExtractor({ modelFile.absolutePath }, LlamaCppLocalInferenceRunner(engine))
+                .extractWithDetailedCapture(
+                    WebPageText("Product", "https://example.org/product", "Product size 750 mL", "Fixture provider"),
+                    LOCAL_MODEL_LABEL,
+                    "5011333150725",
+                    capture,
+                )
+            capture.finish(if (result is BottleDetailExtractionResult.Found) "COMPLETE" else "FAILED")
+
+            val saved = store.reportContents("draft-token-limit-worker").single()
+            assertTrue(saved.contains("draft-token-limit-worker"))
+            assertTrue(saved.contains(attemptToken))
+            assertTrue(saved.contains("{\\\"facts\\\":["))
+            assertTrue(saved.contains("TOKEN_LIMIT"))
+            assertTrue(saved.contains("outputTokenLimitReached"))
+            val combined = combineBottleDiagnostics("{}", listOf(saved))
+            assertTrue(combined.contains("detailedCapturesIncluded"))
+            assertTrue(combined.contains("{\\\"facts\\\":["))
+            assertTrue(store.reportContents("another-draft").isEmpty())
+        } finally {
+            root.deleteRecursively()
+            modelFile.delete()
+        }
+    }
+
+    @Test
     fun localRuntimeFailureIsNotReportedAsNetworkFailureAndLeaksNoExceptionMessage() = runBlocking {
         val source = WebPageText("Test Gin", "https://shop.example/gin", "Test Gin 40% ABV", "Firecrawl")
         val modelFile = validHeaderModelFile()

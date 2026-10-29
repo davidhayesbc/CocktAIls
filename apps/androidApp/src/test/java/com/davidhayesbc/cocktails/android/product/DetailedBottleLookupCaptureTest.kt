@@ -14,101 +14,61 @@ import org.junit.Test
 
 class DetailedBottleLookupCaptureTest {
     @Test
-    fun boundedDebugSessionCapturesMultipleIndependentAttemptsAndStopsNewClaimsWhenOff() {
-        val root = Files.createTempDirectory("detailed-capture-session").toFile()
+    fun persistentDebugToggleSurvivesRestartAndTurningOffKeepsExistingReports() {
+        val root = Files.createTempDirectory("detailed-capture-persistent-toggle").toFile()
         var now = 10_000L
         val store = DetailedBottleLookupDebugSessionStore(root, nowMillis = { now }, processSessionId = "test-process")
-        assertEquals(DetailedCaptureArmResult.ARMED, store.startSession("preview", now))
+        assertEquals(DetailedCaptureArmResult.ARMED, store.enableDebugMode("preview", now))
         assertTrue(store.sessionStatus(now).sessionActive)
 
-        val firstToken = "00000000-0000-0000-0000-000000000101"
-        val secondToken = "00000000-0000-0000-0000-000000000102"
-        val first = store.claim("bottle-a", firstToken, "5011333150725", "preview", 31, "Qwen", now, allowNextLookup = true)!!
+        val first = store.claim("bottle-a", "00000000-0000-0000-0000-000000000101", "5011333150725", "preview", 31, "Qwen", now, allowNextLookup = true)!!
         first.recordModelResponse("On-device Qwen3", "Qwen", "response-a")
         first.finish("FAILED")
-        now += 1
-        val second = store.claim("bottle-b", secondToken, "088352109084", "preview", 31, "Qwen", now, allowNextLookup = true)!!
-        second.recordModelResponse("On-device Qwen3", "Qwen", "response-b")
-        second.finish("COMPLETE")
-        assertNull("Cloud and non-local attempts are never captured", store.claim("bottle-c", "00000000-0000-0000-0000-000000000103", "", "preview", 31, "Cloud", now, allowNextLookup = false))
-        assertEquals(2, store.sessionStatus(now).captureCount)
-
-        val reports = store.captureStatuses(now)
-        assertEquals(2, reports.size)
-        assertEquals(setOf("bottle-a", "bottle-b"), reports.mapNotNull { it.draftId }.toSet())
-        val firstId = reports.single { it.draftId == "bottle-a" }.captureId!!
-        val secondId = reports.single { it.draftId == "bottle-b" }.captureId!!
-        assertTrue(firstId != secondId)
-        val firstPreview = store.previewForCapture(firstId, now)!!
-        val secondPreview = store.previewForCapture(secondId, now)!!
-        assertTrue(firstPreview.contains("response-a"))
-        assertTrue(secondPreview.contains("response-b"))
-        var copied: String? = null
-        assertTrue(store.copyReviewedPreview(firstPreview) { copied = it })
-        assertEquals(firstPreview, copied)
+        now += 3 * 60 * 60 * 1000L
         val reopened = DetailedBottleLookupDebugSessionStore(root, nowMillis = { now }, processSessionId = "after-restart")
-        assertTrue(reopened.sessionStatus(now).sessionActive)
-        assertEquals(2, reopened.sessionStatus(now).captureCount)
-        assertTrue(reopened.previewForCapture(firstId, now)!!.contains("response-a"))
+        assertTrue("Persistent ON survives restart and elapsed time", reopened.sessionStatus(now).sessionActive)
+        assertEquals(1, reopened.reportContents("bottle-a", now).size)
+        assertTrue(reopened.reportContents("bottle-a", now).single().contains("response-a"))
 
-        val inFlight = store.claim("bottle-in-flight", "00000000-0000-0000-0000-000000000105", "628011812230", "preview", 31, "Qwen", now, allowNextLookup = true)!!
-        assertTrue(store.stopSession(now))
-        assertFalse(store.sessionStatus(now).sessionActive)
-        assertNull(store.claim("bottle-c", "00000000-0000-0000-0000-000000000104", "", "preview", 31, "Qwen", now, allowNextLookup = true))
-        inFlight.recordModelResponse("On-device Qwen3", "Qwen", "completed-after-stop")
+        val inFlight = reopened.claim("bottle-in-flight", "00000000-0000-0000-0000-000000000104", "628011812230", "preview", 31, "Qwen", now, allowNextLookup = true)!!
+        assertTrue(reopened.disableDebugMode())
+        assertFalse(reopened.sessionStatus(now).sessionActive)
+        assertNull(reopened.claim("bottle-b", "00000000-0000-0000-0000-000000000102", "088352109084", "preview", 31, "Qwen", now, allowNextLookup = true))
+        inFlight.recordModelResponse("On-device Qwen3", "Qwen", "finishes-after-off")
         inFlight.finish("FAILED")
-        assertEquals(3, store.captureStatuses(now).size)
-        assertTrue(store.captureStatuses(now).any { it.draftId == "bottle-in-flight" && it.state == "FAILED" })
-        assertTrue(store.deleteCapture(firstId))
-        assertEquals(2, store.captureStatuses(now).size)
-        assertEquals("A saved report deletion does not reset the session capture budget", 3, store.sessionStatus(now).captureCount)
-        assertTrue(store.previewForCapture(secondId, now)!!.contains("response-b"))
+        assertEquals("Turning OFF retains existing and already-claimed reports", 2, reopened.captureStatuses(now).size)
+        assertTrue(reopened.reportContents("bottle-in-flight", now).single().contains("finishes-after-off"))
         root.deleteRecursively()
     }
 
     @Test
-    fun debugSessionEnforcesFiveAttemptCapAndTwoHourExpiryWithoutDeletingReportsEarly() {
-        val root = Files.createTempDirectory("detailed-capture-session-limit").toFile()
-        var now = 20_000L
-        val store = DetailedBottleLookupDebugSessionStore(root, nowMillis = { now }, processSessionId = "test-process")
-        assertEquals(DetailedCaptureArmResult.ARMED, store.startSession("preview", now))
-        repeat(DetailedBottleLookupDebugSessionStore.MAX_SESSION_CAPTURES) { index ->
-            val id = "bottle-$index"
-            val token = "00000000-0000-0000-0000-${(index + 201).toString().padStart(12, '0')}"
-            store.claim(id, token, "5011333150725", "preview", 32, "Qwen", now + index, allowNextLookup = true)!!.finish("COMPLETE")
-        }
-        assertEquals("LIMIT_REACHED", store.sessionStatus(now).state)
-        assertNull(store.claim("bottle-over-cap", "00000000-0000-0000-0000-000000000206", "5011333150725", "preview", 32, "Qwen", now, allowNextLookup = true))
-        now += DetailedBottleLookupDebugSessionStore.SESSION_MILLIS + 1
-        assertFalse(store.sessionStatus(now).sessionActive)
-        assertEquals(5, store.captureStatuses(now).size)
-        assertTrue(store.previewForDraft("bottle-0", now)!!.contains("bottle-0"))
-        root.deleteRecursively()
-    }
-
-    @Test
-    fun deletingReportsDoesNotResetFiveAttemptSessionBudget() {
-        val root = Files.createTempDirectory("detailed-capture-session-delete-cap").toFile()
+    fun retainedCaptureRingEvictsOldestFinishedReportButNeverAnInFlightReport() {
+        val root = Files.createTempDirectory("detailed-capture-ring").toFile()
         val store = DetailedBottleLookupDebugSessionStore(root, processSessionId = "test-process")
-        assertEquals(DetailedCaptureArmResult.ARMED, store.startSession("preview"))
-        repeat(DetailedBottleLookupDebugSessionStore.MAX_SESSION_CAPTURES) { index ->
-            val id = "bottle-$index"
-            val token = "00000000-0000-0000-0000-${(index + 401).toString().padStart(12, '0')}"
-            store.claim(id, token, "5011333150725", "preview", 32, "Qwen", allowNextLookup = true)!!.finish("COMPLETE")
+        assertEquals(DetailedCaptureArmResult.ARMED, store.enableDebugMode("preview"))
+        val inFlight = mutableListOf<DetailedBottleLookupRecorder>()
+        repeat(DetailedBottleLookupDebugSessionStore.MAX_RETAINED_CAPTURES) { index ->
+            inFlight += store.claim("bottle-$index", "00000000-0000-0000-0000-${(index + 201).toString().padStart(12, '0')}", "5011333150725", "preview", 32, "Qwen", allowNextLookup = true)!!
         }
-        val deletedId = store.captureStatuses().first().captureId!!
-        assertTrue(store.deleteCapture(deletedId))
-        assertEquals(5, store.sessionStatus().captureCount)
-        assertNull(store.claim("bottle-after-delete", "00000000-0000-0000-0000-000000000499", "5011333150725", "preview", 32, "Qwen", allowNextLookup = true))
+        assertNull("Do not evict reports while every retained slot is in flight", store.claim("bottle-busy", "00000000-0000-0000-0000-000000000299", "5011333150725", "preview", 32, "Qwen", allowNextLookup = true))
+        inFlight.forEach { it.finish("COMPLETE") }
+        val next = store.claim("bottle-new", "00000000-0000-0000-0000-000000000300", "5011333150725", "preview", 32, "Qwen", allowNextLookup = true)
+        assertNotNull(next)
+        next!!.recordModelResponse("On-device Qwen3", "Qwen", "new-response")
+        next.finish("COMPLETE")
+        val reports = store.captureStatuses()
+        assertEquals(DetailedBottleLookupDebugSessionStore.MAX_RETAINED_CAPTURES, reports.size)
+        assertFalse(reports.any { it.draftId == "bottle-0" })
+        assertTrue(reports.any { it.draftId == "bottle-new" })
         root.deleteRecursively()
     }
 
     @Test
-    fun concurrentClaimsCannotExceedTheSessionCaptureCap() {
-        val root = Files.createTempDirectory("detailed-capture-session-concurrent-cap").toFile()
+    fun concurrentClaimsRespectBoundedRingAndKeepEveryAttemptDistinct() {
+        val root = Files.createTempDirectory("detailed-capture-concurrent-ring").toFile()
         val store = DetailedBottleLookupDebugSessionStore(root, processSessionId = "test-process")
-        assertEquals(DetailedCaptureArmResult.ARMED, store.startSession("preview"))
-        val workerCount = 8
+        assertEquals(DetailedCaptureArmResult.ARMED, store.enableDebugMode("preview"))
+        val workerCount = DetailedBottleLookupDebugSessionStore.MAX_RETAINED_CAPTURES
         val ready = CountDownLatch(workerCount)
         val start = CountDownLatch(1)
         val executor = Executors.newFixedThreadPool(workerCount)
@@ -118,18 +78,14 @@ class DetailedBottleLookupCaptureTest {
                     ready.countDown()
                     check(start.await(5, TimeUnit.SECONDS))
                     val token = "00000000-0000-0000-0000-${(index + 501).toString().padStart(12, '0')}"
-                    val recorder = store.claim("concurrent-$index", token, "5011333150725", "preview", 33, "Qwen", allowNextLookup = true)
-                    if (recorder == null) false else {
-                        recorder.finish("COMPLETE")
-                        true
-                    }
+                    store.claim("concurrent-$index", token, "5011333150725", "preview", 33, "Qwen", allowNextLookup = true) != null
                 }
             }
             assertTrue(ready.await(5, TimeUnit.SECONDS))
             start.countDown()
-            assertEquals(5, futures.count { it.get(10, TimeUnit.SECONDS) })
-            assertEquals(5, store.sessionStatus().captureCount)
-            assertEquals(5, store.captureStatuses().size)
+            assertEquals(workerCount, futures.count { it.get(10, TimeUnit.SECONDS) })
+            assertEquals(workerCount, store.captureStatuses().mapNotNull { it.draftId }.toSet().size)
+            assertEquals(workerCount, store.sessionStatus().captureCount)
         } finally {
             start.countDown()
             executor.shutdownNow()
@@ -138,21 +94,24 @@ class DetailedBottleLookupCaptureTest {
     }
 
     @Test
-    fun separateWorkerAndUiStoreInstancesShareProcessOwnershipButRestartMarksAttemptInterrupted() {
-        val root = Files.createTempDirectory("detailed-capture-session-process").toFile()
-        val workerStore = DetailedBottleLookupDebugSessionStore(root)
-        assertEquals(DetailedCaptureArmResult.ARMED, workerStore.startSession("preview"))
-        val token = "00000000-0000-0000-0000-000000000299"
-        val recorder = workerStore.claim("draft-active", token, "5011333150725", "preview", 33, "Qwen", allowNextLookup = true)!!
-
-        val uiStore = DetailedBottleLookupDebugSessionStore(root)
-        assertEquals("CAPTURING", uiStore.captureStatuses().single().state)
-
-        val restarted = DetailedBottleLookupDebugSessionStore(root, processSessionId = "next-process")
-        assertEquals("INTERRUPTED", restarted.captureStatuses().single().state)
-        recorder.recordModelResponse("On-device Qwen3", "Qwen", "late result")
+    fun productionWorkerClaimCapturesOnlyEligibleLocalModelAttempts() {
+        val root = Files.createTempDirectory("detailed-capture-worker-claim").toFile()
+        val store = DetailedBottleLookupDebugSessionStore(root)
+        store.enableDebugMode("preview")
+        val localPlan = ScannedBottlePlan(openFoodFactsEnabled = false, firecrawlEnabled = false, extractor = AutomaticBottleExtractor.ON_DEVICE)
+        val cloudPlan = ScannedBottlePlan(openFoodFactsEnabled = false, firecrawlEnabled = false, extractor = AutomaticBottleExtractor.OLLAMA_CLOUD)
+        val manualPlan = ScannedBottlePlan(openFoodFactsEnabled = false, firecrawlEnabled = false, extractor = null)
+        assertNull(claimDetailedLookupCaptureForWorker(store, cloudPlan, "cloud-draft", "00000000-0000-0000-0000-000000000301", "5011333150725", "preview", 1L, "cloud-model"))
+        assertNull(claimDetailedLookupCaptureForWorker(store, manualPlan, "manual-draft", "00000000-0000-0000-0000-000000000302", "5011333150725", "preview", 1L, null))
+        val recorder = claimDetailedLookupCaptureForWorker(store, localPlan, "local-draft", "00000000-0000-0000-0000-000000000303", "5011333150725", "preview", 1L, LOCAL_MODEL_LABEL)
+        assertNotNull(recorder)
+        recorder!!.recordFetchedPage(0, "https://example.org/product", "Product", "BARCODE_MATCH", emptyList(), StructuredIdentityStatus.STRUCTURED_DATA_MISSING)
+        recorder.recordValidatorInput("On-device Qwen3", "5011333150725", "A bounded public source excerpt.", "Product", emptyList(), StructuredIdentityStatus.STRUCTURED_DATA_MISSING)
+        recorder.recordModelResponse("On-device Qwen3", LOCAL_MODEL_LABEL, "{partial", generationFinishReason = "TOKEN_LIMIT", outputTokenLimitReached = true)
         recorder.finish("FAILED")
-        assertEquals("INTERRUPTED", restarted.captureStatuses().single().state)
+        assertTrue(store.reportContents("local-draft").single().contains("{partial"))
+        assertTrue(store.reportContents("local-draft").single().contains("TOKEN_LIMIT"))
+        assertTrue(store.reportContents("cloud-draft").isEmpty())
         root.deleteRecursively()
     }
 

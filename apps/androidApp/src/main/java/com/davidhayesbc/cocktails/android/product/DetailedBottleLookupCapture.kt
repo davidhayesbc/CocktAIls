@@ -233,6 +233,15 @@ internal class DetailedBottleLookupCaptureStore(
         preview
     }
 
+    /** Returns the bounded local record for an explicit diagnostics copy/export action. */
+    fun reportContentForDraft(draftId: String, now: Long = nowMillis()): String? = synchronized(LOCK) {
+        if (!safeDraftId(draftId)) return@synchronized null
+        var root = readLive(now)?.takeIf { it.string("draftId") == draftId } ?: return@synchronized null
+        if (root.string("state") == ARMED) return@synchronized null
+        root = markInterruptedAfterProcessRestart(root, now)
+        Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), root)
+    }
+
     /** Rejects a preview as soon as its capture expires, is deleted, or is replaced. */
     fun isReviewedPreviewCurrent(draftId: String, reviewedPreview: String, now: Long = nowMillis()): Boolean = synchronized(LOCK) {
         val current = readLive(now)?.takeIf { it.string("draftId") == draftId } ?: return@synchronized false

@@ -102,14 +102,15 @@ internal class BottleScanEnrichmentWorker(
                     .getString("ollama_cloud_model", null)
                 null -> null
             }
-            val detailedCapture = detailedCaptureStore.claim(
-                draftId,
-                attemptToken,
-                barcode,
-                appVersionName,
-                appVersionCode,
-                captureModel,
-                allowNextLookup = plan.extractor == AutomaticBottleExtractor.ON_DEVICE,
+            val detailedCapture = claimDetailedLookupCaptureForWorker(
+                store = detailedCaptureStore,
+                plan = plan,
+                draftId = draftId,
+                attemptToken = attemptToken,
+                barcode = barcode,
+                appVersion = appVersionName,
+                appVersionCode = appVersionCode,
+                model = captureModel,
             )
             report.setQueueWaitMillis(queueWaitMillis)
             report.record(BottleLookupDebugEvent(
@@ -276,6 +277,27 @@ internal class BottleScanEnrichmentWorker(
         const val NOTIFICATION_ID = 8107
     }
 }
+
+internal fun claimDetailedLookupCaptureForWorker(
+    store: DetailedBottleLookupDebugSessionStore,
+    plan: ScannedBottlePlan,
+    draftId: String,
+    attemptToken: String,
+    barcode: String,
+    appVersion: String,
+    appVersionCode: Long,
+    model: String?,
+    now: Long = System.currentTimeMillis(),
+): DetailedBottleLookupRecorder? = store.claim(
+    draftId = draftId,
+    attemptToken = attemptToken,
+    barcode = barcode,
+    appVersion = appVersion,
+    appVersionCode = appVersionCode,
+    model = model,
+    now = now,
+    allowNextLookup = plan.extractor == AutomaticBottleExtractor.ON_DEVICE,
+)
 
 internal fun createBottleProcessingForegroundInfo(context: Context): ForegroundInfo {
     val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

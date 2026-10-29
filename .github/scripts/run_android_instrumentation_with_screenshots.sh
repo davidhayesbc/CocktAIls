@@ -20,14 +20,12 @@ readonly screenshot_names=(
   onboarding-review-simulated.png
   onboarding-review-real-route.png
   onboarding-pause-simulated.png
-  detailed-lookup-capture-preview.png
-  detailed-lookup-capture-preview-actions.png
-  detailed-lookup-capture-preview-large-font.png
-  detailed-lookup-debug-mode-consent.png
-  detailed-lookup-debug-mode-armed.png
-  detailed-lookup-debug-mode-captured.png
-  detailed-lookup-debug-mode-session-large-font.png
   detailed-lookup-debug-mode-settings-real-route.png
+  detailed-lookup-debug-mode-settings-on-real-route.png
+  detailed-lookup-debug-mode-on.png
+  detailed-lookup-debug-mode-off.png
+  detailed-lookup-debug-mode-large-text.png
+  detailed-lookup-capture-diagnostics-with-report.png
 )
 readonly required_visual_screenshots=(
   onboarding-integrated-setup.png
@@ -36,14 +34,12 @@ readonly required_visual_screenshots=(
   onboarding-label-crop-dialog.png
   onboarding-review-real-route.png
   onboarding-review-simulated.png
-  detailed-lookup-capture-preview.png
-  detailed-lookup-capture-preview-actions.png
-  detailed-lookup-capture-preview-large-font.png
-  detailed-lookup-debug-mode-consent.png
-  detailed-lookup-debug-mode-armed.png
-  detailed-lookup-debug-mode-captured.png
-  detailed-lookup-debug-mode-session-large-font.png
   detailed-lookup-debug-mode-settings-real-route.png
+  detailed-lookup-debug-mode-settings-on-real-route.png
+  detailed-lookup-debug-mode-on.png
+  detailed-lookup-debug-mode-off.png
+  detailed-lookup-debug-mode-large-text.png
+  detailed-lookup-capture-diagnostics-with-report.png
 )
 
 readonly test_log="$RUNNER_TEMP/cocktails-instrumentation.log"
