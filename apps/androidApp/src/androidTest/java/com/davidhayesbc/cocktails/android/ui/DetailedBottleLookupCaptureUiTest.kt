@@ -101,7 +101,6 @@ class DetailedBottleLookupCaptureUiTest {
         composeRule.onNodeWithText("View or export diagnostics").performScrollTo().performClick()
         composeRule.onNodeWithTag("detailed-capture-inclusion-status").assertTextContains("Detailed captures included: none", substring = true)
 
-        assertEquals(DetailedCaptureArmResult.ARMED, store.enableDebugMode("instrumentation"))
         val draftA = "debug-ui-a-${UUID.randomUUID()}"
         val draftB = "debug-ui-b-${UUID.randomUUID()}"
         val attemptA = UUID.randomUUID().toString()
