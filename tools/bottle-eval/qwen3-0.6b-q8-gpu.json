@@ -1,0 +1,65 @@
+{
+  "format": "com.davidhayesbc.cocktails.bottle-evaluation-local-runtime",
+  "schemaVersion": 1,
+  "model": {
+    "repository": "Qwen/Qwen3-0.6B-GGUF",
+    "filename": "Qwen3-0.6B-Q8_0.gguf",
+    "bytes": 639446688,
+    "sha256": "9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031",
+    "download": "https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf"
+  },
+  "llamaCpp": {
+    "submodulePath": "third_party/llama.cpp",
+    "commit": "d854d98bae598388ecea1ed84396587e5edc326d",
+    "serverVersionMustContain": "d854d98",
+    "serverApi": "llama.cpp /apply-template then /completion",
+    "chatTemplateMode": "legacy (Jinja disabled), matching Android use_jinja=false"
+  },
+  "androidBaseline": {
+    "modelLabel": "Qwen3-0.6B-Q8_0",
+    "promptVersion": "bottle-facts-v1",
+    "temperature": 0.3,
+    "seed": -1,
+    "maxOutputTokens": 160,
+    "contextTokens": 8192,
+    "batchTokens": 512,
+    "androidThreadPolicy": "max(2, min(4, online CPU count - 2)); runtime count is device-dependent",
+    "samplers": ["penalties", "dry", "top_n_sigma", "top_k", "typ_p", "top_p", "min_p", "xtc", "temperature"],
+    "samplerParameters": {
+      "top_k": 40,
+      "top_p": 0.95,
+      "min_p": 0.05,
+      "top_n_sigma": -1.0,
+      "typical_p": 1.0,
+      "xtc_probability": 0.0,
+      "xtc_threshold": 0.1,
+      "repeat_last_n": 64,
+      "repeat_penalty": 1.0,
+      "frequency_penalty": 0.0,
+      "presence_penalty": 0.0,
+      "dry_multiplier": 0.0,
+      "dry_base": 1.75,
+      "dry_allowed_length": 2,
+      "dry_penalty_last_n": 64,
+      "dry_sequence_breakers": ["\n", ":", "\"", "*"]
+    },
+    "grammar": "none; app parser/evidence checks remain active"
+  },
+  "hostRuntime": {
+    "bindAddress": "127.0.0.1",
+    "port": 9931,
+    "device": "CUDA0",
+    "gpuLayers": 99,
+    "threads": 4,
+    "backendMustBeConfirmedByServerStartup": true,
+    "performanceComparison": "host GPU measurements are reported separately and must not be compared directly with Android CPU timings"
+  },
+  "evaluation": {
+    "source": "versioned bottle-evaluation cases manifest",
+    "eligibleCaseRule": "reviewed_product + complete frozen source + at least one page + independently reviewed source-supported labels",
+    "syntheticCases": "never sent to the model in local quality-evaluation mode",
+    "rawPromptOrResponsePersistence": false,
+    "networkSearch": false,
+    "cloudProviders": false
+  }
+}

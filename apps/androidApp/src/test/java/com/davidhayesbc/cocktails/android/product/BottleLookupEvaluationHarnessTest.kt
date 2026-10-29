@@ -1,10 +1,16 @@
 package com.davidhayesbc.cocktails.android.product
 
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.Proxy
+import java.net.URI
+import java.net.URL
 import java.security.MessageDigest
 import java.text.Normalizer
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -24,6 +30,7 @@ import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 /**
@@ -32,10 +39,90 @@ import org.junit.Test
  */
 class BottleLookupEvaluationHarnessTest {
     @Test
+    fun localLlamaRunnerUsesLoopbackLegacyTemplateAndAndroidSamplerContract() = runBlocking {
+        val requests = mutableListOf<Pair<String, JsonObject>>()
+        val result = runLocalLlamaServer(
+            "http://127.0.0.1:9931", "system marker", "/no_think\nsource marker", 160,
+        ) { url, body, onRoundTrip ->
+            requests += url to body
+            onRoundTrip(12L)
+            if (url.endsWith("/apply-template")) {
+                buildJsonObject { put("prompt", "test-rendered-prompt") }
+            } else {
+                buildJsonObject {
+                    put("content", "{\"facts\":[]}")
+                    put("stop_type", "limit")
+                    put("timings", buildJsonObject {
+                        put("predicted_n", 160); put("predicted_ms", 1234.8); put("prompt_ms", 20.6); put("prompt_n", 44)
+                    })
+                }
+            }
+        }.response
+        val templateBody = requests[0].second
+        val completionBody = requests[1].second
+        assertTrue(requests[0].first.endsWith("/apply-template"))
+        assertTrue(requests[1].first.endsWith("/completion"))
+        val messages = templateBody.getValue("messages").jsonArray
+        assertEquals("system marker", messages[0].jsonObject.getValue("content").jsonPrimitive.content)
+        assertEquals("/no_think\nsource marker", messages[1].jsonObject.getValue("content").jsonPrimitive.content)
+        assertEquals("test-rendered-prompt", completionBody.getValue("prompt").jsonPrimitive.content)
+        assertEquals(160, completionBody.getValue("n_predict").jsonPrimitive.intOrNull)
+        assertEquals(-1, completionBody.getValue("seed").jsonPrimitive.intOrNull)
+        assertEquals(false, completionBody.getValue("cache_prompt").jsonPrimitive.booleanOrNull)
+        assertEquals(0.3, completionBody.getValue("temperature").jsonPrimitive.doubleOrNull!!, 0.0001)
+        assertFalse(completionBody.containsKey("grammar"))
+        assertFalse(completionBody.containsKey("json_schema"))
+        assertEquals(
+            listOf("penalties", "dry", "top_n_sigma", "top_k", "typ_p", "top_p", "min_p", "xtc", "temperature"),
+            completionBody.getValue("samplers").jsonArray.map { it.jsonPrimitive.content },
+        )
+        assertEquals(listOf("\n", ":", "\"", "*"), completionBody.getValue("dry_sequence_breakers").jsonArray.map { it.jsonPrimitive.content })
+        assertEquals("TOKEN_LIMIT", result.finishReason)
+        assertEquals(160, result.generatedTokens)
+        assertEquals(1234L, result.generationMillis)
+        assertEquals(20L, result.promptEvaluationMillis)
+        assertEquals(44, result.promptTokens)
+        assertEquals(12L, result.requestRoundTripMillis)
+        assertEquals("{\"facts\":[]}", result.response)
+    }
+
+    @Test
+    fun localModelEndpointRejectsNonLoopbackAndCredentialBearingUrls() {
+        listOf("https://127.0.0.1:9931", "http://example.com:9931", "http://user@127.0.0.1:9931", "http://127.0.0.1:9931?token=x")
+            .forEach { endpoint ->
+                assertThrows(IllegalArgumentException::class.java) { validateLoopbackEndpoint(endpoint) }
+            }
+        assertEquals("http://127.0.0.1:9931", validateLoopbackEndpoint("http://127.0.0.1:9931/"))
+    }
+
+    @Test
     fun offlineReplayUsesProductionLookupAndExtractionAndWritesCoverageGatedReport() = runBlocking {
         val casesRoot = readInput("bottle.eval.cases", "/bottle-evaluation/v1/cases.json")
         val runsRoot = readInput("bottle.eval.runs", "/bottle-evaluation/v1/replay-runs.json")
         val dataset = parseDataset(casesRoot)
+        val localServer = System.getProperty("bottle.eval.local.server")?.takeIf(String::isNotBlank)
+        if (localServer != null) {
+            val selectedIds = System.getProperty("bottle.eval.local.caseIds")
+                ?.split(',')?.map(String::trim)?.filter(String::isNotEmpty)?.toSet()
+            val selectedCases = dataset.cases.filter { case ->
+                case.kind == "reviewed_product" && case.sourceCoverage == "complete" && case.pages.isNotEmpty() &&
+                    case.sourceFacts.values.any { it.status != SourceLabelStatus.UNKNOWN.name } &&
+                    (selectedIds == null || case.id in selectedIds)
+            }
+            require(selectedCases.isNotEmpty()) {
+                "Local Qwen evaluation requires at least one reviewed product case with complete frozen source input; no inference was sent."
+            }
+            require(selectedIds == null || selectedCases.map(EvalCase::id).toSet() == selectedIds) {
+                "Every requested local case ID must identify a complete reviewed-product source case."
+            }
+            require(selectedIds == null || selectedCases.all { it.split == "development" }) {
+                "A selected subset may include development cases only; evaluate the full frozen manifest to score holdout."
+            }
+            val localVariant = localQwenVariant()
+            val localReport = evaluate(dataset.copy(cases = selectedCases), listOf(localVariant), localServer)
+            writeReport(localReport)
+            return@runBlocking
+        }
         val variants = parseVariants(runsRoot, dataset.version)
         val report = evaluate(dataset, variants)
         writeReport(report)
@@ -130,7 +217,11 @@ private data class EvalResponse(
     val finishReason: String,
     val generatedTokens: Int?,
     val generationMillis: Long?,
+    val requestRoundTripMillis: Long? = null,
+    val promptEvaluationMillis: Long? = null,
+    val promptTokens: Int? = null,
 )
+private data class LocalServerCompletion(val response: EvalResponse)
 private data class EvalVariant(
     val id: String,
     val modelId: String,
@@ -152,6 +243,7 @@ private data class EvaluatedCase(
     val invokedModel: Boolean,
     val promptText: String?,
     val response: EvalResponse?,
+    val inferenceExecuted: Boolean,
 )
 
 private fun readInput(property: String, resource: String): JsonObject {
@@ -310,9 +402,9 @@ private fun parseVariants(root: JsonObject, expectedDatasetVersion: String): Lis
     return variants
 }
 
-private suspend fun evaluate(dataset: EvalDataset, variants: List<EvalVariant>): JsonObject {
+private suspend fun evaluate(dataset: EvalDataset, variants: List<EvalVariant>, localServer: String? = null): JsonObject {
     val variantReports = variants.map { variant ->
-        val evaluated = dataset.cases.map { case -> evaluateCase(case, variant) }
+        val evaluated = dataset.cases.map { case -> evaluateCase(case, variant, localServer) }
         reportVariant(variant, evaluated)
     }
     val realCases = dataset.cases.filter { it.kind == "reviewed_product" }
@@ -352,8 +444,129 @@ private suspend fun evaluate(dataset: EvalDataset, variants: List<EvalVariant>):
     }
 }
 
-private suspend fun evaluateCase(case: EvalCase, variant: EvalVariant): EvaluatedCase {
-    val response = variant.responses[case.id]
+private fun localQwenVariant() = EvalVariant(
+    id = "qwen3-0.6b-q8_0-local-gpu-baseline",
+    modelId = LOCAL_MODEL_LABEL,
+    quantization = "Q8_0",
+    runtime = System.getProperty("bottle.eval.local.runtime") ?: "llama.cpp host server; build identity unavailable",
+    promptVersion = DEFAULT_LOCAL_PROMPT_VERSION,
+    temperature = 0.3,
+    maxOutputTokens = DEFAULT_LOCAL_MAX_OUTPUT_TOKENS,
+    outputSource = "local_model_execution",
+    timingSource = "host_runtime_observed",
+    systemPrompt = LocalBottleExtractionPromptConfiguration.DEFAULT.systemPrompt,
+    additionalInstructions = null,
+    responses = emptyMap(),
+)
+
+/**
+ * Sends the production extractor's exact system/user text to the pinned llama.cpp server.
+ * The server first formats those two messages with its legacy template path, matching Android's
+ * `use_jinja=false`, then completes that exact rendered prompt. Raw prompts/responses stay in
+ * memory and are never written into the evaluation report.
+ */
+private suspend fun runLocalLlamaServer(
+    baseUrl: String,
+    systemPrompt: String,
+    userPrompt: String,
+    maxTokens: Int,
+    postJson: (String, JsonObject, (Long) -> Unit) -> JsonObject = ::postLocalJson,
+): LocalServerCompletion = withContext(Dispatchers.IO) {
+    val base = validateLoopbackEndpoint(baseUrl)
+    val template = postJson("$base/apply-template", buildJsonObject {
+        put("messages", buildJsonArray {
+            add(buildJsonObject { put("role", "system"); put("content", systemPrompt) })
+            add(buildJsonObject { put("role", "user"); put("content", userPrompt) })
+        })
+    }, {})
+    val renderedPrompt = template.string("prompt") ?: error("llama.cpp /apply-template omitted the prompt")
+    var requestRoundTripMillis = 0L
+    val completion = postJson("$base/completion", buildJsonObject {
+        put("prompt", renderedPrompt)
+        put("n_predict", maxTokens)
+        put("seed", -1)
+        put("temperature", 0.3)
+        put("top_k", 40)
+        put("top_p", 0.95)
+        put("min_p", 0.05)
+        put("top_n_sigma", -1.0)
+        put("typical_p", 1.0)
+        put("xtc_probability", 0.0)
+        put("xtc_threshold", 0.1)
+        put("repeat_last_n", 64)
+        put("repeat_penalty", 1.0)
+        put("frequency_penalty", 0.0)
+        put("presence_penalty", 0.0)
+        put("dry_multiplier", 0.0)
+        put("dry_base", 1.75)
+        put("dry_allowed_length", 2)
+        put("dry_penalty_last_n", 64)
+        put("dry_sequence_breakers", buildJsonArray {
+            listOf("\n", ":", "\"", "*").forEach { add(JsonPrimitive(it)) }
+        })
+        put("samplers", buildJsonArray {
+            listOf("penalties", "dry", "top_n_sigma", "top_k", "typ_p", "top_p", "min_p", "xtc", "temperature")
+                .forEach { add(JsonPrimitive(it)) }
+        })
+        put("cache_prompt", false)
+        put("timings_per_token", true)
+    }, { requestRoundTripMillis = it })
+    val timing = completion["timings"]?.jsonObject
+    val finish = when (completion.string("stop_type")) {
+        "eos" -> "END_OF_SEQUENCE"
+        "limit" -> "TOKEN_LIMIT"
+        "word" -> "STOP_WORD"
+        "none" -> "UNKNOWN"
+        else -> "UNKNOWN"
+    }
+    LocalServerCompletion(
+        EvalResponse(
+            response = completion.string("content") ?: error("llama.cpp /completion omitted content"),
+            finishReason = finish,
+            generatedTokens = timing?.get("predicted_n")?.jsonPrimitive?.intOrNull
+                ?: completion["tokens_predicted"]?.jsonPrimitive?.intOrNull,
+            generationMillis = timing?.get("predicted_ms")?.jsonPrimitive?.doubleOrNull?.toLong(),
+            requestRoundTripMillis = requestRoundTripMillis,
+            promptEvaluationMillis = timing?.get("prompt_ms")?.jsonPrimitive?.doubleOrNull?.toLong(),
+            promptTokens = timing?.get("prompt_n")?.jsonPrimitive?.intOrNull,
+        ),
+    )
+}
+
+private fun validateLoopbackEndpoint(value: String): String {
+    val uri = URI(value.trimEnd('/'))
+    require(uri.scheme == "http" && uri.host in setOf("127.0.0.1", "localhost", "::1") &&
+        uri.userInfo == null && uri.rawQuery == null && uri.rawFragment == null && uri.port in 1..65535) {
+        "Local model evaluation only accepts an explicit loopback HTTP endpoint."
+    }
+    return uri.toASCIIString().trimEnd('/')
+}
+
+private fun postLocalJson(url: String, payload: JsonObject, onRoundTrip: (Long) -> Unit = {}): JsonObject {
+    val connection = URL(url).openConnection(Proxy.NO_PROXY) as HttpURLConnection
+    connection.requestMethod = "POST"
+    connection.connectTimeout = 10_000
+    connection.readTimeout = 300_000
+    connection.doOutput = true
+    connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+    try {
+        val bytes = Json.encodeToString(JsonObject.serializer(), payload).toByteArray(Charsets.UTF_8)
+        val started = System.nanoTime()
+        connection.outputStream.use { it.write(bytes) }
+        val status = connection.responseCode
+        val input = if (status in 200..299) connection.inputStream else connection.errorStream
+        val responseBytes = input?.use { stream -> stream.readNBytes(1_048_577) } ?: byteArrayOf()
+        onRoundTrip(((System.nanoTime() - started) / 1_000_000L).coerceAtLeast(0L))
+        require(status in 200..299) { "Local llama.cpp server returned HTTP $status; response body is intentionally omitted." }
+        require(responseBytes.size <= 1_048_576) { "Local llama.cpp response exceeded the 1 MiB safety limit." }
+        return Json.parseToJsonElement(responseBytes.toString(Charsets.UTF_8)).jsonObject
+    } finally {
+        connection.disconnect()
+    }
+}
+
+private suspend fun evaluateCase(case: EvalCase, variant: EvalVariant, localServer: String?): EvaluatedCase {
+    val replayResponse = variant.responses[case.id]
     val promptConfiguration = LocalBottleExtractionPromptConfiguration(
         version = variant.promptVersion,
         systemPrompt = variant.systemPrompt ?: LocalBottleExtractionPromptConfiguration.DEFAULT.systemPrompt,
@@ -362,13 +575,18 @@ private suspend fun evaluateCase(case: EvalCase, variant: EvalVariant): Evaluate
     )
     var invokedModel = false
     var observedPrompt: String? = null
+    var actualResponse: EvalResponse? = null
     val events = mutableListOf<BottleLookupDebugEvent>()
     val localExtractor = LocalBottleDetailExtractor(
         modelPath = { "/evaluation/not-a-real-model.gguf" },
         runner = LocalInferenceRunner { _, _, userPrompt, _ ->
             invokedModel = true
             observedPrompt = userPrompt
-            response?.response ?: ""
+            if (localServer != null) {
+                val completion = runLocalLlamaServer(localServer, promptConfiguration.systemPrompt, userPrompt, variant.maxOutputTokens)
+                actualResponse = completion.response
+                completion.response.response
+            } else replayResponse?.response ?: ""
         },
         promptConfiguration = promptConfiguration,
     )
@@ -400,9 +618,13 @@ private suspend fun evaluateCase(case: EvalCase, variant: EvalVariant): Evaluate
         outcome.copy(page = WebPageResult.Found(selectedPage), extraction = extraction)
     } else outcome
     // If a fixture has a response, it must either be consumed or be deliberately unreachable because retrieval abstained.
-    require(!invokedModel || response != null) { "Unexpected model call without a replay response for ${case.id}/${variant.id}" }
-    if (response == null) require(!invokedModel) { "Model ran without a recorded response for ${case.id}/${variant.id}" }
-    return EvaluatedCase(case, evaluatedOutcome, events, invokedModel, observedPrompt, response.takeIf { invokedModel })
+    require(localServer != null || !invokedModel || replayResponse != null) { "Unexpected model call without a replay response for ${case.id}/${variant.id}" }
+    if (localServer == null && replayResponse == null) require(!invokedModel) { "Model ran without a recorded response for ${case.id}/${variant.id}" }
+    return EvaluatedCase(
+        case, evaluatedOutcome, events, invokedModel, observedPrompt,
+        (actualResponse ?: replayResponse).takeIf { invokedModel },
+        inferenceExecuted = localServer != null && invokedModel,
+    )
 }
 
 private fun EvalVariant.modelIdForApp(): String = when {
@@ -434,6 +656,9 @@ private fun reportVariant(variant: EvalVariant, evaluated: List<EvaluatedCase>):
         put("model", variant.modelId)
         put("quantization", variant.quantization)
         put("runtime", variant.runtime)
+        put("runtimeBackend", System.getProperty("bottle.eval.local.backend") ?: "not_applicable_or_unverified")
+        put("modelArtifactSha256", System.getProperty("bottle.eval.local.model.sha256") ?: "not_run")
+        put("llamaCppCommit", System.getProperty("bottle.eval.local.llama.commit") ?: "not_run")
         put("promptVersion", variant.promptVersion)
         val systemPrompt = variant.systemPrompt ?: LocalBottleExtractionPromptConfiguration.DEFAULT.systemPrompt
         put("systemPromptSha256", sha256(systemPrompt))
@@ -444,6 +669,14 @@ private fun reportVariant(variant: EvalVariant, evaluated: List<EvaluatedCase>):
         put("outputSource", variant.outputSource)
         put("timingSource", variant.timingSource)
         put("recordedSourceRunGenerationMillisMedian", measuredGenerationMedian(variant, evaluated)?.let(::JsonPrimitive) ?: JsonPrimitive("unavailable"))
+        put("hostRequestRoundTripMillisMedian", evaluated.mapNotNull { it.response?.requestRoundTripMillis }.sorted()
+            .takeIf(List<Long>::isNotEmpty)?.let { JsonPrimitive(it[it.size / 2]) } ?: JsonPrimitive("unavailable"))
+        put("hostPromptEvaluationMillisMedian", medianLong(evaluated.mapNotNull { it.response?.promptEvaluationMillis })
+            ?.let(::JsonPrimitive) ?: JsonPrimitive("unavailable"))
+        put("hostPromptTokensMedian", medianInt(evaluated.mapNotNull { it.response?.promptTokens })
+            ?.let(::JsonPrimitive) ?: JsonPrimitive("unavailable"))
+        put("hostGeneratedTokensMedian", medianInt(evaluated.mapNotNull { it.response?.generatedTokens })
+            ?.let(::JsonPrimitive) ?: JsonPrimitive("unavailable"))
         put("sourceSupportedFactMetrics", realMetrics)
         put("sourceSupportedFactMetricsBySplit", buildJsonObject {
             realEligible.map { it.case.split }.distinct().sorted().forEach { split ->
@@ -539,10 +772,14 @@ private fun scoreInventoryTruth(cases: List<EvaluatedCase>) = buildJsonObject {
 }
 
 private fun measuredGenerationMedian(variant: EvalVariant, evaluated: List<EvaluatedCase>): Long? {
-    if (variant.timingSource != "device_observed") return null
-    val values = evaluated.mapNotNull { item -> variant.responses[item.case.id]?.generationMillis }.sorted()
+    if (variant.timingSource !in setOf("device_observed", "host_runtime_observed")) return null
+    val values = evaluated.mapNotNull { item -> item.response?.generationMillis }.sorted()
     return values.takeIf(List<Long>::isNotEmpty)?.let { it[it.size / 2] }
 }
+
+private fun medianLong(values: List<Long>): Long? = values.sorted().takeIf(List<Long>::isNotEmpty)?.let { it[it.size / 2] }
+
+private fun medianInt(values: List<Int>): Int? = values.sorted().takeIf(List<Int>::isNotEmpty)?.let { it[it.size / 2] }
 
 private fun reportCase(item: EvaluatedCase) = buildJsonObject {
     val extraction = item.outcome.extraction
@@ -577,10 +814,11 @@ private fun reportCase(item: EvaluatedCase) = buildJsonObject {
     put("unresolvedFields", buildJsonArray {
         (extraction as? BottleDetailExtractionResult.Found)?.suggestions?.unresolvedFields.orEmpty().forEach { add(JsonPrimitive(it.wireValue)) }
     })
-    put("inferenceExecutedByHarness", false)
+    put("inferenceExecutedByHarness", item.inferenceExecuted)
     put("sourceCaptureStatus", item.case.sourceCaptureStatus)
     put("researchTargetCount", item.case.researchTargets.size)
-    put("replayResponseConsumed", item.invokedModel)
+    put("replayResponseConsumed", item.invokedModel && !item.inferenceExecuted)
+    put("localModelExecution", item.inferenceExecuted)
     put("finishReason", item.response?.finishReason ?: "not_run")
     put("recordedSourceRunGenerationMillis", item.response?.generationMillis?.let(::JsonPrimitive) ?: JsonPrimitive("unavailable"))
     put("replayedUserPromptCharacters", item.promptText?.length?.let(::JsonPrimitive) ?: JsonPrimitive("unavailable"))

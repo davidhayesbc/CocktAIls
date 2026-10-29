@@ -98,3 +98,62 @@ bottle model is available here; the repository's small `ggml-vocab-aquila.gguf` 
 not the Qwen bottle model. There is therefore no Qwen inference run or Pixel timing. The Auchentoshan debug excerpt is useful for future
 regressions but is not the complete captured validator input or model response, so it is not an
 executable historical replay. No live search, paid provider, or cloud-model evaluation is claimed.
+
+## Optional local Qwen GPU evaluation
+
+`qwen3-0.6b-q8-gpu.json` records the official model artifact, expected SHA-256, pinned llama.cpp
+submodule commit, and Android decoding/context settings. The model weights are not checked into
+this repository. `run-local-qwen-gpu.py` never downloads or builds the model/runtime. It requires a
+caller-provided GGUF whose size and SHA-256 match the manifest, and an existing CUDA-enabled
+`llama-server` whose version identifies the pinned commit. It checks for a CUDA device, binds the
+server only to `127.0.0.1`, requires a GPU-offload startup record, and stops the server when done.
+
+Preflight needs only Python 3 and the case manifest:
+
+```sh
+python3 tools/bottle-eval/run-local-qwen-gpu.py --preflight
+```
+
+When a complete, source-labeled case is available and the user has separately placed the official
+model and built the pinned server, run:
+
+```sh
+python3 tools/bottle-eval/run-local-qwen-gpu.py \
+  --model /path/to/Qwen3-0.6B-Q8_0.gguf \
+  --llama-server /path/to/pinned/llama-server
+```
+
+The default run evaluates every eligible development and held-out case together. `--case-id` can
+select development cases only for prompt iteration; it rejects held-out subsets so the frozen
+holdout is not accidentally used as tuning feedback.
+
+For a later CUDA build from the already checked-out submodule (not run in this task), the pinned
+source can be built with the existing local CMake/CUDA toolchain:
+
+```sh
+cmake -S third_party/llama.cpp -B third_party/llama.cpp/build-cuda \
+  -DGGML_CUDA=ON -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TESTS=OFF
+cmake --build third_party/llama.cpp/build-cuda --target llama-server --config Release --parallel
+```
+
+This requires a compatible local CUDA toolkit and CMake/compiler setup. The runner does not install
+those prerequisites and verifies that the resulting server identifies the pinned submodule commit.
+
+The current manifest intentionally has zero eligible cases, so preflight reports that no model
+request can run yet. The script will stop before starting the server until a reviewed product case
+has a complete frozen source, independently reviewed source-supported labels, and the normal source
+hash/provenance checks. Synthetic contract cases are never submitted to a model in this mode.
+
+The opt-in path invokes the same production `LocalBottleDetailExtractor`, prompt construction,
+preprocessing, parser and evidence/identity validation as the app. It sends the resulting system and
+user messages to the pinned local server's legacy `/apply-template` endpoint, then completes the
+rendered prompt. This mirrors Android's `use_jinja=false`; generation receives the Android sampler
+order and values, 160-token cap, random seed mode, no grammar, and an 8,192-token context. A local
+HTTP mock test checks the request contract. No actual Qwen host or Pixel inference was run here.
+
+The host uses CUDA and a different GPU/driver, batch implementation and threading environment from
+the Pixel's CPU backend. Reports separate server-reported generation time from host request
+round-trip time and identify the host backend. They must not be interpreted as Pixel performance
+measurements. The runner keeps prompts and model responses in memory only; the JSON report includes
+metrics and timing metadata, not source text or generated output. Search and cloud inference remain
+disabled.
