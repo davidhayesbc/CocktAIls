@@ -192,17 +192,22 @@ class OfflineRecipeSmokeTest {
 
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-        val copied = clipboard.primaryClip!!.getItemAt(0).coerceToText(context).toString()
-        assertTrue(copied.contains("5011333150725"))
-        assertTrue(copied.contains("CANDIDATE_1_GENERIC_BARCODE_LOOKUP"))
-        assertFalse(copied.contains("/barcode-lookup"))
-        assertFalse(copied.contains("Authorization"))
-        assertTrue(copied.contains("latestBottleLookup"))
         val copyConfirmation = "Diagnostics copied"
         composeRule.waitUntil(timeoutMillis = 5_000) {
             composeRule.onAllNodesWithText(copyConfirmation, substring = true).fetchSemanticsNodes().isNotEmpty()
         }
         composeRule.onNodeWithText(copyConfirmation, substring = true).assertIsDisplayed()
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            clipboard.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()?.contains("5011333150725") == true
+        }
+        val copiedClip = checkNotNull(clipboard.primaryClip) { "Copy confirmation appeared but the clipboard was empty" }
+        val copiedItem = checkNotNull(copiedClip.getItemAt(0)) { "Copy confirmation appeared without a clipboard item" }
+        val copied = copiedItem.coerceToText(context)?.toString().orEmpty()
+        assertTrue(copied.contains("5011333150725"))
+        assertTrue(copied.contains("CANDIDATE_1_GENERIC_BARCODE_LOOKUP"))
+        assertFalse(copied.contains("/barcode-lookup"))
+        assertFalse(copied.contains("Authorization"))
+        assertTrue(copied.contains("latestBottleLookup"))
     }
 
     @Test
