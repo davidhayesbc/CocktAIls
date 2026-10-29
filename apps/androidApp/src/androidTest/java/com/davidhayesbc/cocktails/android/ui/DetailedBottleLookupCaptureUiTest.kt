@@ -81,7 +81,7 @@ class DetailedBottleLookupCaptureUiTest {
             )
         }
 
-        composeRule.onNodeWithTag("preview-detailed-lookup-capture").performScrollTo().assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("preview-detailed-lookup-capture").assertIsDisplayed().performClick()
         composeRule.onNodeWithTag("detailed-lookup-capture-preview").assertIsDisplayed()
         assertPreviewActionsDoNotOverlap()
         scrollThroughPreviewActions()
