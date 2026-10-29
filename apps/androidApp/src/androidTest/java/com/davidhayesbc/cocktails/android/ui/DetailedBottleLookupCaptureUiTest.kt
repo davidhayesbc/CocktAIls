@@ -5,9 +5,12 @@ import android.database.Cursor
 import android.view.View
 import android.view.ViewGroup
 import androidx.core.content.FileProvider
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
@@ -55,12 +58,34 @@ class DetailedBottleLookupCaptureUiTest {
         composeRule.onNodeWithTag("preview-detailed-lookup-capture").assertIsDisplayed().performClick()
         composeRule.onNodeWithTag("detailed-lookup-capture-preview").assertIsDisplayed()
         saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-capture-preview.png")
+        assertPreviewActionsDoNotOverlap()
+        scrollThroughPreviewActions()
+        saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-capture-preview-actions.png")
+        composeRule.onNodeWithTag("copy-detailed-lookup-capture").performScrollTo()
         composeRule.onNodeWithTag("copy-detailed-lookup-capture").assertIsDisplayed().performClick()
         composeRule.waitUntil(5_000) { copied.value }
 
         val clipboard = composeRule.activity.getSystemService(ClipboardManager::class.java)
         assertEquals(capture, clipboard.primaryClip?.getItemAt(0)?.text?.toString())
         composeRule.onAllNodes(hasTestTag("detailed-lookup-capture-preview")).assertCountEquals(0)
+    }
+
+    @Test
+    fun previewActionsRemainSeparateAndReachableWithLargeText() {
+        val content = "{\"sourceText\":\"${"Public source excerpt. ".repeat(100)}\"}"
+        setContent {
+            CaptureDialogHost(
+                content = content,
+                onCopied = {},
+                fontScale = 1.5f,
+            )
+        }
+
+        composeRule.onNodeWithTag("preview-detailed-lookup-capture").performScrollTo().assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("detailed-lookup-capture-preview").assertIsDisplayed()
+        assertPreviewActionsDoNotOverlap()
+        scrollThroughPreviewActions()
+        saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-capture-preview-large-font.png")
     }
 
     @Test
@@ -169,42 +194,75 @@ class DetailedBottleLookupCaptureUiTest {
     }
 
     @Composable
-    private fun CaptureDialogHost(content: String, onCopied: () -> Unit) {
+    private fun CaptureDialogHost(content: String, onCopied: () -> Unit, fontScale: Float = 1f) {
         val preview = androidx.compose.runtime.remember { mutableStateOf<String?>(null) }
         val status = androidx.compose.runtime.remember {
             DetailedCaptureStatus("COMPLETE", "draft-ui-test", "00000000-0000-0000-0000-000000000099", 2_000_000L, 1_000_000L, "Qwen3-0.6B-Q8_0")
         }
-        CocktailsTheme(darkTheme = true) {
-            if (preview.value == null) {
-                DiagnosticsDialog(
-                    preview = "Local diagnostics",
-                    lookupPreview = "Latest report",
-                    lookupSubject = "Lookup report for this bottle",
-                    lookupMissingMessage = "No lookup report",
-                    lookupCopyMessage = null,
-                    detailedCaptureStatus = status,
-                    detailedCaptureMessage = null,
-                    onArmDetailedCapture = {},
-                    onPreviewDetailedCapture = { preview.value = content },
-                    onDeleteDetailedCapture = {},
-                    onCopyLookup = {},
-                    onExport = {},
-                    onClear = { true },
-                    onDismiss = {},
-                )
-            } else {
-                DetailedLookupCapturePreviewDialog(
-                    preview = preview.value.orEmpty(),
-                    onCopy = {
-                        copyDetailedLookupCaptureToClipboard(composeRule.activity, preview.value.orEmpty())
-                        preview.value = null
-                        onCopied()
-                    },
-                    onShare = {},
-                    onDelete = {},
-                    onDismiss = { preview.value = null },
-                )
+        val currentDensity = LocalDensity.current
+        CompositionLocalProvider(LocalDensity provides Density(currentDensity.density, fontScale)) {
+            CocktailsTheme(darkTheme = true) {
+                if (preview.value == null) {
+                    DiagnosticsDialog(
+                        preview = "Local diagnostics",
+                        lookupPreview = "Latest report",
+                        lookupSubject = "Lookup report for this bottle",
+                        lookupMissingMessage = "No lookup report",
+                        lookupCopyMessage = null,
+                        detailedCaptureStatus = status,
+                        detailedCaptureMessage = null,
+                        onArmDetailedCapture = {},
+                        onPreviewDetailedCapture = { preview.value = content },
+                        onDeleteDetailedCapture = {},
+                        onCopyLookup = {},
+                        onExport = {},
+                        onClear = { true },
+                        onDismiss = {},
+                    )
+                } else {
+                    DetailedLookupCapturePreviewDialog(
+                        preview = preview.value.orEmpty(),
+                        onCopy = {
+                            copyDetailedLookupCaptureToClipboard(composeRule.activity, preview.value.orEmpty())
+                            preview.value = null
+                            onCopied()
+                        },
+                        onShare = {},
+                        onDelete = {},
+                        onDismiss = { preview.value = null },
+                    )
+                }
             }
+        }
+    }
+
+    private fun assertPreviewActionsDoNotOverlap() {
+        val tags = listOf(
+            "copy-detailed-lookup-capture",
+            "share-detailed-lookup-capture",
+            "delete-detailed-lookup-capture-from-preview",
+            "done-detailed-lookup-capture",
+        )
+        val bounds = tags.map { tag ->
+            composeRule.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
+        }
+        bounds.forEachIndexed { index, first ->
+            assertTrue("Action $index should have a visible layout", first.width > 0f && first.height > 0f)
+            bounds.drop(index + 1).forEach { second ->
+                val overlap = first.intersect(second)
+                assertTrue("Preview actions must not overlap: $first and $second", overlap.width <= 0f || overlap.height <= 0f)
+            }
+        }
+    }
+
+    private fun scrollThroughPreviewActions() {
+        listOf(
+            "copy-detailed-lookup-capture",
+            "share-detailed-lookup-capture",
+            "delete-detailed-lookup-capture-from-preview",
+            "done-detailed-lookup-capture",
+        ).forEach { tag ->
+            composeRule.onNodeWithTag(tag).performScrollTo().assertIsDisplayed()
         }
     }
 

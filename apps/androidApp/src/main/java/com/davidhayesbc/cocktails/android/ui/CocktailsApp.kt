@@ -5611,7 +5611,7 @@ internal fun DetailedLookupCapturePreviewDialog(
         title = { Text("Preview detailed lookup capture") },
         text = {
             Column(
-                Modifier.fillMaxWidth().heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
+                Modifier.fillMaxWidth().heightIn(max = 230.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text("Review the complete local capture before copying or sharing. Redaction and truncation flags are included in the JSON.", style = MaterialTheme.typography.bodySmall)
@@ -5619,13 +5619,17 @@ internal fun DetailedLookupCapturePreviewDialog(
             }
         },
         confirmButton = {
-            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 230.dp).verticalScroll(rememberScrollState()).testTag("detailed-lookup-capture-actions"),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
                 Button(onClick = onCopy, modifier = Modifier.fillMaxWidth().testTag("copy-detailed-lookup-capture")) { Text("Copy capture") }
                 OutlinedButton(onClick = onShare, modifier = Modifier.fillMaxWidth().testTag("share-detailed-lookup-capture")) { Text("Share capture") }
-                TextButton(onClick = onDelete, modifier = Modifier.testTag("delete-detailed-lookup-capture-from-preview")) { Text("Delete capture") }
+                TextButton(onClick = onDelete, modifier = Modifier.fillMaxWidth().testTag("delete-detailed-lookup-capture-from-preview")) { Text("Delete capture") }
+                TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth().testTag("done-detailed-lookup-capture")) { Text("Done") }
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+        dismissButton = {},
     )
 }
 
