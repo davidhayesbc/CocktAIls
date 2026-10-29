@@ -115,6 +115,9 @@ class DetailedBottleLookupCaptureUiTest {
         recorderA.recordModelResponse("On-device Qwen3", "Qwen3-0.6B-Q8_0", "first bottle token-limit marker", generationFinishReason = "TOKEN_LIMIT", outputTokenLimitReached = true)
         recorderA.finish("FAILED")
         composeRule.waitUntil(5_000) { store.reportContents().size == 2 }
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodesWithText("Detailed captures included: 2", substring = true).fetchSemanticsNodes().isNotEmpty()
+        }
         composeRule.onNodeWithTag("detailed-capture-inclusion-status").assertTextContains("Detailed captures included: 2", substring = true)
         saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-capture-diagnostics-with-report.png")
         composeRule.onNodeWithTag("copy-diagnostics").performClick()
@@ -134,6 +137,9 @@ class DetailedBottleLookupCaptureUiTest {
         val captureA = store.captureStatuses().single { it.draftId == draftA }.captureId!!
         assertTrue(store.deleteCapture(captureA))
         composeRule.waitUntil(5_000) { store.reportContents().size == 1 }
+        composeRule.waitUntil(5_000) {
+            composeRule.onAllNodesWithText("Detailed captures included: 1", substring = true).fetchSemanticsNodes().isNotEmpty()
+        }
         composeRule.onNodeWithTag("detailed-capture-inclusion-status").assertTextContains("Detailed captures included: 1", substring = true)
         composeRule.onNodeWithTag("copy-diagnostics").performClick()
         composeRule.waitUntil(5_000) {
