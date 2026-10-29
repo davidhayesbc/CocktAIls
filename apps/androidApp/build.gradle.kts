@@ -80,3 +80,9 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest:1.9.3")
     testImplementation("junit:junit:4.13.2")
 }
+
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    providers.gradleProperty("bottleEvalCases").orNull?.let { systemProperty("bottle.eval.cases", it) }
+    providers.gradleProperty("bottleEvalRuns").orNull?.let { systemProperty("bottle.eval.runs", it) }
+    providers.gradleProperty("bottleEvalReport").orNull?.let { systemProperty("bottle.eval.report", it) }
+}

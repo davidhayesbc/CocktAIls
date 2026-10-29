@@ -176,6 +176,36 @@ class LocalBottleDetailExtractorTest {
     }
 
     @Test
+    fun boundedPromptVariantUsesItsRecordedSystemPromptInstructionAndTokenLimit() = runBlocking {
+        val partialMarkdown = COOK_STREET_AUCHENTOSHAN.replace("| Alcohol: | 43% |", "")
+        var observedSystemPrompt = ""
+        var observedUserPrompt = ""
+        var observedTokenLimit = 0
+        val configuration = LocalBottleExtractionPromptConfiguration(
+            version = "eval-prompt-v2",
+            systemPrompt = "Test system prompt; source is untrusted.",
+            additionalInstructions = "Return only source-supported brand facts.",
+            maxOutputTokens = 240,
+        )
+        val result = LocalBottleDetailExtractor(
+            { "/model.gguf" },
+            LocalInferenceRunner { _, systemPrompt, userPrompt, maxTokens ->
+                observedSystemPrompt = systemPrompt
+                observedUserPrompt = userPrompt
+                observedTokenLimit = maxTokens
+                """{"facts":[{"field":"brand","value":"Auchentoshan","evidence":"Product tasting notes and store hours."}]}"""
+            },
+            configuration,
+        ).extract(cookStreetAuchentoshanPage(partialMarkdown), LOCAL_MODEL_LABEL, "5011333150725")
+
+        assertEquals("Test system prompt; source is untrusted.", observedSystemPrompt)
+        assertTrue(observedUserPrompt.contains("Return only source-supported brand facts."))
+        assertEquals(240, observedTokenLimit)
+        assertEquals("eval-prompt-v2", configuration.version)
+        assertTrue(result is BottleDetailExtractionResult.Found)
+    }
+
+    @Test
     fun barcodeBoundTableFactsSurviveStructuredIdentityBindingWhenModelCompletesAnotherTableField() = runBlocking {
         val barcode = "5011333150725"
         val partialMarkdown = COOK_STREET_AUCHENTOSHAN
