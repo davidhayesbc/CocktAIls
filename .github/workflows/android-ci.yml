@@ -287,6 +287,7 @@ jobs:
             ${{ runner.temp }}/camera-permission-*.png
             ${{ runner.temp }}/batch-intake-*.png
             ${{ runner.temp }}/onboarding-*.png
+            ${{ runner.temp }}/detailed-lookup-capture-*.png
             apps/androidApp/build/outputs/androidTest-results/connected/**/*.xml
             apps/androidApp/build/reports/androidTests/connected/**
           if-no-files-found: ignore

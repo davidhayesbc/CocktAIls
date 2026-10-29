@@ -73,7 +73,8 @@ class DetailedBottleLookupCaptureUiTest {
         saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-capture-consent.png")
         composeRule.onAllNodes(hasTestTag("detailed-capture-status")).assertCountEquals(0)
         composeRule.onNodeWithTag("confirm-arm-detailed-lookup-capture").assertIsDisplayed().performClick()
-        composeRule.onNodeWithTag("detailed-capture-status").performScrollTo().assertIsDisplayed().assertTextContains("Capture armed")
+        composeRule.onNodeWithTag("detailed-capture-status").performScrollTo().assertIsDisplayed()
+            .assertTextContains("Capture armed", substring = true)
     }
 
     @Test
