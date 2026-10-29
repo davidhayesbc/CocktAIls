@@ -11,6 +11,131 @@ import org.junit.Test
 
 class DetailedBottleLookupCaptureTest {
     @Test
+    fun boundedDebugSessionCapturesMultipleIndependentAttemptsAndStopsNewClaimsWhenOff() {
+        val root = Files.createTempDirectory("detailed-capture-session").toFile()
+        var now = 10_000L
+        val store = DetailedBottleLookupDebugSessionStore(root, nowMillis = { now }, processSessionId = "test-process")
+        assertEquals(DetailedCaptureArmResult.ARMED, store.startSession("preview", now))
+        assertTrue(store.sessionStatus(now).sessionActive)
+
+        val firstToken = "00000000-0000-0000-0000-000000000101"
+        val secondToken = "00000000-0000-0000-0000-000000000102"
+        val first = store.claim("bottle-a", firstToken, "5011333150725", "preview", 31, "Qwen", now, allowNextLookup = true)!!
+        first.recordModelResponse("On-device Qwen3", "Qwen", "response-a")
+        first.finish("FAILED")
+        now += 1
+        val second = store.claim("bottle-b", secondToken, "088352109084", "preview", 31, "Qwen", now, allowNextLookup = true)!!
+        second.recordModelResponse("On-device Qwen3", "Qwen", "response-b")
+        second.finish("COMPLETE")
+        assertNull("Cloud and non-local attempts are never captured", store.claim("bottle-c", "00000000-0000-0000-0000-000000000103", "", "preview", 31, "Cloud", now, allowNextLookup = false))
+        assertEquals(2, store.sessionStatus(now).captureCount)
+
+        val reports = store.captureStatuses(now)
+        assertEquals(2, reports.size)
+        assertEquals(setOf("bottle-a", "bottle-b"), reports.mapNotNull { it.draftId }.toSet())
+        val firstId = reports.single { it.draftId == "bottle-a" }.captureId!!
+        val secondId = reports.single { it.draftId == "bottle-b" }.captureId!!
+        assertTrue(firstId != secondId)
+        val firstPreview = store.previewForCapture(firstId, now)!!
+        val secondPreview = store.previewForCapture(secondId, now)!!
+        assertTrue(firstPreview.contains("response-a"))
+        assertTrue(secondPreview.contains("response-b"))
+        var copied: String? = null
+        assertTrue(store.copyReviewedPreview(firstPreview) { copied = it })
+        assertEquals(firstPreview, copied)
+        val reopened = DetailedBottleLookupDebugSessionStore(root, nowMillis = { now }, processSessionId = "after-restart")
+        assertTrue(reopened.sessionStatus(now).sessionActive)
+        assertEquals(2, reopened.sessionStatus(now).captureCount)
+        assertTrue(reopened.previewForCapture(firstId, now)!!.contains("response-a"))
+
+        val inFlight = store.claim("bottle-in-flight", "00000000-0000-0000-0000-000000000105", "628011812230", "preview", 31, "Qwen", now, allowNextLookup = true)!!
+        assertTrue(store.stopSession(now))
+        assertFalse(store.sessionStatus(now).sessionActive)
+        assertNull(store.claim("bottle-c", "00000000-0000-0000-0000-000000000104", "", "preview", 31, "Qwen", now, allowNextLookup = true))
+        inFlight.recordModelResponse("On-device Qwen3", "Qwen", "completed-after-stop")
+        inFlight.finish("FAILED")
+        assertEquals(3, store.captureStatuses(now).size)
+        assertTrue(store.captureStatuses(now).any { it.draftId == "bottle-in-flight" && it.state == "FAILED" })
+        assertTrue(store.deleteCapture(firstId))
+        assertEquals(2, store.captureStatuses(now).size)
+        assertEquals("A saved report deletion does not reset the session capture budget", 3, store.sessionStatus(now).captureCount)
+        assertTrue(store.previewForCapture(secondId, now)!!.contains("response-b"))
+        root.deleteRecursively()
+    }
+
+    @Test
+    fun debugSessionEnforcesFiveAttemptCapAndTwoHourExpiryWithoutDeletingReportsEarly() {
+        val root = Files.createTempDirectory("detailed-capture-session-limit").toFile()
+        var now = 20_000L
+        val store = DetailedBottleLookupDebugSessionStore(root, nowMillis = { now }, processSessionId = "test-process")
+        assertEquals(DetailedCaptureArmResult.ARMED, store.startSession("preview", now))
+        repeat(DetailedBottleLookupDebugSessionStore.MAX_SESSION_CAPTURES) { index ->
+            val id = "bottle-$index"
+            val token = "00000000-0000-0000-0000-${(index + 201).toString().padStart(12, '0')}"
+            store.claim(id, token, "5011333150725", "preview", 32, "Qwen", now + index, allowNextLookup = true)!!.finish("COMPLETE")
+        }
+        assertEquals("LIMIT_REACHED", store.sessionStatus(now).state)
+        assertNull(store.claim("bottle-over-cap", "00000000-0000-0000-0000-000000000206", "5011333150725", "preview", 32, "Qwen", now, allowNextLookup = true))
+        now += DetailedBottleLookupDebugSessionStore.SESSION_MILLIS + 1
+        assertFalse(store.sessionStatus(now).sessionActive)
+        assertEquals(5, store.captureStatuses(now).size)
+        assertTrue(store.previewForDraft("bottle-0", now)!!.contains("bottle-0"))
+        root.deleteRecursively()
+    }
+
+    @Test
+    fun deletingReportsDoesNotResetFiveAttemptSessionBudget() {
+        val root = Files.createTempDirectory("detailed-capture-session-delete-cap").toFile()
+        val store = DetailedBottleLookupDebugSessionStore(root, processSessionId = "test-process")
+        assertEquals(DetailedCaptureArmResult.ARMED, store.startSession("preview"))
+        repeat(DetailedBottleLookupDebugSessionStore.MAX_SESSION_CAPTURES) { index ->
+            val id = "bottle-$index"
+            val token = "00000000-0000-0000-0000-${(index + 401).toString().padStart(12, '0')}"
+            store.claim(id, token, "5011333150725", "preview", 32, "Qwen", allowNextLookup = true)!!.finish("COMPLETE")
+        }
+        val deletedId = store.captureStatuses().first().captureId!!
+        assertTrue(store.deleteCapture(deletedId))
+        assertEquals(5, store.sessionStatus().captureCount)
+        assertNull(store.claim("bottle-after-delete", "00000000-0000-0000-0000-000000000499", "5011333150725", "preview", 32, "Qwen", allowNextLookup = true))
+        root.deleteRecursively()
+    }
+
+    @Test
+    fun separateWorkerAndUiStoreInstancesShareProcessOwnershipButRestartMarksAttemptInterrupted() {
+        val root = Files.createTempDirectory("detailed-capture-session-process").toFile()
+        val workerStore = DetailedBottleLookupDebugSessionStore(root)
+        assertEquals(DetailedCaptureArmResult.ARMED, workerStore.startSession("preview"))
+        val token = "00000000-0000-0000-0000-000000000299"
+        val recorder = workerStore.claim("draft-active", token, "5011333150725", "preview", 33, "Qwen", allowNextLookup = true)!!
+
+        val uiStore = DetailedBottleLookupDebugSessionStore(root)
+        assertEquals("CAPTURING", uiStore.captureStatuses().single().state)
+
+        val restarted = DetailedBottleLookupDebugSessionStore(root, processSessionId = "next-process")
+        assertEquals("INTERRUPTED", restarted.captureStatuses().single().state)
+        recorder.recordModelResponse("On-device Qwen3", "Qwen", "late result")
+        recorder.finish("FAILED")
+        assertEquals("INTERRUPTED", restarted.captureStatuses().single().state)
+        root.deleteRecursively()
+    }
+
+    @Test
+    fun cleanupRemovesOrphanedTemporarySessionAndCaptureFiles() {
+        val root = Files.createTempDirectory("detailed-capture-orphan-temp").toFile()
+        val records = File(root, "detailed-lookup-captures").apply { mkdirs() }
+        val orphanCapture = File(records, "capture-00000000-0000-0000-0000-000000000401.json.tmp")
+        orphanCapture.writeText("private partial capture")
+        val orphanSession = File(root, "detailed-lookup-debug-session.json.tmp")
+        orphanSession.writeText("private partial session")
+
+        val store = DetailedBottleLookupDebugSessionStore(root)
+        assertTrue(store.cleanupExpired())
+        assertFalse(orphanCapture.exists())
+        assertFalse(orphanSession.exists())
+        root.deleteRecursively()
+    }
+
+    @Test
     fun nextLookupDebugModeIsClaimedByExactlyOneEligibleOnDeviceAttempt() {
         val root = Files.createTempDirectory("detailed-capture-next-lookup").toFile()
         val file = File(root, "capture.json")

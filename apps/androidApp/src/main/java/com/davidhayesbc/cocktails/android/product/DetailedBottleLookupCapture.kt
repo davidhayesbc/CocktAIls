@@ -58,6 +58,12 @@ internal data class DetailedCaptureStatus(
     val startedAtMillis: Long?,
     val model: String?,
     val nextLookupArmed: Boolean = false,
+    val captureId: String? = null,
+    val sessionActive: Boolean = false,
+    val sessionExpiresAtMillis: Long? = null,
+    val captureCount: Int = 0,
+    val captureLimit: Int = 0,
+    val debugSessionId: String? = null,
 )
 
 /**
@@ -77,9 +83,17 @@ internal class DetailedBottleLookupCaptureStore(
         synchronized(LOCK) { cleanupExpired(nowMillis()) }
     }
 
-    fun arm(draftId: String, expectedAttemptToken: String?, appVersion: String, now: Long = nowMillis()): DetailedCaptureArmResult = synchronized(LOCK) {
+    fun arm(
+        draftId: String,
+        expectedAttemptToken: String?,
+        appVersion: String,
+        now: Long = nowMillis(),
+        captureIdOverride: String? = null,
+        debugSessionId: String? = null,
+    ): DetailedCaptureArmResult = synchronized(LOCK) {
         if (!safeDraftId(draftId)) return@synchronized DetailedCaptureArmResult.INVALID_DRAFT
         if (expectedAttemptToken != null && !safeAttemptToken(expectedAttemptToken)) return@synchronized DetailedCaptureArmResult.INVALID_DRAFT
+        if (captureIdOverride != null && !UUID_CAPTURE_ID.matches(captureIdOverride)) return@synchronized DetailedCaptureArmResult.INVALID_DRAFT
         val existing = readLive(now)
         if (existing != null) {
             val state = existing.string("state")
@@ -91,13 +105,14 @@ internal class DetailedBottleLookupCaptureStore(
         }
         val saved = write(buildJsonObject {
             put("formatVersion", 1)
-            put("captureId", UUID.randomUUID().toString())
+            put("captureId", captureIdOverride ?: UUID.randomUUID().toString())
             put("draftId", draftId)
             expectedAttemptToken?.takeIf(::safeAttemptToken)?.let { put("attemptToken", it) }
             put("state", ARMED)
             put("armedAtMillis", now.coerceAtLeast(0))
             put("expiresAtMillis", (now + RETENTION_MILLIS).coerceAtLeast(now))
             put("appVersion", safeIdentifier(appVersion, 80))
+            debugSessionId?.takeIf { UUID_CAPTURE_ID.matches(it) }?.let { put("debugSessionId", it) }
         })
         if (saved) DetailedCaptureArmResult.ARMED else DetailedCaptureArmResult.STORAGE_ERROR
     }
@@ -203,6 +218,8 @@ internal class DetailedBottleLookupCaptureStore(
             startedAtMillis = current.number("startedAtMillis"),
             model = current.string("model"),
             nextLookupArmed = current.string("scope") == NEXT_LOOKUP && current.string("state") == ARMED,
+            captureId = current.string("captureId"),
+            debugSessionId = current.string("debugSessionId"),
         )
 
     /** Call only after an explicit preview action. */
@@ -665,6 +682,7 @@ internal class DetailedBottleLookupCaptureStore(
         private val SAFE_FINISH_STATES = setOf("COMPLETE", "PARTIAL", "INTERRUPTED", "FAILED", "CANCELLED")
         private val SAFE_DRAFT = Regex("[A-Za-z0-9-]{1,100}")
         private val SAFE_ATTEMPT = Regex("[0-9a-fA-F-]{36}")
+        private val UUID_CAPTURE_ID = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
         private fun safeDraftId(value: String) = SAFE_DRAFT.matches(value)
         private fun safeAttemptToken(value: String) = SAFE_ATTEMPT.matches(value)

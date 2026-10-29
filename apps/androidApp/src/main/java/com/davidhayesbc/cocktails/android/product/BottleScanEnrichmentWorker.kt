@@ -19,7 +19,6 @@ import com.davidhayesbc.cocktails.android.R
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.File
 
 /**
  * A per-bottle durable task. A queued row may start after intake closes. A row already marked RUNNING
@@ -46,7 +45,7 @@ internal class BottleScanEnrichmentWorker(
         if (queuedJob.status == BottleEnrichmentStatus.RUNNING) {
             // WorkManager redelivery after process death must not repeat a request that
             // may already have reached its provider. The attempt token fences retries.
-            DetailedBottleLookupCaptureStore(File(applicationContext.noBackupFilesDir, "detailed-lookup-capture.json"))
+            DetailedBottleLookupDebugSessionStore(applicationContext.noBackupFilesDir)
                 .pendingAttemptWasMissed(draftId, attemptToken)
             queue.pauseAttempt(draftId, attemptToken, System.currentTimeMillis())
             return@withContext Result.success()
@@ -95,9 +94,7 @@ internal class BottleScanEnrichmentWorker(
             val appVersionName = packageInfo.versionName ?: "unknown"
             @Suppress("DEPRECATION")
             val appVersionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) packageInfo.longVersionCode else packageInfo.versionCode.toLong()
-            val detailedCaptureStore = DetailedBottleLookupCaptureStore(
-                File(applicationContext.noBackupFilesDir, "detailed-lookup-capture.json"),
-            )
+            val detailedCaptureStore = DetailedBottleLookupDebugSessionStore(applicationContext.noBackupFilesDir, shareCacheDirectory = applicationContext.cacheDir)
             val captureModel = when (plan.extractor) {
                 AutomaticBottleExtractor.ON_DEVICE -> LOCAL_MODEL_LABEL
                 AutomaticBottleExtractor.OLLAMA_CLOUD -> applicationContext

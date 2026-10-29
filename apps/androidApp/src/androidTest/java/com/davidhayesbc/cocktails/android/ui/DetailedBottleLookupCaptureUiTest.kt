@@ -7,9 +7,13 @@ import android.view.ViewGroup
 import androidx.core.content.FileProvider
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
@@ -21,6 +25,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.davidhayesbc.cocktails.android.MainActivity
@@ -29,6 +34,8 @@ import com.davidhayesbc.cocktails.android.product.DetailedCaptureArmResult
 import com.davidhayesbc.cocktails.android.product.DetailedCaptureStatus
 import com.davidhayesbc.cocktails.android.product.DetailedBottleLookupCaptureStore
 import com.davidhayesbc.cocktails.android.ui.theme.CocktailsTheme
+import com.davidhayesbc.cocktails.android.ui.DebugSettingsRouteState
+import com.davidhayesbc.cocktails.android.ui.routeFromDiagnosticsToDebugSettings
 import java.io.File
 import java.io.FileNotFoundException
 import java.util.UUID
@@ -90,17 +97,17 @@ class DetailedBottleLookupCaptureUiTest {
     }
 
     @Test
-    fun settingsDebugModeRequiresConsentAndShowsItsOneShotStatus() {
+    fun settingsDebugModeRequiresConsentAndShowsBoundedSessionStatus() {
         setContent { ConsentDialogHost() }
 
         composeRule.onNodeWithTag("detailed-debug-mode-settings").assertIsDisplayed()
-        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("OFF", substring = true)
+        composeRule.onNodeWithTag("detailed-debug-mode-status").performScrollTo().assertTextContains("OFF", substring = true)
         composeRule.onNodeWithTag("detailed-debug-mode-toggle").assertIsDisplayed().performClick()
         composeRule.onNodeWithText("Enable debug mode?").assertIsDisplayed()
         saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-debug-mode-consent.png")
-        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("OFF", substring = true)
+        composeRule.onNodeWithTag("detailed-debug-mode-status").performScrollTo().assertTextContains("OFF", substring = true)
         composeRule.onNodeWithTag("confirm-enable-detailed-debug-mode").assertIsDisplayed().performClick()
-        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("ON", substring = true)
+        composeRule.onNodeWithTag("detailed-debug-mode-status").performScrollTo().assertTextContains("ON", substring = true)
         saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-debug-mode-armed.png")
     }
 
@@ -109,46 +116,145 @@ class DetailedBottleLookupCaptureUiTest {
         val previewedDraft = mutableStateOf<String?>(null)
         setContent {
             CocktailsTheme(darkTheme = true) {
-                DetailedCaptureDebugModeSettings(
-                    status = DetailedCaptureStatus("FAILED", "draft-captured", "00000000-0000-0000-0000-000000000099", 2_000_000L, 1_000_000L, "Qwen3-0.6B-Q8_0"),
-                    bottleLabel = "Bottle 3 · Auchentoshan Three Wood",
-                    message = null,
-                    enabled = true,
-                    onEnable = {},
-                    onDisable = {},
-                    onPreview = { previewedDraft.value = it },
-                    onDelete = {},
-                )
+                androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                    DetailedCaptureDebugModeSettings(
+                        status = DetailedCaptureStatus("ACTIVE", null, null, 2_000_000L, 1_000_000L, null, sessionActive = true, captureCount = 1, captureLimit = 5),
+                        reports = listOf(DetailedCaptureStatus("FAILED", "draft-captured", "00000000-0000-0000-0000-000000000099", 2_000_000L, 1_000_000L, "Qwen3-0.6B-Q8_0", captureId = "00000000-0000-0000-0000-000000000098")),
+                        bottleLabels = mapOf("00000000-0000-0000-0000-000000000098" to "Bottle 3 · Auchentoshan Three Wood"),
+                        message = null,
+                        enabled = true,
+                        onEnable = {},
+                        onDisable = {},
+                        onPreview = { previewedDraft.value = it },
+                        onDelete = {},
+                    )
+                }
             }
         }
 
-        composeRule.onNodeWithTag("detailed-debug-mode-status")
+        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("1/5", substring = true)
+        composeRule.onNodeWithTag("detailed-capture-report-00000000-0000-0000-0000-000000000098")
             .assertTextContains("Bottle 3 · Auchentoshan Three Wood", substring = true)
             .assertTextContains("failed", substring = true)
         saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-debug-mode-captured.png")
-        composeRule.onNodeWithTag("preview-captured-debug-report").assertIsDisplayed().performClick()
-        assertEquals("draft-captured", previewedDraft.value)
+        composeRule.onNodeWithTag("preview-captured-debug-report").performScrollTo().assertIsDisplayed().performClick()
+        assertEquals("00000000-0000-0000-0000-000000000098", previewedDraft.value)
+    }
+
+    @Test
+    fun actualMoreRouteShowsDebugModeUsingProductionThemeAndSettingsLayout() {
+        composeRule.onNodeWithText("More").performClick()
+        composeRule.onNodeWithTag("household-scroll")
+            .performScrollToNode(hasTestTag("detailed-debug-mode-settings"))
+        composeRule.onNodeWithTag("detailed-debug-mode-settings").assertIsDisplayed()
+        composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("OFF", substring = true)
+        saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-debug-mode-settings-real-route.png")
+    }
+
+    @Test
+    fun debugSessionAndMultipleReportsRemainReachableWithLargeText() {
+        val firstId = "00000000-0000-0000-0000-000000000091"
+        val secondId = "00000000-0000-0000-0000-000000000092"
+        val density = composeRule.activity.resources.displayMetrics.density
+        setContent {
+            CompositionLocalProvider(LocalDensity provides Density(density, 1.5f)) {
+                CocktailsTheme(darkTheme = true) {
+                    androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                        DetailedCaptureDebugModeSettings(
+                            status = DetailedCaptureStatus("ACTIVE", null, null, 2_000_000L, 1_000_000L, null, sessionActive = true, captureCount = 2, captureLimit = 5),
+                            reports = listOf(
+                                DetailedCaptureStatus("PARTIAL", "draft-a", "00000000-0000-0000-0000-000000000191", 2_000_000L, 1_000_000L, "Qwen3-0.6B-Q8_0", captureId = firstId),
+                                DetailedCaptureStatus("FAILED", "draft-a", "00000000-0000-0000-0000-000000000192", 2_000_000L, 1_000_001L, "Qwen3-0.6B-Q8_0", captureId = secondId),
+                            ),
+                            bottleLabels = mapOf(firstId to "Bottle 1 · Auchentoshan Three Wood", secondId to "Bottle 1 · Auchentoshan Three Wood"),
+                            message = null, enabled = true, onEnable = {}, onDisable = {}, onPreview = {}, onDelete = {},
+                        )
+                    }
+                }
+            }
+        }
+
+        composeRule.onNodeWithTag("detailed-debug-mode-status").performScrollTo().assertTextContains("2/5", substring = true)
+        composeRule.onNodeWithTag("preview-captured-debug-report").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("preview-captured-debug-report-1").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("delete-captured-debug-report-1").performScrollTo().assertIsDisplayed()
+        saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-debug-mode-session-large-font.png")
     }
 
     @Test
     fun settingsDoesNotArmDebugCaptureWithoutInstalledEnabledLocalModel() {
         setContent {
             CocktailsTheme(darkTheme = true) {
-                DetailedCaptureDebugModeSettings(
-                    status = null,
-                    bottleLabel = null,
-                    message = null,
-                    enabled = false,
-                    onEnable = {},
-                    onDisable = {},
-                    onPreview = {},
-                    onDelete = {},
-                )
+                androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                    DetailedCaptureDebugModeSettings(
+                        status = null,
+                        reports = emptyList(),
+                        message = null,
+                        enabled = false,
+                        onEnable = {},
+                        onDisable = {},
+                        onPreview = {},
+                        onDelete = {},
+                    )
+                }
             }
         }
+        composeRule.onNodeWithTag("detailed-debug-mode-toggle").performScrollTo()
         composeRule.onNodeWithTag("detailed-debug-mode-toggle").assertIsNotEnabled()
-        composeRule.onNodeWithText("Enable on-device model suggestions in More and install the Qwen3 model before arming debug mode.")
+        composeRule.onNodeWithText("Enable on-device model suggestions in More and install the Qwen3 model before starting a debug session.")
             .assertIsDisplayed()
+    }
+
+    @Test
+    fun diagnosticsRouteOpensMoreSettingsAndPreservesOpenIntakeDrafts() {
+        val initial = DebugSettingsRouteState(
+            selectedPage = "MY_BAR",
+            bottleIntakeVisible = true,
+            diagnosticsVisible = true,
+            diagnosticsDraftId = "draft-under-review",
+            intakeSessionId = "intake-session-1",
+            intakeDraftIds = listOf("draft-under-review", "draft-pending"),
+        )
+        var resulting = initial
+        setContent {
+            CocktailsTheme(darkTheme = true) {
+                val state = androidx.compose.runtime.remember { mutableStateOf(initial) }
+                resulting = state.value
+                if (state.value.diagnosticsVisible) {
+                    DiagnosticsDialog(
+                        preview = "Local diagnostics",
+                        lookupPreview = null,
+                        lookupSubject = "Lookup report for this bottle",
+                        lookupMissingMessage = "No lookup report",
+                        lookupCopyMessage = null,
+                        detailedCaptureStatus = null,
+                        detailedCaptureMessage = null,
+                        onOpenDetailedDebugModeSettings = { state.value = routeFromDiagnosticsToDebugSettings(state.value) },
+                        onPreviewDetailedCapture = {}, onDeleteDetailedCapture = {}, onCopyLookup = {},
+                        onExport = {}, onClear = { true }, onDismiss = {},
+                    )
+                } else if (state.value.selectedPage == "MORE" && !state.value.bottleIntakeVisible) {
+                    androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.fillMaxSize().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                        DetailedCaptureDebugModeSettings(
+                            status = DetailedCaptureStatus("OFF", null, null, 0, null, null),
+                            reports = emptyList(), message = null, enabled = true, onEnable = {}, onDisable = {},
+                            onPreview = {}, onDelete = {},
+                        )
+                        androidx.compose.material3.Text("Draft session ${state.value.intakeSessionId}: ${state.value.intakeDraftIds.joinToString()}", modifier = androidx.compose.ui.Modifier.testTag("preserved-intake-drafts"))
+                    }
+                }
+            }
+        }
+
+        composeRule.onNodeWithTag("open-debug-mode-settings").performScrollTo().performClick()
+        composeRule.onNodeWithTag("detailed-debug-mode-settings").assertIsDisplayed()
+        composeRule.onNodeWithTag("preserved-intake-drafts").performScrollTo().assertTextContains("intake-session-1", substring = true)
+        composeRule.onNodeWithTag("preserved-intake-drafts").assertTextContains("draft-under-review", substring = true)
+        composeRule.onNodeWithTag("preserved-intake-drafts").assertTextContains("draft-pending", substring = true)
+        assertEquals("MORE", resulting.selectedPage)
+        assertTrue(!resulting.bottleIntakeVisible && !resulting.diagnosticsVisible)
+        assertEquals(initial.intakeSessionId, resulting.intakeSessionId)
+        assertEquals(initial.intakeDraftIds, resulting.intakeDraftIds)
     }
 
     @Test
@@ -320,21 +426,23 @@ class DetailedBottleLookupCaptureUiTest {
         val consent = androidx.compose.runtime.remember { mutableStateOf(false) }
         val status = androidx.compose.runtime.remember { mutableStateOf<DetailedCaptureStatus?>(null) }
         CocktailsTheme(darkTheme = true) {
-            DetailedCaptureDebugModeSettings(
-                status = status.value,
-                bottleLabel = null,
-                message = null,
-                enabled = true,
-                onEnable = { consent.value = true },
-                onDisable = { status.value = null },
-                onPreview = {},
-                onDelete = {},
-            )
+            androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                DetailedCaptureDebugModeSettings(
+                    status = status.value,
+                    reports = emptyList(),
+                    message = null,
+                    enabled = true,
+                    onEnable = { consent.value = true },
+                    onDisable = { status.value = null },
+                    onPreview = {},
+                    onDelete = {},
+                )
+            }
             if (consent.value) {
                 DetailedCaptureDebugModeConsentDialog(
                     onConfirm = {
                         consent.value = false
-                        status.value = DetailedCaptureStatus("ARMED", null, null, 2_000_000L, null, null, nextLookupArmed = true)
+                        status.value = DetailedCaptureStatus("ACTIVE", null, null, 2_000_000L, null, null, nextLookupArmed = true, sessionActive = true, captureLimit = 5)
                     },
                     onDismiss = { consent.value = false },
                 )

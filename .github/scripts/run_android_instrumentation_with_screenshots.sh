@@ -26,6 +26,8 @@ readonly screenshot_names=(
   detailed-lookup-debug-mode-consent.png
   detailed-lookup-debug-mode-armed.png
   detailed-lookup-debug-mode-captured.png
+  detailed-lookup-debug-mode-session-large-font.png
+  detailed-lookup-debug-mode-settings-real-route.png
 )
 readonly required_visual_screenshots=(
   onboarding-integrated-setup.png
@@ -40,6 +42,8 @@ readonly required_visual_screenshots=(
   detailed-lookup-debug-mode-consent.png
   detailed-lookup-debug-mode-armed.png
   detailed-lookup-debug-mode-captured.png
+  detailed-lookup-debug-mode-session-large-font.png
+  detailed-lookup-debug-mode-settings-real-route.png
 )
 
 readonly test_log="$RUNNER_TEMP/cocktails-instrumentation.log"

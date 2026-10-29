@@ -6,7 +6,6 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.Worker
 import androidx.work.WorkerParameters
-import java.io.File
 import java.util.concurrent.TimeUnit
 
 /** Best-effort local cleanup; Android may defer this work while the app is stopped. */
@@ -15,10 +14,7 @@ internal class DetailedBottleLookupCaptureCleanupWorker(
     parameters: WorkerParameters,
 ) : Worker(context, parameters) {
     override fun doWork(): Result {
-        val store = DetailedBottleLookupCaptureStore(
-            File(applicationContext.noBackupFilesDir, "detailed-lookup-capture.json"),
-            shareCacheDirectory = applicationContext.cacheDir,
-        )
+        val store = DetailedBottleLookupDebugSessionStore(applicationContext.noBackupFilesDir, shareCacheDirectory = applicationContext.cacheDir)
         return if (store.cleanupExpired(System.currentTimeMillis())) Result.success() else Result.retry()
     }
 }
