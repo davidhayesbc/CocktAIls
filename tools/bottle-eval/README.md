@@ -46,11 +46,15 @@ production default remains prompt version `bottle-facts-v1` with 160 output toke
 variants may use a different prompt or a bounded output limit up to 512, but changing that limit is
 a different latency configuration and must be recorded as such. A replayed output is not a new
 model run. The current harness does not load a GGUF itself; it evaluates captured or synthetic model
-responses through the production parser and identity/evidence checks.
+responses through the production parser and identity/evidence checks. `sourceSelectionMode` can be
+`barcode_search` to measure the production retrieval-plus-extraction coordinator, or
+`independent_product_source` to replay extraction against a manually selected, independently
+identified product page without scoring barcode retrieval. The latter requires an expected source ID
+present in the frozen pages and is reported as retrieval-not-evaluated, not as a barcode match.
 
 Every executable reviewed-product case must include the exact bounded page text used by extraction,
 the source title and URL, the structured barcode/name records used for identity validation, a SHA-256
-of those frozen inputs, source attribution/rights notes, and exact evidence spans for supported
+of those frozen inputs, a UTC capture time, selection method, source attribution/rights notes, and exact evidence spans for supported
 facts. The hash is over length-prefixed title, source URL, provider label, markdown, and structured
 identity records in supplied order. `complete` means the supplied inputs are sufficient to make claims about fields absent from
 the source; excerpts must remain `excerpt`/`blocked`. Do not mark an unknown value as zero or absent.
@@ -64,7 +68,7 @@ household inventory.
 
 ## Splits and reporting
 
-Keep all pages, UPCs, variants, and captures from one product family in one split. In particular,
+The current split map is frozen as `product-family-holdout-2026-10-29-v1` before prompt tuning. Keep all pages, UPCs, variants, and captures from one product family in one split. In particular,
 do not put different Esquimalt products or two Sons of Vancouver products on opposite sides of a
 prompt-tuning split. Report development and held-out results separately. A quality claim needs
 executable reviewed-product cases in both splits; synthetic cases never satisfy that gate. The
@@ -79,10 +83,18 @@ version, temperature, token cap, and fixture version.
 
 ## Current limitations
 
-The reviewed 18-bottle JSON/provenance/notes have not been materialized into this executor. The
-available files include only synthetic contract cases. The reported retailer URLs and fact summaries
-are not frozen source snapshots, so they cannot support a real extraction benchmark. The reviewed
-set's unresolved barcode/source associations and Junicopia ABV conflict must remain masked. The
-Auchentoshan debug report identified a useful failure but the user-provided excerpt is not the full
-captured validator input or complete model response, so it is not yet an executable historical replay.
-No local Qwen run, Pixel measurement, live search, or cloud-model evaluation is claimed by this suite.
+The versioned manifest includes the user's 18 product-level labels, selected research URLs, family
+groups, and the reviewed corrections/conflicts. It does not contain source snapshots. Each case is
+therefore `blocked`, and source-supported facts remain unlabeled rather than being inferred from the
+inventory list. Junicopia's barcode-linked identity/name/brand/ABV remain unresolved; Giffard ABV is
+unknown rather than zero. The four name-level-only UPC associations remain unverified. Categories
+are intentionally not scored as taxonomy gold.
+
+The current managed network policy is enforced and restricted. The supplied hosts `anbl.com`,
+`liquormarts.ca`, `esquimaltvermouth.ca`, `giffardcanada.com`, `unitedbeverages.pl`, `saq.com`,
+`sonsofvancouver.ca`, and `whiskybase.com` are not in its egress allowlist. No page requests were
+attempted. There is no supported web fetch tool in this executor. No local Android device/`adb` or
+bottle model is available here; the repository's small `ggml-vocab-aquila.gguf` is tokenizer data,
+not the Qwen bottle model. There is therefore no Qwen inference run or Pixel timing. The Auchentoshan debug excerpt is useful for future
+regressions but is not the complete captured validator input or model response, so it is not an
+executable historical replay. No live search, paid provider, or cloud-model evaluation is claimed.

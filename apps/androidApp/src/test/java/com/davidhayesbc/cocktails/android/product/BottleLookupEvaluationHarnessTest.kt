@@ -42,10 +42,22 @@ class BottleLookupEvaluationHarnessTest {
 
         val coverage = report.getValue("coverage").jsonObject
         assertEquals(18, coverage.getValue("expectedReviewedProductCount").jsonPrimitive.intOrNull)
-        assertEquals(0, coverage.getValue("reviewedProductCasesLoaded").jsonPrimitive.intOrNull)
+        assertEquals(18, coverage.getValue("reviewedProductCasesLoaded").jsonPrimitive.intOrNull)
         assertEquals(0, coverage.getValue("reviewedProductCasesExecutable").jsonPrimitive.intOrNull)
         assertEquals(18, coverage.getValue("reviewedProductCasesBlocked").jsonPrimitive.intOrNull)
-        assertEquals(4, dataset.cases.size)
+        assertEquals(18, dataset.cases.count { it.kind == "reviewed_product" })
+        assertEquals(5, dataset.cases.count { it.kind == "synthetic" })
+        assertEquals(23, dataset.cases.size)
+        assertEquals("product-family-holdout-2026-10-29-v1", report.getValue("splitPlan").jsonPrimitive.content)
+        assertEquals(12, coverage.getValue("reviewedProductResearchTargets").jsonPrimitive.intOrNull)
+        val reviewed = dataset.cases.filter { it.kind == "reviewed_product" }.associateBy(EvalCase::id)
+        assertEquals(InventoryLabelStatus.UNRESOLVED.name, reviewed.getValue("giffard-grenadine-syrup")
+            .inventoryTruth.getValue(BottleFactField.ABV_PERCENT).status)
+        assertEquals(InventoryLabelStatus.UNRESOLVED.name, reviewed.getValue("sons-junicopia-gin")
+            .inventoryTruth.getValue(BottleFactField.ABV_PERCENT).status)
+        assertTrue(reviewed.values.all { it.sourceFacts.isEmpty() && it.pages.isEmpty() })
+        assertEquals(setOf("holdout"), reviewed.values.filter { it.groupId == "sons-of-vancouver-family" }.map(EvalCase::split).toSet())
+        assertEquals(setOf("holdout"), reviewed.values.filter { it.groupId == "esquimalt-vermouth-family" }.map(EvalCase::split).toSet())
         assertEquals(2, variants.size)
         assertFalse(report.getValue("qualityAggregateEligible").jsonPrimitive.booleanOrNull == true)
 
@@ -55,13 +67,13 @@ class BottleLookupEvaluationHarnessTest {
         val firstCase = first.getValue("syntheticCaseResults").jsonArray.first().jsonObject
         assertEquals(false, firstCase.getValue("inferenceExecutedByHarness").jsonPrimitive.booleanOrNull)
         assertEquals(true, firstCase.getValue("replayResponseConsumed").jsonPrimitive.booleanOrNull)
-        assertEquals(4, first.getValue("syntheticCaseResults").jsonArray.size)
+        assertEquals(5, first.getValue("syntheticCaseResults").jsonArray.size)
         assertEquals(0, first.getValue("wrongProductAcceptanceCount").jsonPrimitive.intOrNull)
         assertEquals(1, first.getValue("tokenLimitResultCount").jsonPrimitive.intOrNull)
-        assertEquals(6, first.getValue("syntheticContractMetrics").jsonObject.getValue("supportedFactTruePositives").jsonPrimitive.intOrNull)
+        assertEquals(9, first.getValue("syntheticContractMetrics").jsonObject.getValue("supportedFactTruePositives").jsonPrimitive.intOrNull)
         val second = variantReports.last().jsonObject
-        assertEquals(5, second.getValue("syntheticContractMetrics").jsonObject.getValue("supportedFactTruePositives").jsonPrimitive.intOrNull)
-        assertEquals(1, second.getValue("syntheticContractMetrics").jsonObject.getValue("supportedFactFalseNegatives").jsonPrimitive.intOrNull)
+        assertEquals(7, second.getValue("syntheticContractMetrics").jsonObject.getValue("supportedFactTruePositives").jsonPrimitive.intOrNull)
+        assertEquals(2, second.getValue("syntheticContractMetrics").jsonObject.getValue("supportedFactFalseNegatives").jsonPrimitive.intOrNull)
         assertEquals("not_measured", first.getValue("timingSource").jsonPrimitive.content)
         assertEquals("unavailable_requires_development_and_heldout_reviewed_products", report.getValue("qualityAggregate").jsonPrimitive.content)
         val syntheticResults = first.getValue("syntheticCaseResults").jsonArray.map { it.jsonObject }.associateBy {
@@ -73,6 +85,10 @@ class BottleLookupEvaluationHarnessTest {
             .getValue("finishReason").jsonPrimitive.content)
         assertEquals(listOf("product_name"), syntheticResults.getValue("synthetic-related-product-injection")
             .getValue("predictedFields").jsonArray.map { it.jsonPrimitive.content })
+        val independent = syntheticResults.getValue("synthetic-independent-product-source-extraction")
+        assertEquals("not_evaluated_manual_source_selection", independent.getValue("retrieval").jsonPrimitive.content)
+        assertEquals("manually-selected-salal-page", independent.getValue("selectedSourceId").jsonPrimitive.content)
+        assertEquals(true, independent.getValue("replayResponseConsumed").jsonPrimitive.booleanOrNull)
         assertTrue("Prompt and output text must not be copied into the report", report.toString().length < 25_000)
     }
 }
@@ -86,6 +102,8 @@ private data class EvalPage(
     val sourceId: String,
     val hitUrl: String,
     val page: WebPageText,
+    val capturedAtUtc: String?,
+    val selectionMethod: String?,
     val inputSha256: String?,
     val contentLicense: String?,
 )
@@ -95,15 +113,18 @@ private data class EvalCase(
     val split: String,
     val groupId: String,
     val sourceCoverage: String,
+    val sourceCaptureStatus: String,
+    val sourceSelectionMode: String,
     val barcode: String,
     val identityExpectation: IdentityExpectation,
     val expectedSourceId: String?,
     val inventoryTruth: Map<BottleFactField, LabeledValue>,
     val sourceFacts: Map<BottleFactField, LabeledValue>,
+    val researchTargets: List<String>,
     val searchHits: List<Pair<String, WebSearchHit>>,
     val pages: List<EvalPage>,
 )
-private data class EvalDataset(val version: String, val expectedReviewedProductCount: Int, val cases: List<EvalCase>)
+private data class EvalDataset(val version: String, val splitPlan: String, val expectedReviewedProductCount: Int, val cases: List<EvalCase>)
 private data class EvalResponse(
     val response: String,
     val finishReason: String,
@@ -157,9 +178,14 @@ private fun parseDataset(root: JsonObject): EvalDataset {
     require(cases.filter { it.kind == "reviewed_product" }.all { it.split != "contract" })
     require(cases.filter { it.kind == "reviewed_product" }.all { it.sourceCoverage in setOf("complete", "blocked", "excerpt") })
     cases.filter { it.kind == "reviewed_product" && it.sourceCoverage == "complete" }.forEach(::validateFrozenSource)
+    val expectedProducts = root.int("expectedReviewedProductCount") ?: 18
+    require(cases.count { it.kind == "reviewed_product" } <= expectedProducts) {
+        "Loaded reviewed-product cases exceed the dataset's declared product count"
+    }
     return EvalDataset(
         version = root.string("datasetVersion") ?: error("datasetVersion is required"),
-        expectedReviewedProductCount = root.int("expectedReviewedProductCount") ?: 18,
+        splitPlan = root.string("splitPlan") ?: "unspecified",
+        expectedReviewedProductCount = expectedProducts,
         cases = cases,
     )
 }
@@ -185,9 +211,20 @@ private fun parseCase(value: JsonElement): EvalCase {
         provider = item.string("provider") ?: "Fixture replay",
             structuredBottleIdentities = identities,
         )
-    EvalPage(item.requiredString("sourceId"), item.requiredString("hitUrl"), page, item.string("inputSha256"), item.string("contentLicense"))
+        EvalPage(
+            item.requiredString("sourceId"), item.requiredString("hitUrl"), page,
+            item.string("capturedAtUtc"), item.string("selectionMethod"),
+            item.string("inputSha256"), item.string("contentLicense"),
+        )
     }
     val barcode = root.requiredString("barcode")
+    val sourceSelectionMode = root.string("sourceSelectionMode") ?: "barcode_search"
+    require(sourceSelectionMode in setOf("barcode_search", "independent_product_source"))
+    if (sourceSelectionMode == "independent_product_source") {
+        val selectedId = root.string("expectedSourceId") ?: error("Independent extraction requires a manually selected source ID")
+        require(pages.any { it.sourceId == selectedId }) { "Independent extraction source ID must exist in the supplied pages" }
+        require(hits.isEmpty()) { "Independent source extraction must not include retrieval hits" }
+    }
     require(com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup(barcode) != null) { "${root.string("id")} has invalid GTIN" }
     sourceFacts.forEach { (field, label) ->
         require(label.status in SourceLabelStatus.entries.map(Enum<*>::name)) { "Unknown source-label status for $field" }
@@ -206,9 +243,15 @@ private fun parseCase(value: JsonElement): EvalCase {
     }
     return EvalCase(
         id = root.requiredString("id"), kind = root.requiredString("kind"), split = root.requiredString("split"),
-        groupId = root.requiredString("groupId"), sourceCoverage = root.requiredString("sourceCoverage"), barcode = barcode,
+        groupId = root.requiredString("groupId"), sourceCoverage = root.requiredString("sourceCoverage"),
+        sourceCaptureStatus = root.string("sourceCaptureStatus") ?: "fixture",
+        sourceSelectionMode = sourceSelectionMode,
+        barcode = barcode,
         identityExpectation = IdentityExpectation.valueOf(root.requiredString("identityExpectation").uppercase(Locale.ROOT)),
         expectedSourceId = root.string("expectedSourceId"), inventoryTruth = inventoryTruth, sourceFacts = sourceFacts,
+        researchTargets = root["researchTargets"]?.jsonArray.orEmpty().map { it.jsonPrimitive.content }.also { targets ->
+            require(targets.all { normalizePublicHttpsUrl(it) != null }) { "Research targets must be public HTTPS URLs" }
+        },
         searchHits = hits, pages = pages,
     )
 }
@@ -217,6 +260,10 @@ private fun validateFrozenSource(case: EvalCase) {
     require(case.pages.isNotEmpty()) { "Executable reviewed products require frozen source bytes" }
     case.pages.forEach { page ->
         require(!page.contentLicense.isNullOrBlank()) { "Reviewed source ${page.sourceId} needs a rights/provenance note" }
+        require(!page.capturedAtUtc.isNullOrBlank()) { "Reviewed source ${page.sourceId} needs a capture time" }
+        runCatching { java.time.Instant.parse(page.capturedAtUtc) }
+            .getOrElse { error("Reviewed source ${page.sourceId} capture time must be UTC ISO-8601") }
+        require(!page.selectionMethod.isNullOrBlank()) { "Reviewed source ${page.sourceId} needs a selection method" }
         require(normalizePublicHttpsUrl(page.page.sourceUrl) != null) { "Frozen source URL must be public HTTPS" }
         val hash = frozenSourceInputSha256(page.page)
         require(page.inputSha256 == hash) { "Frozen extraction-input hash mismatch for ${page.sourceId}" }
@@ -276,12 +323,14 @@ private suspend fun evaluate(dataset: EvalDataset, variants: List<EvalVariant>):
         put("format", "com.davidhayesbc.cocktails.bottle-evaluation-report")
         put("schemaVersion", 1)
         put("datasetVersion", dataset.version)
+        put("splitPlan", dataset.splitPlan)
         put("coverage", buildJsonObject {
             put("expectedReviewedProductCount", dataset.expectedReviewedProductCount)
             put("reviewedProductCasesLoaded", realCases.size)
             put("reviewedProductCasesExecutable", executableReal)
             put("reviewedProductCasesBlocked", (dataset.expectedReviewedProductCount - executableReal).coerceAtLeast(0))
             put("syntheticContractCases", dataset.cases.count { it.kind == "synthetic" })
+            put("reviewedProductResearchTargets", realCases.sumOf { it.researchTargets.size })
         })
         put("qualityAggregateEligible", hasDevAndHoldout)
         put("qualityAggregate", if (hasDevAndHoldout) JsonPrimitive("computed_per_split") else JsonPrimitive("unavailable_requires_development_and_heldout_reviewed_products"))
@@ -297,7 +346,7 @@ private suspend fun evaluate(dataset: EvalDataset, variants: List<EvalVariant>):
         put("variants", buildJsonArray { variantReports.forEach(::add) })
         put("limitations", buildJsonArray {
             add(JsonPrimitive("Synthetic fixture results validate harness behavior and are excluded from product-quality aggregates."))
-            if (executableReal == 0) add(JsonPrimitive("The 18-product reviewed dataset was not materialized; no real-product accuracy is computed."))
+            if (executableReal == 0) add(JsonPrimitive("Product-level reviewed labels are present, but no case has complete frozen source inputs; no real-product accuracy is computed."))
             if (variants.all { it.outputSource == "synthetic_fixture" }) add(JsonPrimitive("No model or live provider ran; fixture replay timings are not performance measurements."))
         })
     }
@@ -338,13 +387,22 @@ private suspend fun evaluateCase(case: EvalCase, variant: EvalVariant): Evaluate
     )
     val outcome = coordinator.processScannedBarcode(
         barcode = case.barcode,
-        plan = ScannedBottlePlan(false, true, AutomaticBottleExtractor.ON_DEVICE),
+        plan = ScannedBottlePlan(
+            openFoodFactsEnabled = false,
+            firecrawlEnabled = case.sourceSelectionMode == "barcode_search",
+            extractor = AutomaticBottleExtractor.ON_DEVICE,
+        ),
         onDebugEvent = events::add,
     )
+    val evaluatedOutcome = if (case.sourceSelectionMode == "independent_product_source") {
+        val selectedPage = case.pages.single { it.sourceId == case.expectedSourceId }.page
+        val extraction = localExtractor.extractWithDiagnostics(selectedPage, variant.modelIdForApp(), null, events::add)
+        outcome.copy(page = WebPageResult.Found(selectedPage), extraction = extraction)
+    } else outcome
     // If a fixture has a response, it must either be consumed or be deliberately unreachable because retrieval abstained.
     require(!invokedModel || response != null) { "Unexpected model call without a replay response for ${case.id}/${variant.id}" }
     if (response == null) require(!invokedModel) { "Model ran without a recorded response for ${case.id}/${variant.id}" }
-    return EvaluatedCase(case, outcome, events, invokedModel, observedPrompt, response.takeIf { invokedModel })
+    return EvaluatedCase(case, evaluatedOutcome, events, invokedModel, observedPrompt, response.takeIf { invokedModel })
 }
 
 private fun EvalVariant.modelIdForApp(): String = when {
@@ -447,7 +505,7 @@ private fun scoreFacts(cases: List<EvaluatedCase>): JsonObject {
 }
 
 private fun retrievalMetrics(cases: List<EvaluatedCase>) = buildJsonObject {
-    val eligible = cases.filter { it.case.expectedSourceId != null }
+    val eligible = cases.filter { it.case.sourceSelectionMode == "barcode_search" && it.case.expectedSourceId != null }
     val retrieved = eligible.count { item ->
         val selectedUrl = item.outcome.selectedHit?.url
         item.case.pages.singleOrNull { it.sourceId == item.case.expectedSourceId }?.let { it.hitUrl == selectedUrl } == true &&
@@ -461,9 +519,10 @@ private fun retrievalMetrics(cases: List<EvaluatedCase>) = buildJsonObject {
 }
 
 private fun scoreInventoryTruth(cases: List<EvaluatedCase>) = buildJsonObject {
+    val executed = cases.filter { it.outcome.extraction != null }
     var confirmed = 0
     var matched = 0
-    cases.forEach { item ->
+    executed.forEach { item ->
         val output = (item.outcome.extraction as? BottleDetailExtractionResult.Found)?.suggestions?.facts.orEmpty().associateBy(BottleFactEvidence::field)
         item.case.inventoryTruth.forEach { (field, label) ->
             if (label.status == InventoryLabelStatus.CONFIRMED.name) {
@@ -472,6 +531,7 @@ private fun scoreInventoryTruth(cases: List<EvaluatedCase>) = buildJsonObject {
             }
         }
     }
+    put("eligibleCases", executed.size)
     put("confirmedInventoryFields", confirmed)
     put("exactMatches", matched)
     put("matchRate", if (confirmed == 0) JsonPrimitive("unavailable") else JsonPrimitive(matched.toDouble() / confirmed))
@@ -490,12 +550,15 @@ private fun reportCase(item: EvaluatedCase) = buildJsonObject {
     put("kind", item.case.kind)
     put("split", item.case.split)
     put("retrieval", when {
+        item.case.sourceSelectionMode == "independent_product_source" -> "not_evaluated_manual_source_selection"
         item.outcome.search is WebSearchResult.Found && item.outcome.barcodeVerifiedInPage -> "verified_in_page"
         item.outcome.barcodeVerifiedByStructuredProduct -> "verified_structured_product"
         item.outcome.search is WebSearchResult.Found -> "searched_but_no_verified_source"
         else -> "no_search_result"
     })
-    put("selectedSourceId", item.case.pages.firstOrNull { it.hitUrl == item.outcome.selectedHit?.url }?.sourceId ?: "unavailable")
+    put("selectedSourceId", if (item.case.sourceSelectionMode == "independent_product_source") {
+        item.case.expectedSourceId ?: "unavailable"
+    } else item.case.pages.firstOrNull { it.hitUrl == item.outcome.selectedHit?.url }?.sourceId ?: "unavailable")
     put("extractionResult", when (extraction) {
         is BottleDetailExtractionResult.Found -> "found"
         is BottleDetailExtractionResult.Rejected -> extraction.reason.debugCode
@@ -515,6 +578,8 @@ private fun reportCase(item: EvaluatedCase) = buildJsonObject {
         (extraction as? BottleDetailExtractionResult.Found)?.suggestions?.unresolvedFields.orEmpty().forEach { add(JsonPrimitive(it.wireValue)) }
     })
     put("inferenceExecutedByHarness", false)
+    put("sourceCaptureStatus", item.case.sourceCaptureStatus)
+    put("researchTargetCount", item.case.researchTargets.size)
     put("replayResponseConsumed", item.invokedModel)
     put("finishReason", item.response?.finishReason ?: "not_run")
     put("recordedSourceRunGenerationMillis", item.response?.generationMillis?.let(::JsonPrimitive) ?: JsonPrimitive("unavailable"))

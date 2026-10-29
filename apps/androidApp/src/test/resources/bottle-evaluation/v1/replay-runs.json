@@ -1,27 +1,81 @@
 {
   "format": "com.davidhayesbc.cocktails.bottle-evaluation-runs",
   "schemaVersion": 1,
-  "datasetVersion": "synthetic-contract-fixtures-v1",
+  "datasetVersion": "reviewed-product-labels-v1-source-captures-pending",
   "variants": [
     {
-      "id": "fixture-valid-response", "modelId": "fixture-response-a", "quantization": "not-applicable",
-      "runtime": "offline-fixture-replay", "promptVersion": "bottle-facts-v1", "temperature": null,
-      "maxOutputTokens": 160, "outputSource": "synthetic_fixture", "timingSource": "not_measured",
+      "id": "fixture-valid-response",
+      "modelId": "fixture-response-a",
+      "quantization": "not-applicable",
+      "runtime": "offline-fixture-replay",
+      "promptVersion": "bottle-facts-v1",
+      "temperature": null,
+      "maxOutputTokens": 160,
+      "outputSource": "synthetic_fixture",
+      "timingSource": "not_measured",
       "responses": {
-        "synthetic-partial-table-fallback-fetch": {"response": "{\"facts\":[{\"field\":\"brand\",\"value\":\"Harbor Spirits\",\"evidence\":\"| Brand: | Harbor Spirits |\"}]}", "finishReason": "END_OF_SEQUENCE", "generatedTokens": null, "generationMillis": null},
-        "synthetic-related-product-injection": {"response": "{\"facts\":[{\"field\":\"brand\",\"value\":\"Other Reserve\",\"evidence\":\"Recommended alternative: Other Reserve.\"}]}", "finishReason": "END_OF_SEQUENCE", "generatedTokens": null, "generationMillis": null},
-        "synthetic-token-limit-malformed-output": {"response": "{\"facts\":[{\"field\":\"brand\"", "finishReason": "TOKEN_LIMIT", "generatedTokens": 160, "generationMillis": null}
+        "synthetic-partial-table-fallback-fetch": {
+          "response": "{\"facts\":[{\"field\":\"brand\",\"value\":\"Harbor Spirits\",\"evidence\":\"| Brand: | Harbor Spirits |\"}]}",
+          "finishReason": "END_OF_SEQUENCE",
+          "generatedTokens": null,
+          "generationMillis": null
+        },
+        "synthetic-related-product-injection": {
+          "response": "{\"facts\":[{\"field\":\"brand\",\"value\":\"Other Reserve\",\"evidence\":\"Recommended alternative: Other Reserve.\"}]}",
+          "finishReason": "END_OF_SEQUENCE",
+          "generatedTokens": null,
+          "generationMillis": null
+        },
+        "synthetic-token-limit-malformed-output": {
+          "response": "{\"facts\":[{\"field\":\"brand\"",
+          "finishReason": "TOKEN_LIMIT",
+          "generatedTokens": 160,
+          "generationMillis": null
+        },
+        "synthetic-independent-product-source-extraction": {
+          "response": "{\"facts\":[{\"field\":\"product_name\",\"value\":\"Salal Gin\",\"evidence\":\"### Salal Gin\"},{\"field\":\"brand\",\"value\":\"Odd Society Spirits\",\"evidence\":\"| Brand: | Odd Society Spirits |\"},{\"field\":\"quantity\",\"value\":\"375 mL\",\"evidence\":\"| Bottle size: | 375 mL |\"}]}",
+          "finishReason": "END_OF_SEQUENCE",
+          "generatedTokens": null,
+          "generationMillis": null
+        }
       }
     },
     {
-      "id": "fixture-unsupported-brand", "modelId": "fixture-response-b", "quantization": "not-applicable",
-      "runtime": "offline-fixture-replay", "promptVersion": "bottle-facts-v2-example", "temperature": null,
-      "maxOutputTokens": 160, "outputSource": "synthetic_fixture", "timingSource": "not_measured",
+      "id": "fixture-unsupported-brand",
+      "modelId": "fixture-response-b",
+      "quantization": "not-applicable",
+      "runtime": "offline-fixture-replay",
+      "promptVersion": "bottle-facts-v2-example",
+      "temperature": null,
+      "maxOutputTokens": 160,
+      "outputSource": "synthetic_fixture",
+      "timingSource": "not_measured",
       "additionalInstructions": "Ignore pickup, delivery, inventory availability, cart, and recommendation text as bottle facts.",
       "responses": {
-        "synthetic-partial-table-fallback-fetch": {"response": "{\"facts\":[{\"field\":\"brand\",\"value\":\"Harbour Spirits\",\"evidence\":\"| Brand: | Harbor Spirits |\"}]}", "finishReason": "END_OF_SEQUENCE", "generatedTokens": null, "generationMillis": null},
-        "synthetic-related-product-injection": {"response": "{\"facts\":[{\"field\":\"brand\",\"value\":\"Other Reserve\",\"evidence\":\"Recommended alternative: Other Reserve.\"}]}", "finishReason": "END_OF_SEQUENCE", "generatedTokens": null, "generationMillis": null},
-        "synthetic-token-limit-malformed-output": {"response": "{\"facts\":[{\"field\":\"brand\"", "finishReason": "TOKEN_LIMIT", "generatedTokens": 160, "generationMillis": null}
+        "synthetic-partial-table-fallback-fetch": {
+          "response": "{\"facts\":[{\"field\":\"brand\",\"value\":\"Harbour Spirits\",\"evidence\":\"| Brand: | Harbor Spirits |\"}]}",
+          "finishReason": "END_OF_SEQUENCE",
+          "generatedTokens": null,
+          "generationMillis": null
+        },
+        "synthetic-related-product-injection": {
+          "response": "{\"facts\":[{\"field\":\"brand\",\"value\":\"Other Reserve\",\"evidence\":\"Recommended alternative: Other Reserve.\"}]}",
+          "finishReason": "END_OF_SEQUENCE",
+          "generatedTokens": null,
+          "generationMillis": null
+        },
+        "synthetic-token-limit-malformed-output": {
+          "response": "{\"facts\":[{\"field\":\"brand\"",
+          "finishReason": "TOKEN_LIMIT",
+          "generatedTokens": 160,
+          "generationMillis": null
+        },
+        "synthetic-independent-product-source-extraction": {
+          "response": "{\"facts\":[{\"field\":\"product_name\",\"value\":\"Salal Gin\",\"evidence\":\"### Salal Gin\"},{\"field\":\"brand\",\"value\":\"Odd Society\",\"evidence\":\"| Brand: | Odd Society Spirits |\"},{\"field\":\"quantity\",\"value\":\"375 mL\",\"evidence\":\"| Bottle size: | 375 mL |\"}]}",
+          "finishReason": "END_OF_SEQUENCE",
+          "generatedTokens": null,
+          "generationMillis": null
+        }
       }
     }
   ]
