@@ -317,6 +317,7 @@ class DetailedBottleLookupCaptureUiTest {
             lookupMissingMessage = "No lookup report yet.",
             lookupCopyMessage = null,
             detailedCaptureCount = 1,
+            actionsEnabled = true,
             onCopy = {
                 val content = com.davidhayesbc.cocktails.android.product.combineBottleDiagnostics("{}", listOf(detailed))
                 val clipboard = composeRule.activity.getSystemService(ClipboardManager::class.java)

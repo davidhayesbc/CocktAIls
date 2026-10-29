@@ -437,6 +437,9 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     var diagnosticsPreview by remember { mutableStateOf("{}") }
     var diagnosticsLookupPreview by remember { mutableStateOf<String?>(null) }
     var diagnosticsDetailedCaptureCount by remember { mutableStateOf(0) }
+    val diagnosticsActionGate = remember { DiagnosticsActionGate() }
+    var diagnosticsActionBusy by remember { mutableStateOf(false) }
+    var diagnosticsExportRequest by remember { mutableStateOf<DiagnosticsActionGate.Scope?>(null) }
 
     var pendingBottleEnrichmentJobs by remember(bottleEnrichmentQueue) {
         mutableStateOf(bottleEnrichmentQueue.jobs().associateBy { it.draftId })
@@ -1426,7 +1429,10 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
     }
 
     val diagnosticsExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
-        if (uri != null) runCatching {
+        val request = diagnosticsExportRequest
+        val stillCurrent = request?.let(diagnosticsActionGate::finishExport) ?: false
+        diagnosticsExportRequest = null
+        if (uri != null && stillCurrent) runCatching {
             val contents = diagnosticsExportContents ?: error("No diagnostics export was prepared.")
             context.contentResolver.openOutputStream(uri, "w")?.buffered()?.use { it.write(contents.encodeToByteArray()) }
                 ?: error("Could not open the selected file for writing.")
@@ -1437,6 +1443,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             lookupReportCopyMessage = "Diagnostics export failed. The local copy remains on this phone."
         } else {
             diagnosticsExportContents = null
+            if (uri == null && stillCurrent) lookupReportCopyMessage = "Export canceled. No file was written."
         }
     }
 
@@ -1911,6 +1918,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 webSearchStates = bottleWebSearchStates,
                 onOpenLookupReport = { draftId ->
                     lookupReportCopyMessage = null
+                    diagnosticsActionGate.open(draftId)
                     showDiagnosticsForDraftId = draftId
                     showDiagnostics = true
                 },
@@ -2368,6 +2376,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 onOpenLocationSettings = { showLocationSettings = true },
                 onOpenDiagnostics = {
                     lookupReportCopyMessage = null
+                    diagnosticsActionGate.open(null)
                     showDiagnosticsForDraftId = null
                     showDiagnostics = true
                 },
@@ -2493,32 +2502,72 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             lookupMissingMessage = if (selectedDraftId == null) "No barcode lookup report yet." else "No lookup report has been saved for this bottle yet.",
             lookupCopyMessage = lookupReportCopyMessage,
             detailedCaptureCount = diagnosticsDetailedCaptureCount,
+            actionsEnabled = !diagnosticsActionBusy && diagnosticsExportRequest == null,
             onCopy = {
-                coroutineScope.launch {
-                    val snapshot = loadDiagnosticsDialogSnapshot(selectedDraftId, detailedLookupCaptureStore)
-                    diagnosticsPreview = snapshot.standard
-                    diagnosticsLookupPreview = snapshot.lookupPreview
-                    diagnosticsDetailedCaptureCount = snapshot.detailedCaptureCount
-                    val content = combineBottleDiagnostics(snapshot.standard, snapshot.detailedReports)
-                    lookupReportCopyMessage = when {
-                        !isDiagnosticsCopyWithinLimit(content) -> "Copy is too large for Android's clipboard. Use Export diagnostics instead."
-                        !copyDiagnosticsToClipboard(context, content) -> "Copy failed. Use Export diagnostics instead."
-                        snapshot.detailedCaptureCount == 0 -> "Diagnostics copied. No detailed capture is available for this selection."
-                        else -> "Diagnostics copied with ${snapshot.detailedCaptureCount} detailed capture${if (snapshot.detailedCaptureCount == 1) "" else "s"}. Review before sharing."
+                val scope = diagnosticsActionGate.scopeFor(selectedDraftId)
+                if (scope != null && !diagnosticsActionBusy && diagnosticsExportRequest == null) {
+                    diagnosticsActionBusy = true
+                    coroutineScope.launch {
+                        try {
+                            val snapshot = loadDiagnosticsDialogSnapshot(scope.draftId, detailedLookupCaptureStore)
+                            if (diagnosticsActionGate.isCurrent(scope)) {
+                                diagnosticsPreview = snapshot.standard
+                                diagnosticsLookupPreview = snapshot.lookupPreview
+                                diagnosticsDetailedCaptureCount = snapshot.detailedCaptureCount
+                                val content = combineBottleDiagnostics(snapshot.standard, snapshot.detailedReports)
+                                lookupReportCopyMessage = when {
+                                    !isDiagnosticsCopyWithinLimit(content) -> "Copy is too large for Android's clipboard. Use Export diagnostics instead."
+                                    !copyDiagnosticsToClipboard(context, content) -> "Copy failed. Use Export diagnostics instead."
+                                    snapshot.detailedCaptureCount == 0 -> "Diagnostics copied. No detailed capture is available for this selection."
+                                    else -> "Diagnostics copied with ${snapshot.detailedCaptureCount} detailed capture${if (snapshot.detailedCaptureCount == 1) "" else "s"}. Review before sharing."
+                                }
+                            }
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            if (diagnosticsActionGate.isCurrent(scope)) lookupReportCopyMessage = "Diagnostics could not be prepared. Try again or Export diagnostics."
+                        } finally {
+                            diagnosticsActionBusy = false
+                        }
                     }
                 }
             },
             onExport = {
-                coroutineScope.launch {
-                    val snapshot = loadDiagnosticsDialogSnapshot(selectedDraftId, detailedLookupCaptureStore)
-                    diagnosticsPreview = snapshot.standard
-                    diagnosticsLookupPreview = snapshot.lookupPreview
-                    diagnosticsDetailedCaptureCount = snapshot.detailedCaptureCount
-                    diagnosticsExportContents = combineBottleDiagnostics(snapshot.standard, snapshot.detailedReports)
-                    diagnosticsExportLauncher.launch("CocktAIls-Diagnostics.json")
+                val scope = diagnosticsActionGate.scopeFor(selectedDraftId)
+                if (scope != null && !diagnosticsActionBusy && diagnosticsExportRequest == null && diagnosticsActionGate.beginExport(scope)) {
+                    diagnosticsActionBusy = true
+                    coroutineScope.launch {
+                        try {
+                            val snapshot = loadDiagnosticsDialogSnapshot(scope.draftId, detailedLookupCaptureStore)
+                            if (!diagnosticsActionGate.isCurrent(scope)) {
+                                diagnosticsActionGate.cancelExport(scope)
+                            } else {
+                                diagnosticsPreview = snapshot.standard
+                                diagnosticsLookupPreview = snapshot.lookupPreview
+                                diagnosticsDetailedCaptureCount = snapshot.detailedCaptureCount
+                                diagnosticsExportContents = combineBottleDiagnostics(snapshot.standard, snapshot.detailedReports)
+                                diagnosticsExportRequest = scope
+                                diagnosticsExportLauncher.launch("CocktAIls-Diagnostics.json")
+                            }
+                        } catch (cancelled: CancellationException) {
+                            diagnosticsActionGate.cancelExport(scope)
+                            throw cancelled
+                        } catch (_: Exception) {
+                            diagnosticsActionGate.cancelExport(scope)
+                            diagnosticsExportRequest = null
+                            diagnosticsExportContents = null
+                            if (diagnosticsActionGate.isCurrent(scope)) lookupReportCopyMessage = "Diagnostics export could not be prepared. Try again."
+                        } finally {
+                            diagnosticsActionBusy = false
+                        }
+                    }
                 }
             },
-            onDismiss = { showDiagnostics = false; showDiagnosticsForDraftId = null },
+            onDismiss = {
+                diagnosticsActionGate.dismiss()
+                showDiagnostics = false
+                showDiagnosticsForDraftId = null
+            },
         )
     }
 
@@ -5561,6 +5610,7 @@ internal fun DiagnosticsDialog(
     lookupMissingMessage: String,
     lookupCopyMessage: String?,
     detailedCaptureCount: Int,
+    actionsEnabled: Boolean,
     onCopy: () -> Unit,
     onExport: () -> Unit,
     onDismiss: () -> Unit,
@@ -5598,8 +5648,8 @@ internal fun DiagnosticsDialog(
                         Spacer(Modifier.height(8.dp))
                     }
                     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = onCopy, modifier = Modifier.fillMaxWidth().testTag("copy-diagnostics")) { Text("Copy diagnostics") }
-                        Button(onClick = onExport, modifier = Modifier.fillMaxWidth().testTag("export-diagnostics")) { Text("Export diagnostics") }
+                        OutlinedButton(onClick = onCopy, enabled = actionsEnabled, modifier = Modifier.fillMaxWidth().testTag("copy-diagnostics")) { Text("Copy diagnostics") }
+                        Button(onClick = onExport, enabled = actionsEnabled, modifier = Modifier.fillMaxWidth().testTag("export-diagnostics")) { Text("Export diagnostics") }
                     }
                 }
             }
