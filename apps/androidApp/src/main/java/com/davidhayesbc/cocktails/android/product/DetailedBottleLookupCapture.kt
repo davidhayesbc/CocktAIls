@@ -289,14 +289,16 @@ internal class DetailedBottleLookupCaptureStore(
         val temporaryObject = readStoredObject(temporary)
         val currentOwner = current?.string("draftId")
         val temporaryOwner = temporaryObject?.string("draftId")
+        // Keep the primary record as a retryable owner marker until every exported
+        // copy is removed. Otherwise a partial share deletion can orphan a copy.
+        val sharesDeleted = removeShareCopies(draftId)
         val primaryDeleted = when {
-            currentOwner == draftId -> deleteIfPresent(file)
+            currentOwner == draftId -> sharesDeleted && deleteIfPresent(file)
             file.exists() && current == null -> false
             else -> true
         }
-        val canDeleteTemporary = temporaryOwner == draftId || currentOwner == draftId || !file.exists() && temporaryObject == null
+        val canDeleteTemporary = sharesDeleted && (temporaryOwner == draftId || currentOwner == draftId || !file.exists() && temporaryObject == null)
         val temporaryDeleted = if (canDeleteTemporary) deleteIfPresent(temporary) else true
-        val sharesDeleted = removeShareCopies(draftId)
         current?.string("captureId")?.let(reviewedPreviews::remove)
         temporaryObject?.string("captureId")?.let(reviewedPreviews::remove)
         primaryDeleted && temporaryDeleted && sharesDeleted

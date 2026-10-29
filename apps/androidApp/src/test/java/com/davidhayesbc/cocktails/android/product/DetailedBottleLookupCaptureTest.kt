@@ -2,6 +2,9 @@ package com.davidhayesbc.cocktails.android.product
 
 import java.io.File
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -101,6 +104,40 @@ class DetailedBottleLookupCaptureTest {
     }
 
     @Test
+    fun concurrentClaimsCannotExceedTheSessionCaptureCap() {
+        val root = Files.createTempDirectory("detailed-capture-session-concurrent-cap").toFile()
+        val store = DetailedBottleLookupDebugSessionStore(root, processSessionId = "test-process")
+        assertEquals(DetailedCaptureArmResult.ARMED, store.startSession("preview"))
+        val workerCount = 8
+        val ready = CountDownLatch(workerCount)
+        val start = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(workerCount)
+        try {
+            val futures = (0 until workerCount).map { index ->
+                executor.submit<Boolean> {
+                    ready.countDown()
+                    check(start.await(5, TimeUnit.SECONDS))
+                    val token = "00000000-0000-0000-0000-${(index + 501).toString().padStart(12, '0')}"
+                    val recorder = store.claim("concurrent-$index", token, "5011333150725", "preview", 33, "Qwen", allowNextLookup = true)
+                    if (recorder == null) false else {
+                        recorder.finish("COMPLETE")
+                        true
+                    }
+                }
+            }
+            assertTrue(ready.await(5, TimeUnit.SECONDS))
+            start.countDown()
+            assertEquals(5, futures.count { it.get(10, TimeUnit.SECONDS) })
+            assertEquals(5, store.sessionStatus().captureCount)
+            assertEquals(5, store.captureStatuses().size)
+        } finally {
+            start.countDown()
+            executor.shutdownNow()
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun separateWorkerAndUiStoreInstancesShareProcessOwnershipButRestartMarksAttemptInterrupted() {
         val root = Files.createTempDirectory("detailed-capture-session-process").toFile()
         val workerStore = DetailedBottleLookupDebugSessionStore(root)
@@ -132,6 +169,39 @@ class DetailedBottleLookupCaptureTest {
         assertTrue(store.cleanupExpired())
         assertFalse(orphanCapture.exists())
         assertFalse(orphanSession.exists())
+        root.deleteRecursively()
+    }
+
+    @Test
+    fun failedShareDeletionKeepsCaptureRecordSoDeletionCanBeRetried() {
+        val root = Files.createTempDirectory("detailed-capture-share-delete-retry").toFile()
+        var failShareDelete = true
+        val cache = File(root, "cache")
+        val captureFile = File(root, "capture.json")
+        val store = DetailedBottleLookupCaptureStore(
+            file = captureFile,
+            nowMillis = { 1_000L },
+            deleteFile = { target ->
+                if (target.name.startsWith("lookup-") && failShareDelete) false else target.delete()
+            },
+            shareCacheDirectory = cache,
+            processSessionId = "test-process",
+        )
+        val draftId = "draft-share-retry"
+        val token = "00000000-0000-0000-0000-000000000402"
+        assertEquals(DetailedCaptureArmResult.ARMED, store.arm(draftId, token, "preview", 1_000L))
+        store.claim(draftId, token, "5011333150725", "preview", 1, "Qwen", 1_000L)!!.finish("COMPLETE")
+        val preview = store.previewForDraft(draftId, 1_000L)!!
+        val shareFile = store.exportReviewedCopyForDraft(draftId, preview, cache, 1_000L)!!
+
+        assertFalse("Partial share deletion must be reported", store.deleteForDraft(draftId))
+        assertTrue("Primary capture must remain available as a retry marker", captureFile.exists())
+        assertTrue("Unremoved share copy remains discoverable for retry", shareFile.exists())
+
+        failShareDelete = false
+        assertTrue(store.deleteForDraft(draftId))
+        assertFalse(captureFile.exists())
+        assertFalse(shareFile.exists())
         root.deleteRecursively()
     }
 
@@ -387,8 +457,8 @@ class DetailedBottleLookupCaptureTest {
         val temporary = File(root, "capture.json.tmp")
         assertTrue(temporary.writeText("partial sensitive bytes").let { temporary.exists() })
         assertFalse(store.deleteForDraft("draft-a"))
-        assertFalse(file.exists())
-        assertFalse(temporary.exists())
+        assertTrue("Primary record remains so cleanup can be retried", file.exists())
+        assertTrue("Temporary bytes remain associated until share cleanup succeeds", temporary.exists())
         assertTrue(share.exists())
         assertFalse("deletion continues after one share file cannot be removed", otherShare.exists())
 

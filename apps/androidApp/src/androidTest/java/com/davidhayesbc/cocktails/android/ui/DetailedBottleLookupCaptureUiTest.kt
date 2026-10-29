@@ -10,8 +10,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Density
@@ -116,8 +120,9 @@ class DetailedBottleLookupCaptureUiTest {
         val previewedDraft = mutableStateOf<String?>(null)
         setContent {
             CocktailsTheme(darkTheme = true) {
-                androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
-                    DetailedCaptureDebugModeSettings(
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    androidx.compose.foundation.layout.Column(Modifier.fillMaxSize().systemBarsPadding().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                        DetailedCaptureDebugModeSettings(
                         status = DetailedCaptureStatus("ACTIVE", null, null, 2_000_000L, 1_000_000L, null, sessionActive = true, captureCount = 1, captureLimit = 5),
                         reports = listOf(DetailedCaptureStatus("FAILED", "draft-captured", "00000000-0000-0000-0000-000000000099", 2_000_000L, 1_000_000L, "Qwen3-0.6B-Q8_0", captureId = "00000000-0000-0000-0000-000000000098")),
                         bottleLabels = mapOf("00000000-0000-0000-0000-000000000098" to "Bottle 3 · Auchentoshan Three Wood"),
@@ -127,15 +132,14 @@ class DetailedBottleLookupCaptureUiTest {
                         onDisable = {},
                         onPreview = { previewedDraft.value = it },
                         onDelete = {},
-                    )
+                        )
+                    }
                 }
             }
         }
 
         composeRule.onNodeWithTag("detailed-debug-mode-status").assertTextContains("1/5", substring = true)
-        composeRule.onNodeWithTag("detailed-capture-report-00000000-0000-0000-0000-000000000098")
-            .assertTextContains("Bottle 3 · Auchentoshan Three Wood", substring = true)
-            .assertTextContains("failed", substring = true)
+        composeRule.onNodeWithText("Bottle 3 · Auchentoshan Three Wood · failed", substring = true).assertIsDisplayed()
         saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "detailed-lookup-debug-mode-captured.png")
         composeRule.onNodeWithTag("preview-captured-debug-report").performScrollTo().assertIsDisplayed().performClick()
         assertEquals("00000000-0000-0000-0000-000000000098", previewedDraft.value)
@@ -159,8 +163,9 @@ class DetailedBottleLookupCaptureUiTest {
         setContent {
             CompositionLocalProvider(LocalDensity provides Density(density, 1.5f)) {
                 CocktailsTheme(darkTheme = true) {
-                    androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
-                        DetailedCaptureDebugModeSettings(
+                    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                        androidx.compose.foundation.layout.Column(Modifier.fillMaxSize().systemBarsPadding().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                            DetailedCaptureDebugModeSettings(
                             status = DetailedCaptureStatus("ACTIVE", null, null, 2_000_000L, 1_000_000L, null, sessionActive = true, captureCount = 2, captureLimit = 5),
                             reports = listOf(
                                 DetailedCaptureStatus("PARTIAL", "draft-a", "00000000-0000-0000-0000-000000000191", 2_000_000L, 1_000_000L, "Qwen3-0.6B-Q8_0", captureId = firstId),
@@ -168,7 +173,8 @@ class DetailedBottleLookupCaptureUiTest {
                             ),
                             bottleLabels = mapOf(firstId to "Bottle 1 · Auchentoshan Three Wood", secondId to "Bottle 1 · Auchentoshan Three Wood"),
                             message = null, enabled = true, onEnable = {}, onDisable = {}, onPreview = {}, onDelete = {},
-                        )
+                            )
+                        }
                     }
                 }
             }
@@ -185,8 +191,9 @@ class DetailedBottleLookupCaptureUiTest {
     fun settingsDoesNotArmDebugCaptureWithoutInstalledEnabledLocalModel() {
         setContent {
             CocktailsTheme(darkTheme = true) {
-                androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
-                    DetailedCaptureDebugModeSettings(
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    androidx.compose.foundation.layout.Column(Modifier.fillMaxSize().systemBarsPadding().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                        DetailedCaptureDebugModeSettings(
                         status = null,
                         reports = emptyList(),
                         message = null,
@@ -195,7 +202,8 @@ class DetailedBottleLookupCaptureUiTest {
                         onDisable = {},
                         onPreview = {},
                         onDelete = {},
-                    )
+                        )
+                    }
                 }
             }
         }
@@ -218,10 +226,11 @@ class DetailedBottleLookupCaptureUiTest {
         var resulting = initial
         setContent {
             CocktailsTheme(darkTheme = true) {
-                val state = androidx.compose.runtime.remember { mutableStateOf(initial) }
-                resulting = state.value
-                if (state.value.diagnosticsVisible) {
-                    DiagnosticsDialog(
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    val state = androidx.compose.runtime.remember { mutableStateOf(initial) }
+                    resulting = state.value
+                    if (state.value.diagnosticsVisible) {
+                        DiagnosticsDialog(
                         preview = "Local diagnostics",
                         lookupPreview = null,
                         lookupSubject = "Lookup report for this bottle",
@@ -232,21 +241,22 @@ class DetailedBottleLookupCaptureUiTest {
                         onOpenDetailedDebugModeSettings = { state.value = routeFromDiagnosticsToDebugSettings(state.value) },
                         onPreviewDetailedCapture = {}, onDeleteDetailedCapture = {}, onCopyLookup = {},
                         onExport = {}, onClear = { true }, onDismiss = {},
-                    )
-                } else if (state.value.selectedPage == "MORE" && !state.value.bottleIntakeVisible) {
-                    androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.fillMaxSize().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
-                        DetailedCaptureDebugModeSettings(
+                        )
+                    } else if (state.value.selectedPage == "MORE" && !state.value.bottleIntakeVisible) {
+                        androidx.compose.foundation.layout.Column(Modifier.fillMaxSize().systemBarsPadding().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                            DetailedCaptureDebugModeSettings(
                             status = DetailedCaptureStatus("OFF", null, null, 0, null, null),
                             reports = emptyList(), message = null, enabled = true, onEnable = {}, onDisable = {},
                             onPreview = {}, onDelete = {},
-                        )
-                        androidx.compose.material3.Text("Draft session ${state.value.intakeSessionId}: ${state.value.intakeDraftIds.joinToString()}", modifier = androidx.compose.ui.Modifier.testTag("preserved-intake-drafts"))
+                            )
+                            androidx.compose.material3.Text("Draft session ${state.value.intakeSessionId}: ${state.value.intakeDraftIds.joinToString()}", modifier = androidx.compose.ui.Modifier.testTag("preserved-intake-drafts"))
+                        }
                     }
                 }
             }
         }
 
-        composeRule.onNodeWithTag("open-debug-mode-settings").performScrollTo().performClick()
+        composeRule.onNodeWithTag("open-debug-mode-settings").assertIsDisplayed().performClick()
         composeRule.onNodeWithTag("detailed-debug-mode-settings").assertIsDisplayed()
         composeRule.onNodeWithTag("preserved-intake-drafts").performScrollTo().assertTextContains("intake-session-1", substring = true)
         composeRule.onNodeWithTag("preserved-intake-drafts").assertTextContains("draft-under-review", substring = true)
@@ -426,8 +436,9 @@ class DetailedBottleLookupCaptureUiTest {
         val consent = androidx.compose.runtime.remember { mutableStateOf(false) }
         val status = androidx.compose.runtime.remember { mutableStateOf<DetailedCaptureStatus?>(null) }
         CocktailsTheme(darkTheme = true) {
-            androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
-                DetailedCaptureDebugModeSettings(
+            Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                androidx.compose.foundation.layout.Column(Modifier.fillMaxSize().systemBarsPadding().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                    DetailedCaptureDebugModeSettings(
                     status = status.value,
                     reports = emptyList(),
                     message = null,
@@ -436,16 +447,17 @@ class DetailedBottleLookupCaptureUiTest {
                     onDisable = { status.value = null },
                     onPreview = {},
                     onDelete = {},
-                )
-            }
-            if (consent.value) {
-                DetailedCaptureDebugModeConsentDialog(
+                    )
+                }
+                if (consent.value) {
+                    DetailedCaptureDebugModeConsentDialog(
                     onConfirm = {
                         consent.value = false
                         status.value = DetailedCaptureStatus("ACTIVE", null, null, 2_000_000L, null, null, nextLookupArmed = true, sessionActive = true, captureLimit = 5)
                     },
                     onDismiss = { consent.value = false },
-                )
+                    )
+                }
             }
         }
     }
