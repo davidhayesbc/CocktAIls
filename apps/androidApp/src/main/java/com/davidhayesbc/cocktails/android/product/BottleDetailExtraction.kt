@@ -574,13 +574,13 @@ internal fun parseBottleFactCandidate(
             ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.BARCODE_EVIDENCE_MISSING)
         val nameFact = uniqueFacts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }
             ?: return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.PRODUCT_NAME_MISSING)
-        if (scannedProductIdentityPassage(requiredBarcode, nameFact.value, sourceText, identityQuote) == null) {
+        if (scannedProductIdentityPassage(requiredBarcode, nameFact.originalProductName ?: nameFact.value, sourceText, identityQuote) == null) {
             return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
         }
         identityEvidence = identityQuote
         val unrelatedFields = acceptedUniqueFacts.filter { fact ->
             fact.field != BottleFactField.PRODUCT_NAME &&
-                !fact.quote.contains(nameFact.value, ignoreCase = true) &&
+                !fact.quote.contains(nameFact.originalProductName ?: nameFact.value, ignoreCase = true) &&
                 !sourceMentionsScannedBarcode(requiredBarcode, fact.quote)
         }.map(BottleFactEvidence::field).toSet()
         if (unrelatedFields.isNotEmpty()) rejected += BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE

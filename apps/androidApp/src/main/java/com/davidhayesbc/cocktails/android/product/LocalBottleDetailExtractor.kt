@@ -110,11 +110,17 @@ internal class LocalBottleDetailExtractor(
             structuredProductNameFallback(requiredBarcode.orEmpty(), page, identity)
         }
         val labeledSpecifications = labeledBottleSpecifications(page, requiredBarcode)?.let { labeled ->
-            if (structuredFallback == null) labeled else labeled.copy(suggestions = labeled.suggestions.copy(
-                facts = structuredFallback.suggestions.facts + labeled.suggestions.facts,
-                unresolvedFields = labeled.suggestions.unresolvedFields - BottleFactField.PRODUCT_NAME,
-                identityEvidence = structuredFallback.suggestions.identityEvidence,
-            ))
+            if (structuredFallback == null) labeled else {
+                val combined = labeled.copy(suggestions = labeled.suggestions.copy(
+                    facts = structuredFallback.suggestions.facts + labeled.suggestions.facts,
+                    unresolvedFields = labeled.suggestions.unresolvedFields - BottleFactField.PRODUCT_NAME,
+                    identityEvidence = structuredFallback.suggestions.identityEvidence,
+                ))
+                // Validate each labeled fact against the structured product before any early
+                // fallback (missing model, timeout, truncation or abstention) can return it.
+                bindStructuredProductIdentity(combined, requiredBarcode.orEmpty(), checkNotNull(structuredIdentity))
+                    as? BottleDetailExtractionResult.Found
+            }
         }
         val independentlyVerifiedFallback = markdownProduct?.toDeterministicExtraction(sourceUrl, page.provider)
             ?: labeledSpecifications

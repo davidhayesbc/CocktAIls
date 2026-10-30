@@ -4,6 +4,22 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ProductTitleEvidenceTest {
+    private val mixedSizeSource = "Polar River 1 L UPC 080686032069\n\nPolar River 750 mL 50% ABV"
+    private val mixedSizeOutput = """{"identity":{"barcode":"080686032069","evidence":"Polar River 1 L UPC 080686032069"},"facts":[{"field":"product_name","value":"Polar River 750 mL","evidence":"Polar River 750 mL 50% ABV"},{"field":"abv_percent","value":"50%","evidence":"Polar River 750 mL 50% ABV"}]}"""
+
+    @Test fun sharedPageBinderRejectsBarcodeFromAnotherPackageSize() {
+        val parsed = parseBottleFactCandidate(mixedSizeOutput, "Fixture", "Fixture", "https://example.org/product", mixedSizeSource)
+        val result = bindPageBarcodeIdentity(parsed, "080686032069",
+            WebPageText("Polar River", "https://example.org/product", mixedSizeSource, "Fixture"))
+        assertTrue(result is BottleDetailExtractionResult.Rejected)
+    }
+
+    @Test fun directBarcodeParserRejectsBarcodeFromAnotherPackageSize() {
+        val result = parseBottleFactCandidate(mixedSizeOutput, "Fixture", "Fixture", "https://example.org/product",
+            mixedSizeSource, requiredBarcode = "080686032069")
+        assertTrue(result is BottleDetailExtractionResult.Rejected)
+    }
+
     @Test fun removesOnlyExplicitTrailingSingleBottleSizes() {
         for (suffix in listOf("750ml", "0.75 L", "750 mL bottle", "(750 mL)", "- 750 mL")) {
             assertEquals("Polar River 101", productNameWithoutPackageSuffix("Polar River 101 $suffix"))

@@ -27,6 +27,38 @@ import java.nio.file.Files
 
 class LocalBottleDetailExtractorTest {
     @Test
+    fun labeledFallbackNeverAttachesAnotherVariantScalarsToStructuredIdentity() = runBlocking {
+        for (matched in listOf(false, true)) {
+            val name = "Polar River London Dry Gin"
+            val title = if (matched) name else "Polar River London Sweet Gin"
+            val barcode = "080686032069"
+            val page = WebPageText(title, "https://example.org/product",
+                "$title\nUPC: $barcode\nSize: 750 mL\nABV: 40%", "Fixture",
+                structuredBottleIdentities = listOf(StructuredBottleIdentity(barcode, name, "UPC $barcode; $name")))
+            assertTrue(resolveStructuredBottleIdentityForPage(barcode, page).identity != null)
+            assertEquals(matched, structuredProductNamesAgree(title, name))
+            for (mode in listOf("missing", "invalid", "empty", "timeout", "truncated")) {
+                val runner = LocalInferenceRunner { _, _, _, _ ->
+                    when (mode) {
+                        "timeout" -> throw LocalInferenceFailureException(LocalInferenceFailureCode.GENERATION_TIMEOUT)
+                        "truncated" -> throw LocalInferenceFailureException(LocalInferenceFailureCode.MODEL_OUTPUT_TRUNCATED)
+                        else -> """{"facts":[]}"""
+                    }
+                }
+                val result = LocalBottleDetailExtractor({ if (mode == "missing") null else "/fixture.gguf" }, runner)
+                    .extract(page, if (mode == "invalid") "invalid" else LOCAL_MODEL_LABEL, barcode)
+                    as BottleDetailExtractionResult.Found
+                val fields = result.suggestions.facts.map { it.field }.toSet()
+                assertEquals("$matched / $mode", matched, BottleFactField.QUANTITY in fields)
+                assertEquals("$matched / $mode", matched, BottleFactField.ABV_PERCENT in fields)
+                assertEquals(name, result.suggestions.facts.single { it.field == BottleFactField.PRODUCT_NAME }.value)
+                if (!matched) assertTrue(result.suggestions.unresolvedFields.containsAll(
+                    setOf(BottleFactField.QUANTITY, BottleFactField.ABV_PERCENT)))
+            }
+        }
+    }
+
+    @Test
     fun barcodeRedactionKeepsFollowingSourceLineBreak() {
         assertEquals(
             "Product Code: [barcode omitted]\nAlcohol content: 40.0%",
