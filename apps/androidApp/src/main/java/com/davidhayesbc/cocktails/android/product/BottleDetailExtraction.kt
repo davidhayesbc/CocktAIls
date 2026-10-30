@@ -31,6 +31,8 @@ internal data class BottleFactEvidence(
     /** Present only when a deterministic source parser bound this fact to one UPC record. */
     val barcodeBoundProductCode: String? = null,
     val barcodeBoundProductName: String? = null,
+    /** Retain explicit packaging for identity/conflict checks after display-name normalization. */
+    val originalProductName: String? = null,
 )
 
 internal enum class BottleExtractionMethod {
@@ -376,7 +378,7 @@ internal fun bindStructuredProductIdentity(
     }
     if (result !is BottleDetailExtractionResult.Found) return result
     val modelName = result.suggestions.facts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }
-    val mismatchedModelName = modelName != null && !structuredProductNamesAgree(modelName.value, identity.productName)
+    val mismatchedModelName = modelName != null && !structuredProductNamesAgree(modelName.originalProductName ?: modelName.value, identity.productName)
     val structuredNameFact = BottleFactEvidence(BottleFactField.PRODUCT_NAME, identity.productName, identity.evidence)
     val unboundFacts = result.suggestions.facts.filter { fact ->
         fact.field != BottleFactField.PRODUCT_NAME && !factIsBoundToStructuredIdentity(fact, requiredBarcode, identity.productName)
@@ -486,7 +488,8 @@ internal fun parseBottleFactCandidate(
             fieldRejections += BottleFactRejection(field, BottleExtractionRejectionReason.INVALID_QUANTITY_EVIDENCE)
             return@mapNotNull null
         }
-        BottleFactEvidence(field, text, quote)
+        BottleFactEvidence(field, if (field == BottleFactField.PRODUCT_NAME) productNameWithoutPackageSuffix(text) else text, quote,
+            originalProductName = text.takeIf { field == BottleFactField.PRODUCT_NAME && productNameWithoutPackageSuffix(text) != text })
     }
     if (facts.isEmpty()) {
         return BottleDetailExtractionResult.Rejected(
@@ -525,13 +528,19 @@ internal fun parseBottleFactCandidate(
     val productNameForBrand = uniqueFacts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }
     val titleOnlyBrands = uniqueFacts.filter { brandFact ->
         if (brandFact.field != BottleFactField.BRAND) return@filter false
-        val productName = productNameForBrand ?: return@filter false
-        val sameEvidencePassage = normalizeFactSpacing(brandFact.quote).equals(
-            normalizeFactSpacing(productName.quote),
-            ignoreCase = true,
-        )
-        val brandIsPartOfProductName = containsWholeFactPhrase(productName.value, brandFact.value)
-        sameEvidencePassage && brandIsPartOfProductName && !hasExplicitBrandLabel(brandFact.quote)
+        if (hasExplicitBrandLabel(brandFact.quote, brandFact.value)) return@filter false
+        if (Regex("""(?im)(?:^|\|)\s*brand(?:\s+name)?\s*[:|]""").containsMatchIn(brandFact.quote)) return@filter true
+        val brandQuote = normalizeFactSpacing(brandFact.quote)
+        if (brandQuote.equals(normalizeFactSpacing(brandFact.value), ignoreCase = true)) return@filter true
+        val productName = productNameForBrand
+        val overlappingNameEvidence = productName != null &&
+            containsWholeFactPhrase(productName.value, brandFact.value) &&
+            (containsWholeFactPhrase(productName.quote, brandQuote) ||
+                containsWholeFactPhrase(brandQuote, normalizeFactSpacing(productName.quote)))
+        val firstSourceLine = sourceText.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty()
+        val titleFragment = containsWholeFactPhrase(firstSourceLine, brandQuote) &&
+            containsWholeFactPhrase(firstSourceLine, brandFact.value)
+        overlappingNameEvidence || titleFragment
     }
     if (titleOnlyBrands.isNotEmpty()) {
         rejected += BottleExtractionRejectionReason.BRAND_NOT_DISTINCT_FROM_PRODUCT_NAME
@@ -594,8 +603,9 @@ internal fun parseBottleFactCandidate(
     )
 }
 
-private fun hasExplicitBrandLabel(evidence: String): Boolean =
-    Regex("(?i)(?:^|[|\\n])\\s*brand(?:\\s+name)?\\s*[:|]").containsMatchIn(evidence)
+private fun hasExplicitBrandLabel(evidence: String, value: String): Boolean =
+    Regex("""(?im)(?:^|\|)\s*brand(?:\s+name)?\s*(?::\s*\|?|\|)\s*${Regex.escape(value)}\s*(?:\||$)""")
+        .containsMatchIn(evidence)
 
 /** Permit only presentation differences that preserve the literal fact and unit. */
 private fun factValueIsSupported(field: BottleFactField, value: String, quote: String): Boolean {

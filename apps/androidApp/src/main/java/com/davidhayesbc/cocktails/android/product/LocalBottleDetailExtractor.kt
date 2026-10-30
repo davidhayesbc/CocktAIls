@@ -401,7 +401,11 @@ internal fun mergeVerifiedSourceAndModelFacts(
     val acceptedModelFacts = modelResult.suggestions.facts.filter { fact ->
         fact.field in requestedFields && fact.field !in sourceFields && fact.field !in blockedSourceFields &&
             (fact.field != BottleFactField.PRODUCT_NAME || sourceProductName == null ||
-                structuredProductNamesAgree(fact.value, sourceProductName))
+                structuredProductNamesAgree(fact.originalProductName ?: fact.value, sourceProductName)) &&
+            (fact.field != BottleFactField.PRODUCT_NAME || fact.originalProductName == null ||
+                BottleFactField.QUANTITY !in unresolvedBottleSourceFields(
+                    fact.originalProductName + "\n" + sourceFacts.filter { it.field == BottleFactField.QUANTITY }.joinToString("\n") { it.value },
+                ))
     }.map { fact ->
         val quoteBelongsToBarcodeBoundTable = barcodeBoundMarkdownProduct?.let { product ->
             fact.quote.trim() in product.sourceSection.lineSequence().map(String::trim).toSet()
@@ -419,7 +423,7 @@ internal fun mergeVerifiedSourceAndModelFacts(
     val verifiedProductName = sourceProductName
     val ignoredReasons = ignoredModelFacts.associateWith { fact ->
         if (fact.field == BottleFactField.PRODUCT_NAME && verifiedProductName != null &&
-            !structuredProductNamesAgree(fact.value, verifiedProductName)
+            !structuredProductNamesAgree(fact.originalProductName ?: fact.value, verifiedProductName)
         ) BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE
         else BottleExtractionRejectionReason.UNREQUESTED_FIELD
     }

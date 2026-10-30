@@ -300,13 +300,13 @@ internal fun bindPageBarcodeIdentity(
         ?: return rejectWithIdentityReasons(result, BottleExtractionRejectionReason.PRODUCT_NAME_MISSING)
     val markdownProduct = barcodeBoundMarkdownProduct(requiredBarcode, page.markdown)
     val identityEvidence = if (markdownProduct != null) {
-        if (!structuredProductNamesAgree(nameFact.value, markdownProduct.productName)) {
+        if (!structuredProductNamesAgree(nameFact.originalProductName ?: nameFact.value, markdownProduct.productName)) {
             return rejectWithIdentityReasons(result, BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
         }
         markdownProduct.identityEvidence
     } else {
         val title = page.title
-        if (!title.isNullOrBlank() && !structuredProductNamesAgree(nameFact.value, title)) {
+        if (!title.isNullOrBlank() && !structuredProductNamesAgree(nameFact.originalProductName ?: nameFact.value, title)) {
             return rejectWithIdentityReasons(result, BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
         }
         labeledSpecifications?.identityEvidence
@@ -371,7 +371,26 @@ private fun productIdentityTokens(value: String): Set<String> = normalizeProduct
     .filter { it.length > 1 && it !in GENERIC_PRODUCT_TITLE_WORDS }
     .toSet()
 
+/** Strip only a terminal, explicit single-bottle volume; never age, proof, variant or pack count. */
+internal fun productNameWithoutPackageSuffix(value: String): String {
+    val match = Regex("""(?i)^(.+?)(?:\s+-\s+|\s+)\(?([0-9]{1,4}(?:[.,][0-9]{1,2})?)\s*(mL|L)\)?(?:\s+bottle)?$""")
+        .matchEntire(value.trim()) ?: return value
+    val base = match.groupValues[1].trim()
+    // A multipack suffix is not a single-bottle volume and must retain its identity.
+    if (Regex("""(?i)(?:\b\d+\s*[x×]|\bpack\s+of\s+\d+)\s*$""").containsMatchIn(base)) return value
+    val amount = match.groupValues[2].replace(',', '.').toDoubleOrNull() ?: return value
+    val ml = if (match.groupValues[3].equals("L", true)) amount * 1000 else amount
+    return if (ml in 1.0..20_000.0 && base.any(Char::isLetter)) base else value
+}
+
 internal fun structuredProductNamesAgree(candidate: String, expected: String): Boolean {
+    val candidateBase = productNameWithoutPackageSuffix(candidate)
+    val expectedBase = productNameWithoutPackageSuffix(expected)
+    if (candidateBase != candidate || expectedBase != expected) {
+        // Packaging removal must not loosen the fuzzy matcher for different variants.
+        return normalizeProductTitle(candidateBase) == normalizeProductTitle(expectedBase) &&
+            BottleFactField.QUANTITY !in unresolvedBottleSourceFields("$candidate\n$expected")
+    }
     val candidateTokens = productIdentityTokens(candidate)
     val expectedTokens = productIdentityTokens(expected)
     if (candidateTokens.isEmpty() || expectedTokens.isEmpty()) return false

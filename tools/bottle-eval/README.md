@@ -237,3 +237,27 @@ claimed. Existing data suffices for this scoped regression, but broader release 
 representative full-page inputs and a new paired model execution (the requested-field prompts have
 changed), followed by fresh bottles. The earlier 4/13 versus 3/13 supported holdout-fact model result
 and 2/15 inventory matches must not be replaced with this scalar-only comparison.
+
+### Reused development outputs: name/title and brand-evidence repair
+
+Offline scoring of the actual paired desktop outputs exposed two parser regressions: the labeled
+record's size-bearing title rejected a valid shorter name, and a shortened title fragment could
+escape the title-only brand check. The parser now normalizes only explicit trailing single-bottle
+volumes, retains the original name for packaging/identity conflict checks, requires exact base-name
+agreement when packaging normalization is used, and rejects bare/title-fragment brand evidence.
+Variant, age, proof and multipack identifiers are retained. Explicit brand labels must bind the
+claimed brand value. Synthetic tests cover different products, variants and bottle sizes.
+
+Re-scoring the **same three development outputs** through this repaired local parser gives 9/9
+source-supported facts, 0 scored false positives and 0 false negatives. The unmodified baseline
+`dc8c6eb0` scored 8/9, 0 false positives and 1 false negative; the first labeled-record candidate
+`3a19463` scored 7/9, 1 false positive and 2 false negatives. Correct size/ABV fields are 6/6 for the
+repaired candidate versus 5/6 for baseline. Confirmed inventory matches are 7/12 versus baseline
+6/12; the first candidate's 8/12 included an accepted brand whose source label was UNKNOWN. That
+brand is now unresolved rather than credited as supported. All source and inventory labels remain
+unchanged, including UNKNOWN brands.
+
+The existing importer verified unchanged task/prompt/source/config hashes before scoring. No new
+inference ran for this parser repair. Exact desktop outputs are retained only in private local
+regression inputs, not committed. These are reused development observations on three selected
+excerpts, not fresh holdout results, retrieval coverage, phone performance or a release gate.

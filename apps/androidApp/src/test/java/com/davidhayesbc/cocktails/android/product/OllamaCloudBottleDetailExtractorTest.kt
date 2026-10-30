@@ -54,7 +54,8 @@ class OllamaCloudBottleDetailExtractorTest {
         val result = provider.extract(source, "qwen3:8b-cloud")
         assertTrue(result is BottleDetailExtractionResult.Found)
         val suggestions = (result as BottleDetailExtractionResult.Found).suggestions
-        assertEquals(4, suggestions.facts.size)
+        assertEquals(3, suggestions.facts.size)
+        assertTrue(BottleFactField.BRAND in suggestions.unresolvedFields)
         assertEquals("https://example.org/gin", suggestions.sourceUrl)
         assertEquals("qwen3:8b-cloud", transport.lastModel)
         assertEquals("synthetic-ollama-key", transport.lastKey)
@@ -273,7 +274,7 @@ class OllamaCloudBottleDetailExtractorTest {
     fun stripsLinksUrlsQueryStringsHtmlAndControlCharactersBeforeCloudRequest() = runBlocking {
         val pageText = "Gin brand [official page](https://example.org/gin?token=private123)\nRaw https://shop.example/item?email=person%40example.org\u0001"
         val transport = FakeTransport(OllamaCloudHttpResponse.Success(response(
-            """{"facts":[{"field":"brand","value":"Gin brand","evidence":"Gin brand"}]}""",
+            """{"facts":[{"field":"product_name","value":"Gin brand","evidence":"Gin brand"}]}""",
         )))
         val provider = OllamaCloudBottleDetailExtractor({ "synthetic-key" }, transport)
 
