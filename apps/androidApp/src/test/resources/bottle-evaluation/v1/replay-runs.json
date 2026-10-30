@@ -1,7 +1,7 @@
 {
   "format": "com.davidhayesbc.cocktails.bottle-evaluation-runs",
   "schemaVersion": 1,
-  "datasetVersion": "reviewed-product-labels-v1-source-captures-pending",
+  "datasetVersion": "reviewed-product-labels-v1-bounded-source-captures-2026-10-30",
   "variants": [
     {
       "id": "fixture-valid-response",

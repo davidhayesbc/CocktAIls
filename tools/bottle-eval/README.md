@@ -3,7 +3,9 @@
 The evaluation uses the app's production enrichment coordinator, prompt builder, page preprocessor,
 response parser, evidence checks, and product identity binding. Default tests are offline. They do not
 contact Firecrawl, Ollama, a retailer, or a model. Synthetic replay cases test contracts and are not
-model-quality measurements.
+model-quality measurements. The current replay manifest has no model output for the seven newly
+captured real-product cases; reports mark those cases unscored until actual local inference results
+are imported.
 
 ## Offline test suite
 
@@ -43,13 +45,19 @@ Use a private output path because it contains the exact prompt and bounded sourc
 ```
 
 The exporter uses the production coordinator and extractor, exports only prompts that actually reach
-model inference, and includes no reference labels. The job index separately lists every eligible
+model inference, and includes no reference labels. It defaults to the `development` product split
+so holdout prompts stay out of tuning runs. The job index separately lists every eligible
 case, no-inference case IDs with bounded outcomes (`DETERMINISTIC_SOURCE`, `RETRIEVAL_ABSTENTION`,
 or `PRE_INFERENCE_REJECTION`), and the subset with actual prompt tasks. Deterministic extraction and
 retrieval abstention therefore remain part of the evaluation without creating fabricated prompts.
 If there are eligible cases but none requires inference, the
 job file records that explicitly with an empty task list; the desktop runner exits without starting
 the model. It stops without creating a job file when there are no eligible cases.
+
+After the model, prompt, and runtime settings are frozen, export held-out cases by adding
+`-PbottleEvalExportSplit=holdout` to the same command. `full` is available for a one-time final
+evaluation after configuration freeze. The importer checks the declared scope against the case
+manifest. Do not use holdout results to select prompts or model settings.
 
 ### 2. Run local inference on the Windows GPU machine
 
@@ -59,7 +67,9 @@ The target model is `Qwen/Qwen3-0.6B-GGUF`, `Qwen3-0.6B-Q8_0.gguf`, SHA-256
 `9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031`. The pinned llama.cpp commit
 is `d854d98bae598388ecea1ed84396587e5edc326d` (`b11889`). The official Windows CUDA 13.4 runtime
 release for this exact commit is available separately; its runtime and DLL bundle total about
-588 MB, and the model is about 639 MB. Those artifacts have not been downloaded or installed.
+588 MB, and the model is about 639 MB. A separate authorized desktop setup verified the pinned
+runtime/model artifacts. This runner still requires explicit local paths and never downloads or
+installs them.
 
 Run from a repository checkout with the prompt-job file and locally provisioned artifacts:
 
@@ -72,8 +82,9 @@ py -3 tools/bottle-eval/run-local-qwen-gpu.py `
 ```
 
 The runner checks the model size and SHA, llama.cpp commit reported by the binary, CUDA availability,
-job/config/source/task hashes, and GPU layer offload. It sends the exact exported system/user
-messages to the pinned runtime's legacy `/apply-template` endpoint and completes that rendered
+job/config/source/task hashes, and GPU layer offload. It sets startup verbosity to the pinned
+runtime's supported level 5 because the layer-offload confirmation is otherwise omitted from the
+startup log. It sends the exact exported system/user messages to the pinned runtime's legacy `/apply-template` endpoint and completes that rendered
 prompt with the Android GBNF grammar and decoding settings. The Android baseline is context 4096,
 batch and micro-batch 128, temperature 0.3, seed -1, and 160 output tokens. A unit regression checks
 context, batch, temperature, output cap, GBNF text, sampler order and sampler defaults against the
@@ -100,9 +111,9 @@ are not copied into the summary report.
   -PbottleEvalReport=/private/path/bottle-evaluation-report.json
 ```
 
-The importer verifies that eligible cases, no-inference outcomes, and exported task IDs are the exact
-sets reproduced by the current production coordinator and extractor. It evaluates all eligible
-cases, including deterministic and retrieval-abstention cases, while importing host responses only
+The importer verifies that scoped eligible cases, no-inference outcomes, and exported task IDs are
+the exact sets reproduced by the current production coordinator and extractor. It evaluates all
+eligible cases in the declared split, including deterministic and retrieval-abstention cases, while importing host responses only
 for cases that actually invoked inference. A zero-task manifest needs no host result file; run the
 offline evaluation instead. The report identifies imported host inference and measured host timings.
 It does not claim the Android test JVM ran the model. Keep results files private and delete them when
@@ -111,11 +122,21 @@ no longer needed.
 ## Cases, labels, and limitations
 
 The versioned dataset has 18 reviewed product labels grouped by product family and a frozen
-development/holdout split. All cases currently lack frozen source snapshots and field-level source
-evidence, so there are zero executable real-product cases. The prompt exporter will therefore stop
-with an explanatory message. No quality score or actual local Qwen run is available yet. The
-Auchentoshan detailed diagnostic is a useful regression lead, but it is incomplete as a historical
-source/model replay and is not promoted to a scored case.
+development/holdout split. Seven cases now have a frozen, manually selected short product-detail
+excerpt from a successful public HTTP response: three development products and four holdout
+products. The excerpt is the complete model input fixture, not a full-page snapshot. These cases
+measure extraction from that selected source text; they do not measure search, result ranking, or
+full-page source selection. Eleven other cases remain without a usable frozen source input and are
+not scored. Giffard's manufacturer page states a non-alcoholic grade but contains no numeric ABV and
+does not show the reviewed UPC, so this page does not independently establish that barcode
+association. Numeric ABV remains unknown in inventory truth.
+
+The first desktop job export is limited to development cases. Keep that run for development only.
+Do not tune against holdout outputs. After the model and prompt are frozen, export and run holdout
+separately using `-PbottleEvalExportSplit=holdout`; `full` is available only for a one-time final
+evaluation after configuration freeze. Both Esquimalt variants and all Sons of Vancouver variants
+remain in their existing family-level holdout groups. The Auchentoshan detailed diagnostic is still
+not a scored case because it lacks a complete historical model/source replay.
 
 The reviewed product manifest and inventory truth are kept separate from what any supplied source
 supports. Junicopia's barcode-linked identity and ABV remain unresolved; Giffard's unknown numeric

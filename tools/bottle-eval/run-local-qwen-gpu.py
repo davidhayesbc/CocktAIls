@@ -42,8 +42,10 @@ def load_jobs(path: Path, config: dict) -> tuple[dict, str]:
     jobs = json.loads(raw)
     if jobs.get("format") != "com.davidhayesbc.cocktails.bottle-evaluation-prompt-jobs" or jobs.get("schemaVersion") != 1:
         raise ValueError("Unsupported prompt-job file")
-    if set(jobs) != {"format", "schemaVersion", "datasetVersion", "splitPlan", "config", "configCanonicalJson", "configSha256", "caseIds", "eligibleCaseIds", "noInferenceCaseIds", "noInferenceReasons", "tasks", "answerKeyIncluded"}:
+    if set(jobs) != {"format", "schemaVersion", "datasetVersion", "splitPlan", "evaluationSplit", "config", "configCanonicalJson", "configSha256", "caseIds", "eligibleCaseIds", "noInferenceCaseIds", "noInferenceReasons", "tasks", "answerKeyIncluded"}:
         raise ValueError("Prompt-job file contains unsupported fields; expected a minimal no-answer-key payload")
+    if jobs.get("evaluationSplit") not in {"development", "holdout", "full"}:
+        raise ValueError("Prompt-job file has an unsupported evaluation split")
     if jobs.get("answerKeyIncluded") is not False:
         raise ValueError("Prompt-job file must explicitly exclude reference answers")
     canonical = jobs.get("configCanonicalJson")
@@ -227,6 +229,10 @@ def build_server_command(binary: Path, model: Path, port: int, config: dict) -> 
         "--ubatch-size", str(baseline["batchTokens"]), "--threads", str(host["threads"]),
         "--threads-batch", str(host["threads"]), "--parallel", "1", "--no-jinja", "--no-webui",
         "--device", host["device"], "--n-gpu-layers", str(host["gpuLayers"]),
+        # The pinned Windows build emits its layer-offload confirmation only at
+        # verbose startup levels; CUDA device availability alone does not prove
+        # that model layers actually moved to the GPU.
+        "--verbosity", "5",
     ]
 
 

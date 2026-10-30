@@ -51,6 +51,7 @@ class BottleLookupEvaluationHarnessTest {
             put("userPrompt", "user")
         }))
         assertEquals(false, prompt.getValue("answerKeyIncluded").jsonPrimitive.booleanOrNull)
+        assertEquals("development", prompt.requiredString("evaluationSplit"))
         assertEquals(listOf("product-a"), prompt.getValue("caseIds").jsonArray.map { it.jsonPrimitive.content })
         val encoded = Json.encodeToString(JsonObject.serializer(), prompt)
         listOf("sourceFacts", "inventoryTruth", "confirmedValue", "householdBottleId").forEach { key ->
@@ -65,13 +66,30 @@ class BottleLookupEvaluationHarnessTest {
         val dataset = parseDataset(readInput("bottle.eval.cases", "/bottle-evaluation/v1/cases.json"))
         val output = kotlin.io.path.createTempDirectory("bottle-eval-empty-export").toFile()
         try {
+            val noSources = dataset.copy(cases = dataset.cases.map { case ->
+                if (case.kind == "reviewed_product") case.copy(sourceCoverage = "blocked", sourceFacts = emptyMap(), pages = emptyList()) else case
+            })
             assertThrows(IllegalArgumentException::class.java) {
-                runBlocking { exportProductionPromptJobs(dataset, File(output, "jobs.json")) }
+                runBlocking { exportProductionPromptJobs(noSources, File(output, "jobs.json"), "development") }
             }
             assertFalse(File(output, "jobs.json").exists())
         } finally {
             output.deleteRecursively()
         }
+    }
+
+    @Test
+    fun evaluationSplitSelectionKeepsReviewedProductFamiliesGrouped() {
+        val dataset = parseDataset(readInput("bottle.eval.cases", "/bottle-evaluation/v1/cases.json"))
+        val development = eligibleProductionPromptCases(dataset, "development")
+        val holdout = eligibleProductionPromptCases(dataset, "holdout")
+        assertEquals(3, development.size)
+        assertEquals(4, holdout.size)
+        assertTrue(development.all { it.split == "development" })
+        assertTrue(holdout.all { it.split == "holdout" })
+        assertEquals(2, holdout.count { it.groupId == "esquimalt-vermouth-family" })
+        assertTrue(holdout.filter { it.groupId == "sons-of-vancouver-family" }.isEmpty())
+        assertTrue(dataset.cases.filter { it.groupId == "sons-of-vancouver-family" }.all { it.split == "holdout" })
     }
 
     @Test
@@ -372,8 +390,8 @@ class BottleLookupEvaluationHarnessTest {
         val coverage = report.getValue("coverage").jsonObject
         assertEquals(18, coverage.getValue("expectedReviewedProductCount").jsonPrimitive.intOrNull)
         assertEquals(18, coverage.getValue("reviewedProductCasesLoaded").jsonPrimitive.intOrNull)
-        assertEquals(0, coverage.getValue("reviewedProductCasesExecutable").jsonPrimitive.intOrNull)
-        assertEquals(18, coverage.getValue("reviewedProductCasesBlocked").jsonPrimitive.intOrNull)
+        assertEquals(7, coverage.getValue("reviewedProductCasesExecutable").jsonPrimitive.intOrNull)
+        assertEquals(11, coverage.getValue("reviewedProductCasesBlocked").jsonPrimitive.intOrNull)
         assertEquals(18, dataset.cases.count { it.kind == "reviewed_product" })
         assertEquals(5, dataset.cases.count { it.kind == "synthetic" })
         assertEquals(23, dataset.cases.size)
@@ -384,7 +402,20 @@ class BottleLookupEvaluationHarnessTest {
             .inventoryTruth.getValue(BottleFactField.ABV_PERCENT).status)
         assertEquals(InventoryLabelStatus.UNRESOLVED.name, reviewed.getValue("sons-junicopia-gin")
             .inventoryTruth.getValue(BottleFactField.ABV_PERCENT).status)
-        assertTrue(reviewed.values.all { it.sourceFacts.isEmpty() && it.pages.isEmpty() })
+        assertEquals(7, reviewed.values.count { it.sourceFacts.isNotEmpty() && it.pages.isNotEmpty() })
+        assertEquals(11, reviewed.values.count { it.sourceFacts.isEmpty() && it.pages.isEmpty() })
+        assertEquals(3, reviewed.values.count { it.pages.isNotEmpty() && it.split == "development" })
+        assertEquals(4, reviewed.values.count { it.pages.isNotEmpty() && it.split == "holdout" })
+        reviewed.values.filter { it.sourceCaptureStatus == "captured_http_excerpt" }.forEach { case ->
+            assertTrue(case.pages.all { it.sourceResponseSha256?.matches(Regex("[a-f0-9]{64}")) == true })
+        }
+        assertEquals("ABSENT", reviewed.getValue("giffard-grenadine-syrup").sourceFacts
+            .getValue(BottleFactField.ABV_PERCENT).status)
+        assertEquals("UNRESOLVED", reviewed.getValue("giffard-grenadine-syrup").inventoryTruth
+            .getValue(BottleFactField.ABV_PERCENT).status)
+        assertEquals("holdout", reviewed.getValue("esquimalt-dry-vermouth").split)
+        assertEquals("holdout", reviewed.getValue("esquimalt-rosso-sweet-vermouth").split)
+        assertEquals("holdout", reviewed.getValue("sons-junicopia-gin").split)
         assertEquals(setOf("holdout"), reviewed.values.filter { it.groupId == "sons-of-vancouver-family" }.map(EvalCase::split).toSet())
         assertEquals(setOf("holdout"), reviewed.values.filter { it.groupId == "esquimalt-vermouth-family" }.map(EvalCase::split).toSet())
         assertEquals(2, variants.size)
@@ -393,6 +424,9 @@ class BottleLookupEvaluationHarnessTest {
         val variantReports = report.getValue("variants").jsonArray
         assertEquals(2, variantReports.size)
         val first = variantReports.first().jsonObject
+        assertEquals(0, first.getValue("sourceSupportedFactMetrics").jsonObject
+            .getValue("eligibleCases").jsonPrimitive.intOrNull)
+        assertEquals(7, first.getValue("reviewedProductCasesSkippedWithoutRecordedModelOutput").jsonArray.size)
         val firstCase = first.getValue("syntheticCaseResults").jsonArray.first().jsonObject
         assertEquals(false, firstCase.getValue("inferenceExecutedByHarness").jsonPrimitive.booleanOrNull)
         assertEquals(true, firstCase.getValue("replayResponseConsumed").jsonPrimitive.booleanOrNull)
@@ -404,7 +438,7 @@ class BottleLookupEvaluationHarnessTest {
         assertEquals(7, second.getValue("syntheticContractMetrics").jsonObject.getValue("supportedFactTruePositives").jsonPrimitive.intOrNull)
         assertEquals(2, second.getValue("syntheticContractMetrics").jsonObject.getValue("supportedFactFalseNegatives").jsonPrimitive.intOrNull)
         assertEquals("not_measured", first.getValue("timingSource").jsonPrimitive.content)
-        assertEquals("unavailable_requires_development_and_heldout_reviewed_products", report.getValue("qualityAggregate").jsonPrimitive.content)
+        assertEquals("unavailable_requires_recorded_model_outputs_in_development_and_holdout", report.getValue("qualityAggregate").jsonPrimitive.content)
         val syntheticResults = first.getValue("syntheticCaseResults").jsonArray.map { it.jsonObject }.associateBy {
             it.getValue("caseId").jsonPrimitive.content
         }
@@ -435,6 +469,7 @@ private data class EvalPage(
     val selectionMethod: String?,
     val inputSha256: String?,
     val contentLicense: String?,
+    val sourceResponseSha256: String? = null,
 )
 private data class EvalCase(
     val id: String,
@@ -552,7 +587,7 @@ private fun parseCase(value: JsonElement): EvalCase {
         EvalPage(
             item.requiredString("sourceId"), item.requiredString("hitUrl"), page,
             item.string("capturedAtUtc"), item.string("selectionMethod"),
-            item.string("inputSha256"), item.string("contentLicense"),
+            item.string("inputSha256"), item.string("contentLicense"), item.string("sourceResponseSha256"),
         )
     }
     val barcode = root.requiredString("barcode")
@@ -568,7 +603,11 @@ private fun parseCase(value: JsonElement): EvalCase {
         require(label.status in SourceLabelStatus.entries.map(Enum<*>::name)) { "Unknown source-label status for $field" }
         if (label.status == SourceLabelStatus.SUPPORTED.name) {
             require(!label.value.isNullOrBlank() && !label.evidence.isNullOrBlank()) { "Supported source facts need a value and exact evidence span" }
-            require(pages.any { page -> page.page.markdown.contains(label.evidence!!, ignoreCase = true) || page.page.structuredBottleIdentities.any { it.evidence.contains(label.evidence!!, true) } }) {
+            require(pages.any { page ->
+                page.page.markdown.contains(label.evidence!!, ignoreCase = true) ||
+                    page.page.title.orEmpty().contains(label.evidence!!, ignoreCase = true) ||
+                    page.page.structuredBottleIdentities.any { it.evidence.contains(label.evidence!!, true) }
+            }) {
                 "${root.string("id")} $field evidence does not appear in its supplied source"
             }
         }
@@ -603,6 +642,11 @@ private fun validateFrozenSource(case: EvalCase) {
             .getOrElse { error("Reviewed source ${page.sourceId} capture time must be UTC ISO-8601") }
         require(!page.selectionMethod.isNullOrBlank()) { "Reviewed source ${page.sourceId} needs a selection method" }
         require(normalizePublicHttpsUrl(page.page.sourceUrl) != null) { "Frozen source URL must be public HTTPS" }
+        if (case.sourceCaptureStatus == "captured_http_excerpt") {
+            require(page.sourceResponseSha256?.matches(Regex("[a-f0-9]{64}")) == true) {
+                "Captured source ${page.sourceId} needs a SHA-256 of the fetched response body"
+            }
+        }
         val hash = frozenSourceInputSha256(page.page)
         require(page.inputSha256 == hash) { "Frozen extraction-input hash mismatch for ${page.sourceId}" }
     }
@@ -650,13 +694,24 @@ private fun parseVariants(root: JsonObject, expectedDatasetVersion: String): Lis
 
 private suspend fun evaluate(dataset: EvalDataset, variants: List<EvalVariant>, localServer: String? = null): JsonObject {
     val variantReports = variants.map { variant ->
-        val evaluated = dataset.cases.map { case -> evaluateCase(case, variant, localServer) }
-        reportVariant(variant, evaluated)
+        val skippedWithoutOutput = dataset.cases.filter { case ->
+            case.kind == "reviewed_product" && case.sourceCoverage == "complete" &&
+                localServer == null && case.id !in variant.responses
+        }.map(EvalCase::id).sorted()
+        val evaluated = dataset.cases.filter { case ->
+            case.id !in skippedWithoutOutput
+        }.map { case -> evaluateCase(case, variant, localServer) }
+        reportVariant(variant, evaluated, skippedWithoutOutput)
     }
     val realCases = dataset.cases.filter { it.kind == "reviewed_product" }
     val executableReal = realCases.count { it.sourceCoverage == "complete" && it.pages.isNotEmpty() }
     val executableBySplit = realCases.filter { it.sourceCoverage == "complete" && it.pages.isNotEmpty() }.groupingBy(EvalCase::split).eachCount()
-    val hasDevAndHoldout = executableBySplit.getOrDefault("development", 0) > 0 && executableBySplit.getOrDefault("holdout", 0) > 0
+    val hasModelOutputForBothSplits = variantReports.any { variant ->
+        val splits = variant.getValue("sourceSupportedFactMetricsBySplit").jsonObject
+        listOf("development", "holdout").all { split ->
+            (splits[split] as? JsonObject)?.get("eligibleCases")?.jsonPrimitive?.intOrNull?.let { it > 0 } == true
+        }
+    }
     return buildJsonObject {
         put("format", "com.davidhayesbc.cocktails.bottle-evaluation-report")
         put("schemaVersion", 1)
@@ -670,8 +725,8 @@ private suspend fun evaluate(dataset: EvalDataset, variants: List<EvalVariant>, 
             put("syntheticContractCases", dataset.cases.count { it.kind == "synthetic" })
             put("reviewedProductResearchTargets", realCases.sumOf { it.researchTargets.size })
         })
-        put("qualityAggregateEligible", hasDevAndHoldout)
-        put("qualityAggregate", if (hasDevAndHoldout) JsonPrimitive("computed_per_split") else JsonPrimitive("unavailable_requires_development_and_heldout_reviewed_products"))
+        put("qualityAggregateEligible", hasModelOutputForBothSplits)
+        put("qualityAggregate", if (hasModelOutputForBothSplits) JsonPrimitive("computed_per_split") else JsonPrimitive("unavailable_requires_recorded_model_outputs_in_development_and_holdout"))
         put("reviewedProductMetricsBySplit", buildJsonObject {
             realCases.map(EvalCase::split).distinct().sorted().forEach { split ->
                 put(split, buildJsonObject {
@@ -838,9 +893,13 @@ private fun sampleDeterministicCase(id: String): EvalCase {
     )
 }
 
-private fun eligibleProductionPromptCases(dataset: EvalDataset): List<EvalCase> = dataset.cases.filter { case ->
-    case.kind == "reviewed_product" && case.sourceCoverage == "complete" && case.pages.isNotEmpty() &&
-        case.sourceFacts.values.any { it.status != SourceLabelStatus.UNKNOWN.name }
+private fun eligibleProductionPromptCases(dataset: EvalDataset, evaluationSplit: String = "full"): List<EvalCase> {
+    require(evaluationSplit in setOf("development", "holdout", "full")) { "Evaluation split must be development, holdout, or full" }
+    return dataset.cases.filter { case ->
+        case.kind == "reviewed_product" && case.sourceCoverage == "complete" && case.pages.isNotEmpty() &&
+            (evaluationSplit == "full" || case.split == evaluationSplit) &&
+            case.sourceFacts.values.any { it.status != SourceLabelStatus.UNKNOWN.name }
+    }
 }
 
 private data class ProductionPromptBatch(
@@ -899,9 +958,13 @@ private suspend fun captureProductionPromptBatch(
     return ProductionPromptBatch(eligibleCaseIds, noInferenceCaseIds.sorted(), noInferenceReasons.toSortedMap(), tasks)
 }
 
-private suspend fun exportProductionPromptJobs(dataset: EvalDataset, destination: File) {
+private suspend fun exportProductionPromptJobs(
+    dataset: EvalDataset,
+    destination: File,
+    evaluationSplit: String = System.getProperty("bottle.eval.export.split")?.takeIf(String::isNotBlank) ?: "development",
+) {
     assertPinnedRuntimeMatchesAndroidNativeSource()
-    val eligible = eligibleProductionPromptCases(dataset)
+    val eligible = eligibleProductionPromptCases(dataset, evaluationSplit)
     require(eligible.isNotEmpty()) {
         "No reviewed product case has a complete frozen source and independent source labels. No prompts or model jobs were exported."
     }
@@ -909,7 +972,7 @@ private suspend fun exportProductionPromptJobs(dataset: EvalDataset, destination
     val batch = captureProductionPromptBatch(dataset, eligible, config)
     val result = buildPortablePromptJobs(
         dataset.version, dataset.splitPlan, config, batch.eligibleCaseIds, batch.noInferenceCaseIds,
-        batch.noInferenceReasons, batch.tasks,
+        batch.noInferenceReasons, batch.tasks, evaluationSplit,
     )
     destination.absoluteFile.parentFile?.mkdirs()
     destination.writeText(Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), result), Charsets.UTF_8)
@@ -923,12 +986,14 @@ private fun buildPortablePromptJobs(
     noInferenceCaseIds: List<String>,
     noInferenceReasons: Map<String, String>,
     tasks: List<JsonObject>,
+    evaluationSplit: String = "development",
 ): JsonObject {
     val configText = Json.encodeToString(JsonObject.serializer(), config)
     val ids = tasks.map { it.requiredString("caseId") }
     require(ids.distinct().size == ids.size)
     val eligible = eligibleCaseIds.distinct().sorted()
     val noInference = noInferenceCaseIds.distinct().sorted()
+    require(evaluationSplit in setOf("development", "holdout", "full"))
     require(eligible.isNotEmpty() && eligible.size <= 100 && eligible == eligibleCaseIds.sorted())
     require(noInference.size <= 100 && noInference == noInferenceCaseIds.sorted())
     require(noInferenceReasons.keys == noInference.toSet() && noInferenceReasons.values.all {
@@ -942,6 +1007,7 @@ private fun buildPortablePromptJobs(
         put("schemaVersion", 1)
         put("datasetVersion", datasetVersion)
         put("splitPlan", splitPlan)
+        put("evaluationSplit", evaluationSplit)
         put("config", config)
         put("configCanonicalJson", configText)
         put("configSha256", sha256(configText))
@@ -963,7 +1029,7 @@ private suspend fun importHostInferenceResults(dataset: EvalDataset, jobsFile: F
     val jobSha = sha256(jobsBytes)
     val jobs = Json.parseToJsonElement(jobsBytes.toString(Charsets.UTF_8)).jsonObject
     require(jobs.requiredString("format") == "com.davidhayesbc.cocktails.bottle-evaluation-prompt-jobs" && jobs.int("schemaVersion") == 1)
-    require(jobs.keys == setOf("format", "schemaVersion", "datasetVersion", "splitPlan", "config", "configCanonicalJson", "configSha256", "caseIds", "eligibleCaseIds", "noInferenceCaseIds", "noInferenceReasons", "tasks", "answerKeyIncluded"))
+    require(jobs.keys == setOf("format", "schemaVersion", "datasetVersion", "splitPlan", "evaluationSplit", "config", "configCanonicalJson", "configSha256", "caseIds", "eligibleCaseIds", "noInferenceCaseIds", "noInferenceReasons", "tasks", "answerKeyIncluded"))
     require(jobs["answerKeyIncluded"]?.jsonPrimitive?.booleanOrNull == false)
     val config = readLocalRuntimeConfig()
     val configText = jobs.requiredString("configCanonicalJson")
@@ -990,7 +1056,9 @@ private suspend fun importHostInferenceResults(dataset: EvalDataset, jobsFile: F
         tasksById.keys.none { it in noInferenceCaseIds } && noInferenceReasons.keys == noInferenceCaseIds.toSet()) {
         "Prompt tasks and no-inference cases must partition the eligible case set"
     }
-    val eligibleCases = eligibleProductionPromptCases(dataset)
+    val evaluationSplit = jobs.requiredString("evaluationSplit")
+    require(evaluationSplit in setOf("development", "holdout", "full"))
+    val eligibleCases = eligibleProductionPromptCases(dataset, evaluationSplit)
     val expectedEligibleIds = eligibleCases.map(EvalCase::id).sorted()
     require(eligibleCaseIds == expectedEligibleIds) { "Prompt jobs do not cover the current frozen executable case set" }
     val expectedBatch = captureProductionPromptBatch(dataset, eligibleCases, config)
@@ -1300,7 +1368,11 @@ private fun EvalVariant.modelIdForApp(): String = when {
     else -> LOCAL_MODEL_LABEL
 }
 
-private fun reportVariant(variant: EvalVariant, evaluated: List<EvaluatedCase>): JsonObject {
+private fun reportVariant(
+    variant: EvalVariant,
+    evaluated: List<EvaluatedCase>,
+    skippedWithoutRecordedOutput: List<String> = emptyList(),
+): JsonObject {
     val realEligible = evaluated.filter { it.case.kind == "reviewed_product" && it.case.sourceCoverage == "complete" }
     val synthetic = evaluated.filter { it.case.kind == "synthetic" }
     val realMetrics = scoreFacts(realEligible)
@@ -1347,6 +1419,9 @@ private fun reportVariant(variant: EvalVariant, evaluated: List<EvaluatedCase>):
         put("hostGeneratedTokensMedian", medianInt(evaluated.mapNotNull { it.response?.generatedTokens })
             ?.let(::JsonPrimitive) ?: JsonPrimitive("unavailable"))
         put("sourceSupportedFactMetrics", realMetrics)
+        put("reviewedProductCasesSkippedWithoutRecordedModelOutput", buildJsonArray {
+            skippedWithoutRecordedOutput.forEach { add(JsonPrimitive(it)) }
+        })
         put("sourceSupportedFactMetricsBySplit", buildJsonObject {
             realEligible.map { it.case.split }.distinct().sorted().forEach { split ->
                 put(split, scoreFacts(realEligible.filter { it.case.split == split }))

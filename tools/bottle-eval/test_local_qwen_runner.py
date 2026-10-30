@@ -35,6 +35,7 @@ class PromptJobValidationTests(unittest.TestCase):
             "schemaVersion": 1,
             "datasetVersion": "test-v1",
             "splitPlan": "split-v1",
+            "evaluationSplit": "development",
             "config": self.config,
             "configCanonicalJson": canonical,
             "configSha256": hashlib.sha256(canonical.encode()).hexdigest(),
@@ -61,6 +62,12 @@ class PromptJobValidationTests(unittest.TestCase):
         jobs = dict(self.jobs)
         jobs["sourceFacts"] = {"product_name": {"value": "gold label"}}
         with self.assertRaisesRegex(ValueError, "unsupported fields"):
+            self.read_jobs(jobs)
+
+    def test_unsupported_evaluation_split_is_rejected(self):
+        jobs = dict(self.jobs)
+        jobs["evaluationSplit"] = "heldout-ish"
+        with self.assertRaisesRegex(ValueError, "unsupported evaluation split"):
             self.read_jobs(jobs)
 
     def test_task_tampering_is_rejected(self):
@@ -104,7 +111,7 @@ class PromptJobValidationTests(unittest.TestCase):
     def test_readme_uses_declared_gradle_property_names(self):
         readme = README.read_text(encoding="utf-8")
         gradle = APP_GRADLE.read_text(encoding="utf-8")
-        for property_name in ("bottleEvalExportJobs", "bottleEvalImportJobs", "bottleEvalImportResults", "bottleEvalReport"):
+        for property_name in ("bottleEvalExportJobs", "bottleEvalExportSplit", "bottleEvalImportJobs", "bottleEvalImportResults", "bottleEvalReport"):
             self.assertIn(f"-P{property_name}=", readme)
             self.assertIn(f'gradleProperty("{property_name}")', gradle)
         self.assertNotIn("-Pbottle.eval.", readme)
@@ -119,6 +126,7 @@ class PromptJobValidationTests(unittest.TestCase):
         self.assertEqual(str(baseline["batchTokens"]), values["--ubatch-size"])
         self.assertIn("--no-jinja", command)
         self.assertIn("127.0.0.1", command)
+        self.assertEqual("5", values["--verbosity"])
 
     def test_inference_request_carries_production_grammar_and_decoding_settings(self):
         requests = []

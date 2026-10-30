@@ -1,7 +1,7 @@
 {
   "format": "com.davidhayesbc.cocktails.bottle-evaluation-cases",
   "schemaVersion": 1,
-  "datasetVersion": "reviewed-product-labels-v1-source-captures-pending",
+  "datasetVersion": "reviewed-product-labels-v1-bounded-source-captures-2026-10-30",
   "expectedReviewedProductCount": 18,
   "cases": [
     {
@@ -9,9 +9,9 @@
       "kind": "reviewed_product",
       "split": "holdout",
       "groupId": "auchentoshan",
-      "sourceCoverage": "blocked",
-      "sourceCaptureStatus": "not_captured",
-      "sourceFactLabeling": "awaiting_frozen_source_and_independent_annotation",
+      "sourceCoverage": "complete",
+      "sourceCaptureStatus": "captured_http_excerpt",
+      "sourceFactLabeling": "independently_annotated_from_frozen_source_excerpt",
       "barcode": "5011333150725",
       "barcodeAssociationStatus": "exact_upc",
       "identityExpectation": "target",
@@ -33,25 +33,62 @@
           "value": "43%"
         }
       },
-      "sourceFacts": {},
-      "sourceAttributionStatus": "user_provided_research_targets_only",
+      "sourceFacts": {
+        "product_name": {
+          "status": "SUPPORTED",
+          "value": "Auchentoshan Three Wood",
+          "evidence": "Auchentoshan Three Wood 750ml"
+        },
+        "brand": {
+          "status": "SUPPORTED",
+          "value": "Auchentoshan",
+          "evidence": "Auchentoshan"
+        },
+        "quantity": {
+          "status": "SUPPORTED",
+          "value": "750 mL",
+          "evidence": "Container Size: 750 mL"
+        },
+        "abv_percent": {
+          "status": "SUPPORTED",
+          "value": "43%",
+          "evidence": "Alcohol content: 43.0%"
+        }
+      },
+      "sourceAttributionStatus": "public_source_minimal_factual_excerpt",
       "researchTargets": [
         "https://www.anbl.com/lowland/auchentoshan-three-wood-750ml-16968",
         "https://www.liquormarts.ca/product/auchentoshan-three-wood-single-malt-scotch-whisky/750-ml"
       ],
-      "expectedSourceId": null,
+      "expectedSourceId": "anbl-auchentoshan",
       "searchHits": [],
-      "pages": [],
-      "sourceAccessNote": "Access attempted on 2026-10-30 through the enforced proxy for www.anbl.com, www.liquormarts.ca; CONNECT tunnel was rejected with HTTP 403 before an origin response. No source bytes were captured."
+      "pages": [
+        {
+          "sourceId": "anbl-auchentoshan",
+          "hitUrl": "https://www.anbl.com/lowland/auchentoshan-three-wood-750ml-16968",
+          "title": "Auchentoshan Three Wood 750ml",
+          "sourceUrl": "https://www.anbl.com/lowland/auchentoshan-three-wood-750ml-16968",
+          "provider": "Direct public HTTP capture; manually selected product-detail excerpt",
+          "markdown": "Product Code: 5011333150725\nAlcohol content: 43.0%\nContainer Size: 750 mL",
+          "structuredIdentities": [],
+          "capturedAtUtc": "2026-10-30T14:56:47Z",
+          "selectionMethod": "Manually selected the product identity/specification text from the successful 200 response. This exact short excerpt is the complete model input fixture, not a full-page snapshot.",
+          "sourceResponseSha256": "8a810e69ee8ec11bf61f0ad09a3ea6fdaa1205bfb01be057730da170b5e44467",
+          "inputSha256": "3e186e51ccf1e08446f75ad96dbfd5b758f8eb545a5bf5f24b76796b1c8a416f",
+          "contentLicense": "Minimal factual excerpt under 25 verbatim source words; source URL attributed; no broader license asserted."
+        }
+      ],
+      "sourceAccessNote": "Captured from the approved ANBL product page. A second Manitoba listing was also read for corroboration but is not included in this extraction fixture. No retrieval/search result is simulated.",
+      "sourceSelectionMode": "independent_product_source"
     },
     {
       "id": "banff-ice-vodka",
       "kind": "reviewed_product",
       "split": "development",
       "groupId": "banff-ice",
-      "sourceCoverage": "blocked",
-      "sourceCaptureStatus": "not_captured",
-      "sourceFactLabeling": "awaiting_frozen_source_and_independent_annotation",
+      "sourceCoverage": "complete",
+      "sourceCaptureStatus": "captured_http_excerpt",
+      "sourceFactLabeling": "independently_annotated_from_frozen_source_excerpt",
       "barcode": "080686032069",
       "barcodeAssociationStatus": "exact_upc",
       "identityExpectation": "target",
@@ -73,15 +110,52 @@
           "value": "40%"
         }
       },
-      "sourceFacts": {},
-      "sourceAttributionStatus": "user_provided_research_targets_only",
+      "sourceFacts": {
+        "product_name": {
+          "status": "SUPPORTED",
+          "value": "Banff Ice",
+          "evidence": "Banff Ice 750ml"
+        },
+        "brand": {
+          "status": "SUPPORTED",
+          "value": "Banff Ice",
+          "evidence": "Banff Ice"
+        },
+        "quantity": {
+          "status": "SUPPORTED",
+          "value": "750 mL",
+          "evidence": "Container Size: 750 mL"
+        },
+        "abv_percent": {
+          "status": "SUPPORTED",
+          "value": "40%",
+          "evidence": "Alcohol content: 40.0%"
+        }
+      },
+      "sourceAttributionStatus": "public_source_minimal_factual_excerpt",
       "researchTargets": [
         "https://www.anbl.com/unflavoured/banff-ice-750ml-10794"
       ],
-      "expectedSourceId": null,
+      "expectedSourceId": "anbl-banff",
       "searchHits": [],
-      "pages": [],
-      "sourceAccessNote": "Access attempted on 2026-10-30 through the enforced proxy for www.anbl.com; CONNECT tunnel was rejected with HTTP 403 before an origin response. No source bytes were captured."
+      "pages": [
+        {
+          "sourceId": "anbl-banff",
+          "hitUrl": "https://www.anbl.com/unflavoured/banff-ice-750ml-10794",
+          "title": "Banff Ice 750ml",
+          "sourceUrl": "https://www.anbl.com/unflavoured/banff-ice-750ml-10794",
+          "provider": "Direct public HTTP capture; manually selected product-detail excerpt",
+          "markdown": "Product Code: 080686032069\nAlcohol content: 40.0%\nContainer Size: 750 mL",
+          "structuredIdentities": [],
+          "capturedAtUtc": "2026-10-30T14:56:47Z",
+          "selectionMethod": "Manually selected the product identity/specification text from the successful 200 response. This exact short excerpt is the complete model input fixture, not a full-page snapshot.",
+          "sourceResponseSha256": "ac579f6892b3907502e8caf999234a2327bc346fadc6aa11b5e69ff9a6250460",
+          "inputSha256": "dcf09bb0426efaade0b4fcda12e2d046cf4ed6261044d6f008ffda2ca893297e",
+          "contentLicense": "Minimal factual excerpt under 25 verbatim source words; source URL attributed; no broader license asserted."
+        }
+      ],
+      "sourceAccessNote": "Captured from the approved ANBL product page. No retrieval/search result is simulated.",
+      "sourceSelectionMode": "independent_product_source"
     },
     {
       "id": "campari",
@@ -125,9 +199,9 @@
       "kind": "reviewed_product",
       "split": "development",
       "groupId": "dubonnet",
-      "sourceCoverage": "blocked",
-      "sourceCaptureStatus": "not_captured",
-      "sourceFactLabeling": "awaiting_frozen_source_and_independent_annotation",
+      "sourceCoverage": "complete",
+      "sourceCaptureStatus": "captured_http_excerpt",
+      "sourceFactLabeling": "independently_annotated_from_frozen_source_excerpt",
       "barcode": "3163933575001",
       "barcodeAssociationStatus": "exact_upc_reviewed_correction",
       "identityExpectation": "target",
@@ -149,28 +223,65 @@
           "value": "14.8%"
         }
       },
-      "sourceFacts": {},
-      "sourceAttributionStatus": "user_provided_research_targets_only",
+      "sourceFacts": {
+        "product_name": {
+          "status": "SUPPORTED",
+          "value": "Dubonnet Rouge",
+          "evidence": "DUBONNET ROUGE"
+        },
+        "brand": {
+          "status": "SUPPORTED",
+          "value": "Dubonnet",
+          "evidence": "DUBONNET ROUGE"
+        },
+        "quantity": {
+          "status": "SUPPORTED",
+          "value": "750 mL",
+          "evidence": "750 ml"
+        },
+        "abv_percent": {
+          "status": "SUPPORTED",
+          "value": "14.8%",
+          "evidence": "Alcohol: 14.80%"
+        }
+      },
+      "sourceAttributionStatus": "public_source_minimal_factual_excerpt",
       "researchTargets": [
         "https://www.liquormarts.ca/product/dubonnet-rouge/750-ml",
         "https://www.saq.com/fr/356"
       ],
-      "expectedSourceId": null,
+      "expectedSourceId": "liquormart-dubonnet",
       "searchHits": [],
-      "pages": [],
-      "sourceAccessNote": "Access attempted on 2026-10-30 through the enforced proxy for www.liquormarts.ca; CONNECT tunnel was rejected with HTTP 403 before an origin response. No source bytes were captured. Other research targets not attempted: www.saq.com.",
+      "pages": [
+        {
+          "sourceId": "liquormart-dubonnet",
+          "hitUrl": "https://www.liquormarts.ca/product/dubonnet-rouge/750-ml",
+          "title": "DUBONNET ROUGE",
+          "sourceUrl": "https://www.liquormarts.ca/product/dubonnet-rouge/750-ml",
+          "provider": "Direct public HTTP capture; manually selected product-detail excerpt",
+          "markdown": "UPC 3163933575001 | 750 ml\nAlcohol: 14.80%",
+          "structuredIdentities": [],
+          "capturedAtUtc": "2026-10-30T14:56:49Z",
+          "selectionMethod": "Manually selected the product identity/specification text from the successful 200 response. This exact short excerpt is the complete model input fixture, not a full-page snapshot.",
+          "sourceResponseSha256": "e46aea4eb724770637519156ae8aa46297d60a8393dae0a06e83b9f659071b74",
+          "inputSha256": "cb9b7551c56bda5c8b29818fcdce1a463488aba21374129e083be713a48ef897",
+          "contentLicense": "Minimal factual excerpt under 25 verbatim source words; source URL attributed; no broader license asserted."
+        }
+      ],
+      "sourceAccessNote": "Captured from the approved Manitoba Liquor Mart product page. No retrieval/search result is simulated.",
       "reviewNotes": [
         "User-reviewed correction retained."
-      ]
+      ],
+      "sourceSelectionMode": "independent_product_source"
     },
     {
       "id": "esquimalt-dry-vermouth",
       "kind": "reviewed_product",
       "split": "holdout",
       "groupId": "esquimalt-vermouth-family",
-      "sourceCoverage": "blocked",
-      "sourceCaptureStatus": "not_captured",
-      "sourceFactLabeling": "awaiting_frozen_source_and_independent_annotation",
+      "sourceCoverage": "complete",
+      "sourceCaptureStatus": "captured_http_excerpt",
+      "sourceFactLabeling": "independently_annotated_from_frozen_source_excerpt",
       "barcode": "628011812230",
       "barcodeAssociationStatus": "manufacturer_exact_upc",
       "identityExpectation": "target",
@@ -192,24 +303,56 @@
           "value": "18%"
         }
       },
-      "sourceFacts": {},
-      "sourceAttributionStatus": "user_provided_research_targets_only",
+      "sourceFacts": {
+        "product_name": {
+          "status": "SUPPORTED",
+          "value": "Dry Vermouth",
+          "evidence": "Dry Vermouth"
+        },
+        "quantity": {
+          "status": "SUPPORTED",
+          "value": "500 mL",
+          "evidence": "500 mL"
+        },
+        "abv_percent": {
+          "status": "SUPPORTED",
+          "value": "18%",
+          "evidence": "18% Alc./Vol."
+        }
+      },
+      "sourceAttributionStatus": "public_source_minimal_factual_excerpt",
       "researchTargets": [
         "https://esquimaltvermouth.ca/pages/wholesale-sales-sheet-esquimalt-rootside"
       ],
-      "expectedSourceId": null,
+      "expectedSourceId": "esquimalt-wholesale-sheet-dry",
       "searchHits": [],
-      "pages": [],
-      "sourceAccessNote": "Access attempted on 2026-10-30 through the enforced proxy for esquimaltvermouth.ca; CONNECT tunnel was rejected with HTTP 403 before an origin response. No source bytes were captured."
+      "pages": [
+        {
+          "sourceId": "esquimalt-wholesale-sheet-dry",
+          "hitUrl": "https://esquimaltvermouth.ca/pages/wholesale-sales-sheet-esquimalt-rootside",
+          "title": null,
+          "sourceUrl": "https://esquimaltvermouth.ca/pages/wholesale-sales-sheet-esquimalt-rootside",
+          "provider": "Direct public HTTP capture; manually selected product-detail excerpt",
+          "markdown": "Dry Vermouth 500 mL UPC 628011812230\nDRY VERMOUTH ... 18% Alc./Vol.",
+          "structuredIdentities": [],
+          "capturedAtUtc": "2026-10-30T14:56:47Z",
+          "selectionMethod": "Manually selected the product identity/specification text from the successful 200 response. This exact short excerpt is the complete model input fixture, not a full-page snapshot.",
+          "sourceResponseSha256": "faa9193cbeb3ca51e201a848dbf561335ad4774f65ad7fdc5c80c809ad370d33",
+          "inputSha256": "525128ff93b686af68c3a5ed621d0e22cdc139664fc8a4194d998850210b03cb",
+          "contentLicense": "Minimal factual excerpt under 25 verbatim source words; source URL attributed; no broader license asserted."
+        }
+      ],
+      "sourceAccessNote": "Captured from the manufacturer wholesale sheet. Ellipsis marks omitted material between the product row and its product-specific alcohol statement. The excerpt is minimal and does not reproduce promotional copy.",
+      "sourceSelectionMode": "independent_product_source"
     },
     {
       "id": "esquimalt-rosso-sweet-vermouth",
       "kind": "reviewed_product",
       "split": "holdout",
       "groupId": "esquimalt-vermouth-family",
-      "sourceCoverage": "blocked",
-      "sourceCaptureStatus": "not_captured",
-      "sourceFactLabeling": "awaiting_frozen_source_and_independent_annotation",
+      "sourceCoverage": "complete",
+      "sourceCaptureStatus": "captured_http_excerpt",
+      "sourceFactLabeling": "independently_annotated_from_frozen_source_excerpt",
       "barcode": "628011812223",
       "barcodeAssociationStatus": "manufacturer_exact_upc",
       "identityExpectation": "target",
@@ -231,15 +374,47 @@
           "value": "17.5%"
         }
       },
-      "sourceFacts": {},
-      "sourceAttributionStatus": "user_provided_research_targets_only",
+      "sourceFacts": {
+        "product_name": {
+          "status": "SUPPORTED",
+          "value": "Rosso (sweet) Vermouth",
+          "evidence": "Rosso (sweet) Vermouth"
+        },
+        "quantity": {
+          "status": "SUPPORTED",
+          "value": "500 mL",
+          "evidence": "500 mL"
+        },
+        "abv_percent": {
+          "status": "SUPPORTED",
+          "value": "17.5%",
+          "evidence": "17.5% Alc./Vol."
+        }
+      },
+      "sourceAttributionStatus": "public_source_minimal_factual_excerpt",
       "researchTargets": [
         "https://esquimaltvermouth.ca/pages/wholesale-sales-sheet-esquimalt-rootside"
       ],
-      "expectedSourceId": null,
+      "expectedSourceId": "esquimalt-wholesale-sheet-rosso",
       "searchHits": [],
-      "pages": [],
-      "sourceAccessNote": "Access attempted on 2026-10-30 through the enforced proxy for esquimaltvermouth.ca; CONNECT tunnel was rejected with HTTP 403 before an origin response. No source bytes were captured."
+      "pages": [
+        {
+          "sourceId": "esquimalt-wholesale-sheet-rosso",
+          "hitUrl": "https://esquimaltvermouth.ca/pages/wholesale-sales-sheet-esquimalt-rootside",
+          "title": null,
+          "sourceUrl": "https://esquimaltvermouth.ca/pages/wholesale-sales-sheet-esquimalt-rootside",
+          "provider": "Direct public HTTP capture; manually selected product-detail excerpt",
+          "markdown": "Rosso (sweet) Vermouth 500 mL UPC 628011812223\nSEMI-SWEET VERMOUTH ... 17.5% Alc./Vol.",
+          "structuredIdentities": [],
+          "capturedAtUtc": "2026-10-30T14:56:47Z",
+          "selectionMethod": "Manually selected the product identity/specification text from the successful 200 response. This exact short excerpt is the complete model input fixture, not a full-page snapshot.",
+          "sourceResponseSha256": "faa9193cbeb3ca51e201a848dbf561335ad4774f65ad7fdc5c80c809ad370d33",
+          "inputSha256": "472fb811b99b5c9e8ae85a0a4dbd823220f8185fd1ec51f3ed65ab0cb22120f8",
+          "contentLicense": "Minimal factual excerpt under 25 verbatim source words; source URL attributed; no broader license asserted."
+        }
+      ],
+      "sourceAccessNote": "Captured from the manufacturer wholesale sheet. Ellipsis marks omitted material between the product row and its product-specific alcohol statement. The excerpt is minimal and does not reproduce promotional copy.",
+      "sourceSelectionMode": "independent_product_source"
     },
     {
       "id": "flor-de-cana-anejo-clasico",
@@ -283,9 +458,9 @@
       "kind": "reviewed_product",
       "split": "holdout",
       "groupId": "giffard",
-      "sourceCoverage": "blocked",
-      "sourceCaptureStatus": "not_captured",
-      "sourceFactLabeling": "awaiting_frozen_source_and_independent_annotation",
+      "sourceCoverage": "complete",
+      "sourceCaptureStatus": "captured_http_excerpt",
+      "sourceFactLabeling": "independently_annotated_from_frozen_source_excerpt",
       "barcode": "3180298208214",
       "barcodeAssociationStatus": "exact_upc_size",
       "identityExpectation": "target",
@@ -307,19 +482,54 @@
           "value": null
         }
       },
-      "sourceFacts": {},
-      "sourceAttributionStatus": "user_provided_research_targets_only",
+      "sourceFacts": {
+        "product_name": {
+          "status": "SUPPORTED",
+          "value": "Grenadine Syrup",
+          "evidence": "Grenadine Syrup"
+        },
+        "brand": {
+          "status": "SUPPORTED",
+          "value": "Giffard",
+          "evidence": "giffard"
+        },
+        "quantity": {
+          "status": "SUPPORTED",
+          "value": "1 L",
+          "evidence": "Bottles available in: 1 L"
+        },
+        "abv_percent": {
+          "status": "ABSENT"
+        }
+      },
+      "sourceAttributionStatus": "public_source_minimal_factual_excerpt",
       "researchTargets": [
         "https://www.giffardcanada.com/grenadine-syrup",
         "https://www.unitedbeverages.pl/upload/infolog/karta-produkto-CC-81w-giffard-syropy-grenadyna.pdf"
       ],
-      "expectedSourceId": null,
+      "expectedSourceId": "giffard-canada-grenadine",
       "searchHits": [],
-      "pages": [],
-      "sourceAccessNote": "Access attempted on 2026-10-30 through the enforced proxy for www.giffardcanada.com; CONNECT tunnel was rejected with HTTP 403 before an origin response. No source bytes were captured. Other research targets not attempted: www.unitedbeverages.pl.",
+      "pages": [
+        {
+          "sourceId": "giffard-canada-grenadine",
+          "hitUrl": "https://www.giffardcanada.com/grenadine-syrup",
+          "title": "Grenadine Syrup | giffard",
+          "sourceUrl": "https://www.giffardcanada.com/grenadine-syrup",
+          "provider": "Direct public HTTP capture; manually selected product-detail excerpt",
+          "markdown": "Alcohol Grade: Non-Alcholic\nBottles available in: 1 L\nProduct Code: W00143",
+          "structuredIdentities": [],
+          "capturedAtUtc": "2026-10-30T14:56:47Z",
+          "selectionMethod": "Manually selected the product identity/specification text from the successful 200 response. This exact short excerpt is the complete model input fixture, not a full-page snapshot.",
+          "sourceResponseSha256": "cf7e3643a3daa1f95fb84d51dd990a2b6c107f0df381f518ccf0b8edea12687a",
+          "inputSha256": "6099eb8a0334c41b52e8c0f094c064e99b880c1f2b55139a0b3f4c0f28961034",
+          "contentLicense": "Minimal factual excerpt under 25 verbatim source words; source URL attributed; no broader license asserted."
+        }
+      ],
+      "sourceAccessNote": "Captured from the approved Giffard Canada product page. The captured product details state a non-alcoholic grade and list no numeric ABV. The page does not show the reviewed bottle UPC, so this source does not independently establish that barcode association.",
       "reviewNotes": [
         "Numeric ABV is unknown, not zero."
-      ]
+      ],
+      "sourceSelectionMode": "independent_product_source"
     },
     {
       "id": "myers-original-dark-rum",
@@ -668,9 +878,9 @@
       "kind": "reviewed_product",
       "split": "development",
       "groupId": "wild-turkey-101",
-      "sourceCoverage": "blocked",
-      "sourceCaptureStatus": "not_captured",
-      "sourceFactLabeling": "awaiting_frozen_source_and_independent_annotation",
+      "sourceCoverage": "complete",
+      "sourceCaptureStatus": "captured_http_excerpt",
+      "sourceFactLabeling": "independently_annotated_from_frozen_source_excerpt",
       "barcode": "721059897501",
       "barcodeAssociationStatus": "exact_upc_reviewed_correction",
       "identityExpectation": "target",
@@ -692,18 +902,55 @@
           "value": "50.5%"
         }
       },
-      "sourceFacts": {},
-      "sourceAttributionStatus": "user_provided_research_targets_only",
+      "sourceFacts": {
+        "product_name": {
+          "status": "SUPPORTED",
+          "value": "Wild Turkey 101",
+          "evidence": "Wild Turkey 101 750ml"
+        },
+        "brand": {
+          "status": "SUPPORTED",
+          "value": "Wild Turkey",
+          "evidence": "Wild Turkey 101"
+        },
+        "quantity": {
+          "status": "SUPPORTED",
+          "value": "750 mL",
+          "evidence": "750 mL"
+        },
+        "abv_percent": {
+          "status": "SUPPORTED",
+          "value": "50.5%",
+          "evidence": "50.5%"
+        }
+      },
+      "sourceAttributionStatus": "public_source_minimal_factual_excerpt",
       "researchTargets": [
         "https://www.anbl.com/fr/wild-turkey-101-750ml-29499"
       ],
-      "expectedSourceId": null,
+      "expectedSourceId": "anbl-wild-turkey-101",
       "searchHits": [],
-      "pages": [],
-      "sourceAccessNote": "Access attempted on 2026-10-30 through the enforced proxy for www.anbl.com; CONNECT tunnel was rejected with HTTP 403 before an origin response. No source bytes were captured.",
+      "pages": [
+        {
+          "sourceId": "anbl-wild-turkey-101",
+          "hitUrl": "https://www.anbl.com/fr/wild-turkey-101-750ml-29499",
+          "title": "Wild Turkey 101 750ml",
+          "sourceUrl": "https://www.anbl.com/fr/wild-turkey-101-750ml-29499",
+          "provider": "Direct public HTTP capture; manually selected product-detail excerpt",
+          "markdown": "Code de produit : 721059897501\nTeneur en alcool : 50.5%\nTaille du contenant : 750 mL",
+          "structuredIdentities": [],
+          "capturedAtUtc": "2026-10-30T14:56:47Z",
+          "selectionMethod": "Manually selected the product identity/specification text from the successful 200 response. This exact short excerpt is the complete model input fixture, not a full-page snapshot.",
+          "sourceResponseSha256": "a6625e815bf208f6e1d2f4ccc9fb8b553b1a5405697064a2912e927d7b184fa7",
+          "inputSha256": "bf7842d79a1ec7943f4848bf5c201d26e06c6abfa8656d76e1217f02a413fdc3",
+          "contentLicense": "Minimal factual excerpt under 25 verbatim source words; source URL attributed; no broader license asserted."
+        }
+      ],
+      "sourceAccessNote": "Captured from the approved ANBL French-language product page. The product title remains English; the numeric specifications and code are transcribed from the French labels. No retrieval/search result is simulated.",
       "reviewNotes": [
         "User-reviewed correction retained."
-      ]
+      ],
+      "sourceSelectionMode": "independent_product_source"
     },
     {
       "id": "synthetic-partial-table-fallback-fetch",
