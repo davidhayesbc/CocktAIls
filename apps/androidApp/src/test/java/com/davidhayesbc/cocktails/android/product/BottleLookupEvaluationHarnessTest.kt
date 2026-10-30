@@ -41,7 +41,8 @@ class BottleLookupEvaluationHarnessTest {
     @Test
     fun portableJobsContainProductionInputsButNoExpectedLabels() {
         val config = readLocalRuntimeConfig()
-        val prompt = buildPortablePromptJobs("dataset-v1", "split-v1", config, listOf(buildJsonObject {
+        val prompt = buildPortablePromptJobs("dataset-v1", "split-v1", config,
+            eligibleCaseIds = listOf("product-a"), noInferenceCaseIds = emptyList(), noInferenceReasons = emptyMap(), tasks = listOf(buildJsonObject {
             put("caseId", "product-a")
             put("sourceId", "source-a")
             put("sourceInputSha256", "a".repeat(64))
@@ -93,9 +94,19 @@ class BottleLookupEvaluationHarnessTest {
             sourceFacts = mapOf(BottleFactField.PRODUCT_NAME to LabeledValue("SUPPORTED", "Sample Spirit", "### Sample Spirit")),
             researchTargets = emptyList(), searchHits = emptyList(), pages = listOf(evalPage),
         )
-        val dataset = EvalDataset("dataset-v1", "split-v1", 1, listOf(case))
-        val task = captureProductionPromptTasks(dataset, listOf(case), config).single()
-        val jobs = buildPortablePromptJobs(dataset.version, dataset.splitPlan, config, listOf(task))
+        val deterministicCase = sampleDeterministicCase("deterministic-case")
+        val abstainedCase = sampleInferenceCase("abstained-case")
+            .copy(searchHits = emptyList(), sourceSelectionMode = "barcode_search")
+        val dataset = EvalDataset("dataset-v1", "split-v1", 3, listOf(case, deterministicCase, abstainedCase))
+        val batch = captureProductionPromptBatch(dataset, dataset.cases, config)
+        val task = batch.tasks.single()
+        val jobs = buildPortablePromptJobs(
+            dataset.version, dataset.splitPlan, config,
+            eligibleCaseIds = batch.eligibleCaseIds,
+            noInferenceCaseIds = batch.noInferenceCaseIds,
+            noInferenceReasons = batch.noInferenceReasons,
+            tasks = batch.tasks,
+        )
         val baseline = config.getValue("androidBaseline").jsonObject
         val configSha = jobs.requiredString("configSha256")
         val resultJson = buildJsonObject {
@@ -131,7 +142,7 @@ class BottleLookupEvaluationHarnessTest {
             val resultsFile = File(temp, "results.json")
             resultsFile.writeText(Json.encodeToString(JsonObject.serializer(), boundResult), Charsets.UTF_8)
             val imported = importHostInferenceResults(dataset, jobsFile, resultsFile)
-            assertEquals(listOf(case.id), imported.caseIds)
+            assertEquals(listOf("abstained-case", "deterministic-case", case.id), imported.caseIds)
             assertEquals("host_model_execution_result", imported.variant.outputSource)
             assertEquals("host_model_execution", imported.variant.responses.getValue(case.id).origin)
 
@@ -184,6 +195,69 @@ class BottleLookupEvaluationHarnessTest {
         } finally {
             temp.deleteRecursively()
         }
+    }
+
+    @Test
+    fun productionPromptBatchSeparatesModelJobsFromDeterministicAndAbstainedCases() = runBlocking {
+        val modelCase = sampleInferenceCase("model-case")
+        val deterministicCase = sampleDeterministicCase("deterministic-case")
+        val abstainedCase = modelCase.copy(id = "abstained-case", searchHits = emptyList(), sourceSelectionMode = "barcode_search")
+        val dataset = EvalDataset("dataset-v1", "split-v1", 3, listOf(modelCase, deterministicCase, abstainedCase))
+        val batch = captureProductionPromptBatch(dataset, dataset.cases, readLocalRuntimeConfig())
+
+        assertEquals(listOf("abstained-case", "deterministic-case", "model-case"), batch.eligibleCaseIds)
+        assertEquals(listOf("model-case"), batch.tasks.map { it.requiredString("caseId") })
+        assertEquals(listOf("abstained-case", "deterministic-case"), batch.noInferenceCaseIds)
+        assertEquals(
+            mapOf("abstained-case" to "RETRIEVAL_ABSTENTION", "deterministic-case" to "DETERMINISTIC_SOURCE"),
+            batch.noInferenceReasons,
+        )
+    }
+
+    @Test
+    fun allNoInferenceBatchIsRepresentedWithoutCreatingModelTasks() = runBlocking {
+        val deterministic = sampleDeterministicCase("deterministic-case")
+        val abstained = sampleInferenceCase("abstained-case").copy(searchHits = emptyList(), sourceSelectionMode = "barcode_search")
+        val dataset = EvalDataset("dataset-v1", "split-v1", 2, listOf(deterministic, abstained))
+        val batch = captureProductionPromptBatch(dataset, dataset.cases, readLocalRuntimeConfig())
+        val jobs = buildPortablePromptJobs(
+            dataset.version, dataset.splitPlan, readLocalRuntimeConfig(),
+            batch.eligibleCaseIds, batch.noInferenceCaseIds, batch.noInferenceReasons, batch.tasks,
+        )
+
+        assertTrue(batch.tasks.isEmpty())
+        assertEquals(emptyList<String>(), jobs.requiredArray("caseIds").map { it.jsonPrimitive.content })
+        assertEquals(batch.eligibleCaseIds, jobs.requiredArray("eligibleCaseIds").map { it.jsonPrimitive.content })
+        assertEquals(batch.eligibleCaseIds, jobs.requiredArray("noInferenceCaseIds").map { it.jsonPrimitive.content })
+        assertEquals(
+            setOf("DETERMINISTIC_SOURCE", "RETRIEVAL_ABSTENTION"),
+            jobs.requiredObject("noInferenceReasons").values.map { it.jsonPrimitive.content }.toSet(),
+        )
+        assertTrue(jobs.requiredArray("tasks").isEmpty())
+    }
+
+    @Test
+    fun replayedTokenLimitedValidJsonUsesProductionTruncationFailurePath() = runBlocking {
+        val case = sampleInferenceCase("truncated-case")
+        val validLookingJson = """{"facts":[{"field":"product_name","value":"Sample Spirit","evidence":"Sample Spirit"}]}"""
+        val variant = localQwenVariant().copy(responses = mapOf(case.id to EvalResponse(
+            response = validLookingJson,
+            finishReason = "TOKEN_LIMIT",
+            generatedTokens = DEFAULT_LOCAL_MAX_OUTPUT_TOKENS,
+            generationMillis = 1,
+        )))
+
+        val evaluated = evaluateCase(case, variant, localServer = null)
+
+        assertTrue(evaluated.outcome.extraction is BottleDetailExtractionResult.LocalFailure)
+        assertEquals(
+            LocalInferenceFailureCode.MODEL_OUTPUT_TRUNCATED,
+            (evaluated.outcome.extraction as BottleDetailExtractionResult.LocalFailure).code,
+        )
+        assertEquals("TOKEN_LIMIT", evaluated.response?.finishReason)
+        assertFalse(evaluated.extractionEvents.any {
+            it.stage == BottleLookupDebugStage.LOCAL_RESPONSE_PARSING && it.result == "RUNNING"
+        })
     }
 
     @Test
@@ -713,21 +787,85 @@ private fun samplerConfigName(nativeName: String): String = when (nativeName) {
 private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes)
     .joinToString("") { "%02x".format(it) }
 
+private fun sampleInferenceCase(id: String): EvalCase {
+    val page = WebPageText(
+        title = "Sample Spirit 5011333150725",
+        sourceUrl = "https://products.example/items/sample-spirit",
+        markdown = "UPC: 5011333150725\n### Sample Spirit\nBrand: Sample House",
+        provider = "Frozen test source",
+    )
+    val sourceHash = frozenSourceInputSha256(page)
+    val evalPage = EvalPage("source-$id", page.sourceUrl, page, "2026-10-29T00:00:00Z", "test fixture",
+        sourceHash, "short factual test excerpt")
+    return EvalCase(
+        id = id, kind = "reviewed_product", split = "development", groupId = "sample-family-$id",
+        sourceCoverage = "complete", sourceCaptureStatus = "fixture", sourceSelectionMode = "independent_product_source",
+        barcode = "5011333150725", identityExpectation = IdentityExpectation.TARGET, expectedSourceId = evalPage.sourceId,
+        inventoryTruth = emptyMap(),
+        sourceFacts = mapOf(BottleFactField.PRODUCT_NAME to LabeledValue("SUPPORTED", "Sample Spirit", "### Sample Spirit")),
+        researchTargets = emptyList(), searchHits = emptyList(), pages = listOf(evalPage),
+    )
+}
+
+private fun sampleDeterministicCase(id: String): EvalCase {
+    val page = WebPageText(
+        title = "Sample House Sample Spirit",
+        sourceUrl = "https://products.example/items/sample-spirit",
+        markdown = """### Sample Spirit
+            | UPC: | 5011333150725 |
+            | Size: | 750 mL |
+            | Alcohol: | 43% |
+        """.trimIndent(),
+        provider = "Frozen test source",
+    )
+    val sourceHash = frozenSourceInputSha256(page)
+    val sourceId = "source-$id"
+    val evalPage = EvalPage(sourceId, page.sourceUrl, page, "2026-10-29T00:00:00Z", "test fixture",
+        sourceHash, "short factual test excerpt")
+    return EvalCase(
+        id = id, kind = "reviewed_product", split = "development", groupId = "sample-family-$id",
+        sourceCoverage = "complete", sourceCaptureStatus = "fixture", sourceSelectionMode = "barcode_search",
+        barcode = "5011333150725", identityExpectation = IdentityExpectation.TARGET, expectedSourceId = sourceId,
+        inventoryTruth = emptyMap(),
+        sourceFacts = mapOf(
+            BottleFactField.PRODUCT_NAME to LabeledValue("SUPPORTED", "Sample Spirit", "### Sample Spirit"),
+            BottleFactField.QUANTITY to LabeledValue("SUPPORTED", "750 mL", "Size: 750 mL"),
+            BottleFactField.ABV_PERCENT to LabeledValue("SUPPORTED", "43%", "Alcohol: 43%"),
+        ),
+        researchTargets = emptyList(),
+        searchHits = listOf(sourceId to WebSearchHit("Sample Spirit", page.sourceUrl, "UPC 5011333150725")),
+        pages = listOf(evalPage),
+    )
+}
+
 private fun eligibleProductionPromptCases(dataset: EvalDataset): List<EvalCase> = dataset.cases.filter { case ->
     case.kind == "reviewed_product" && case.sourceCoverage == "complete" && case.pages.isNotEmpty() &&
         case.sourceFacts.values.any { it.status != SourceLabelStatus.UNKNOWN.name }
 }
 
-private suspend fun captureProductionPromptTasks(
+private data class ProductionPromptBatch(
+    val eligibleCaseIds: List<String>,
+    val noInferenceCaseIds: List<String>,
+    val noInferenceReasons: Map<String, String>,
+    val tasks: List<JsonObject>,
+)
+
+private suspend fun captureProductionPromptBatch(
     dataset: EvalDataset,
     cases: List<EvalCase>,
     config: JsonObject,
-): List<JsonObject> {
+): ProductionPromptBatch {
     require(cases.isNotEmpty()) { "Prompt capture requires at least one eligible reviewed product case" }
     val variant = localQwenVariant()
-    return cases.sortedBy(EvalCase::id).map { case ->
+    val tasks = mutableListOf<JsonObject>()
+    val noInferenceCaseIds = mutableListOf<String>()
+    val noInferenceReasons = mutableMapOf<String, String>()
+    cases.sortedBy(EvalCase::id).forEach { case ->
         var captured: JsonObject? = null
-        evaluateCase(case, variant, localServer = null) { systemPrompt, userPrompt, maxTokens, page ->
+        val evaluated = evaluateCase(case, variant, localServer = null) { systemPrompt, userPrompt, maxTokens, page ->
+            check(captured == null) {
+                "Production extraction requested multiple source prompts for ${case.id}; this job format supports one prompt per case"
+            }
             require(maxTokens == config.getValue("androidBaseline").jsonObject.getValue("maxOutputTokens").jsonPrimitive.intOrNull)
             val pageInput = case.pages.firstOrNull { it.page.sourceUrl == page.sourceUrl }
                 ?: error("Production extraction selected a page outside this frozen case")
@@ -741,8 +879,24 @@ private suspend fun captureProductionPromptTasks(
                 put("userPrompt", userPrompt)
             }
         }
-        captured ?: error("Production extraction did not request inference for ${case.id}; only actual inference prompts can be exported")
+        if (captured != null) {
+            tasks += captured!!
+        } else {
+            check(!evaluated.invokedModel) { "Production inference started without capturing a prompt for ${case.id}" }
+            noInferenceCaseIds += case.id
+            noInferenceReasons[case.id] = when {
+                (evaluated.outcome.extraction as? BottleDetailExtractionResult.Found)
+                    ?.suggestions?.extractionMethod == BottleExtractionMethod.DETERMINISTIC_SOURCE -> "DETERMINISTIC_SOURCE"
+                evaluated.outcome.selectedHit == null || evaluated.outcome.page !is WebPageResult.Found -> "RETRIEVAL_ABSTENTION"
+                else -> "PRE_INFERENCE_REJECTION"
+            }
+        }
     }
+    val eligibleCaseIds = cases.map(EvalCase::id).sorted()
+    check((tasks.map { it.requiredString("caseId") } + noInferenceCaseIds).sorted() == eligibleCaseIds) {
+        "Production prompt outcomes did not classify every eligible case exactly once"
+    }
+    return ProductionPromptBatch(eligibleCaseIds, noInferenceCaseIds.sorted(), noInferenceReasons.toSortedMap(), tasks)
 }
 
 private suspend fun exportProductionPromptJobs(dataset: EvalDataset, destination: File) {
@@ -752,17 +906,37 @@ private suspend fun exportProductionPromptJobs(dataset: EvalDataset, destination
         "No reviewed product case has a complete frozen source and independent source labels. No prompts or model jobs were exported."
     }
     val config = readLocalRuntimeConfig()
-    val tasks = captureProductionPromptTasks(dataset, eligible, config)
-    val result = buildPortablePromptJobs(dataset.version, dataset.splitPlan, config, tasks)
+    val batch = captureProductionPromptBatch(dataset, eligible, config)
+    val result = buildPortablePromptJobs(
+        dataset.version, dataset.splitPlan, config, batch.eligibleCaseIds, batch.noInferenceCaseIds,
+        batch.noInferenceReasons, batch.tasks,
+    )
     destination.absoluteFile.parentFile?.mkdirs()
     destination.writeText(Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), result), Charsets.UTF_8)
 }
 
-private fun buildPortablePromptJobs(datasetVersion: String, splitPlan: String, config: JsonObject, tasks: List<JsonObject>): JsonObject {
-    require(tasks.isNotEmpty()) { "Prompt jobs cannot be empty" }
+private fun buildPortablePromptJobs(
+    datasetVersion: String,
+    splitPlan: String,
+    config: JsonObject,
+    eligibleCaseIds: List<String>,
+    noInferenceCaseIds: List<String>,
+    noInferenceReasons: Map<String, String>,
+    tasks: List<JsonObject>,
+): JsonObject {
     val configText = Json.encodeToString(JsonObject.serializer(), config)
     val ids = tasks.map { it.requiredString("caseId") }
     require(ids.distinct().size == ids.size)
+    val eligible = eligibleCaseIds.distinct().sorted()
+    val noInference = noInferenceCaseIds.distinct().sorted()
+    require(eligible.isNotEmpty() && eligible.size <= 100 && eligible == eligibleCaseIds.sorted())
+    require(noInference.size <= 100 && noInference == noInferenceCaseIds.sorted())
+    require(noInferenceReasons.keys == noInference.toSet() && noInferenceReasons.values.all {
+        it in setOf("DETERMINISTIC_SOURCE", "RETRIEVAL_ABSTENTION", "PRE_INFERENCE_REJECTION")
+    }) { "Every no-inference case must have one safe production outcome classification" }
+    require((ids + noInference).distinct().sorted() == eligible && ids.none { it in noInference }) {
+        "Prompt tasks and no-inference cases must partition all eligible cases"
+    }
     return buildJsonObject {
         put("format", "com.davidhayesbc.cocktails.bottle-evaluation-prompt-jobs")
         put("schemaVersion", 1)
@@ -772,6 +946,9 @@ private fun buildPortablePromptJobs(datasetVersion: String, splitPlan: String, c
         put("configCanonicalJson", configText)
         put("configSha256", sha256(configText))
         put("caseIds", buildJsonArray { ids.sorted().forEach { add(JsonPrimitive(it)) } })
+        put("eligibleCaseIds", buildJsonArray { eligible.forEach { add(JsonPrimitive(it)) } })
+        put("noInferenceCaseIds", buildJsonArray { noInference.forEach { add(JsonPrimitive(it)) } })
+        put("noInferenceReasons", buildJsonObject { noInferenceReasons.toSortedMap().forEach { (id, reason) -> put(id, reason) } })
         put("tasks", buildJsonArray { tasks.forEach(::add) })
         put("answerKeyIncluded", false)
     }
@@ -786,7 +963,7 @@ private suspend fun importHostInferenceResults(dataset: EvalDataset, jobsFile: F
     val jobSha = sha256(jobsBytes)
     val jobs = Json.parseToJsonElement(jobsBytes.toString(Charsets.UTF_8)).jsonObject
     require(jobs.requiredString("format") == "com.davidhayesbc.cocktails.bottle-evaluation-prompt-jobs" && jobs.int("schemaVersion") == 1)
-    require(jobs.keys == setOf("format", "schemaVersion", "datasetVersion", "splitPlan", "config", "configCanonicalJson", "configSha256", "caseIds", "tasks", "answerKeyIncluded"))
+    require(jobs.keys == setOf("format", "schemaVersion", "datasetVersion", "splitPlan", "config", "configCanonicalJson", "configSha256", "caseIds", "eligibleCaseIds", "noInferenceCaseIds", "noInferenceReasons", "tasks", "answerKeyIncluded"))
     require(jobs["answerKeyIncluded"]?.jsonPrimitive?.booleanOrNull == false)
     val config = readLocalRuntimeConfig()
     val configText = jobs.requiredString("configCanonicalJson")
@@ -798,18 +975,38 @@ private suspend fun importHostInferenceResults(dataset: EvalDataset, jobsFile: F
     val tasks = jobs.requiredArray("tasks").map { it.jsonObject }
     require(tasks.size <= 100)
     val tasksById = tasks.associateBy { it.requiredString("caseId") }
-    require(tasksById.size == tasks.size && tasks.isNotEmpty()) { "Prompt jobs contain missing or duplicate cases" }
+    require(tasksById.size == tasks.size) { "Prompt jobs contain duplicate cases" }
     require(jobs.requiredArray("caseIds").map { it.jsonPrimitive.content } == tasksById.keys.sorted()) {
         "Prompt job case index does not match task list"
     }
-    val expectedCaseIds = dataset.cases.filter { case ->
-        case.kind == "reviewed_product" && case.sourceCoverage == "complete" && case.pages.isNotEmpty() &&
-            case.sourceFacts.values.any { it.status != SourceLabelStatus.UNKNOWN.name }
-    }.map(EvalCase::id).toSet()
-    require(tasksById.keys == expectedCaseIds) {
-        "Host results must cover the full frozen executable case set, including the held-out split"
+    val eligibleCaseIds = jobs.requiredArray("eligibleCaseIds").map { it.jsonPrimitive.content }
+    val noInferenceCaseIds = jobs.requiredArray("noInferenceCaseIds").map { it.jsonPrimitive.content }
+    val noInferenceReasons = jobs.requiredObject("noInferenceReasons").mapValues { (_, value) -> value.jsonPrimitive.content }
+    require(eligibleCaseIds.size <= 100 && noInferenceCaseIds.size <= 100 &&
+        eligibleCaseIds == eligibleCaseIds.distinct().sorted() && noInferenceCaseIds == noInferenceCaseIds.distinct().sorted()) {
+        "Eligible and no-inference case indexes must be sorted and unique"
     }
-    val expectedTasks = captureProductionPromptTasks(dataset, dataset.cases.filter { it.id in expectedCaseIds }, config).associateBy { it.requiredString("caseId") }
+    require((tasksById.keys + noInferenceCaseIds).distinct().sorted() == eligibleCaseIds &&
+        tasksById.keys.none { it in noInferenceCaseIds } && noInferenceReasons.keys == noInferenceCaseIds.toSet()) {
+        "Prompt tasks and no-inference cases must partition the eligible case set"
+    }
+    val eligibleCases = eligibleProductionPromptCases(dataset)
+    val expectedEligibleIds = eligibleCases.map(EvalCase::id).sorted()
+    require(eligibleCaseIds == expectedEligibleIds) { "Prompt jobs do not cover the current frozen executable case set" }
+    val expectedBatch = captureProductionPromptBatch(dataset, eligibleCases, config)
+    require(noInferenceCaseIds == expectedBatch.noInferenceCaseIds) {
+        "Prompt jobs misclassify cases where the production extractor does not request inference"
+    }
+    require(noInferenceReasons == expectedBatch.noInferenceReasons) {
+        "Prompt jobs misclassify production outcomes for cases without model inference"
+    }
+    require(tasksById.keys == expectedBatch.tasks.map { it.requiredString("caseId") }.toSet()) {
+        "Host results must include every case that the production extractor sends to inference, including holdout"
+    }
+    require(tasksById.isNotEmpty()) {
+        "No host inference results are expected because every eligible case was handled without model inference"
+    }
+    val expectedTasks = expectedBatch.tasks.associateBy { it.requiredString("caseId") }
     tasks.forEach { task ->
         require(task.keys == setOf("caseId", "sourceId", "sourceInputSha256", "taskSha256", "systemPrompt", "userPrompt"))
         val system = task.requiredString("systemPrompt")
@@ -902,7 +1099,7 @@ private suspend fun importHostInferenceResults(dataset: EvalDataset, jobsFile: F
             llamaCppCommit = llamaCommit,
             runtimeBackend = results.requiredString("runtimeBackend"),
         ),
-        tasksById.keys.sorted(),
+        eligibleCaseIds,
     )
 }
 
@@ -1046,8 +1243,16 @@ private suspend fun evaluateCase(
                 val grammar = readLocalRuntimeConfig().getValue("androidBaseline").jsonObject.getValue("grammar").jsonPrimitive.content
                 val completion = runLocalLlamaServer(localServer, systemPrompt, userPrompt, maxTokens, grammar)
                 actualResponse = completion.response
+                if (completion.response.finishReason == "TOKEN_LIMIT") {
+                    throw LocalInferenceFailureException(LocalInferenceFailureCode.MODEL_OUTPUT_TRUNCATED)
+                }
                 completion.response.response
-            } else replayResponse?.response ?: ""
+            } else {
+                if (replayResponse?.finishReason == "TOKEN_LIMIT") {
+                    throw LocalInferenceFailureException(LocalInferenceFailureCode.MODEL_OUTPUT_TRUNCATED)
+                }
+                replayResponse?.response ?: ""
+            }
         },
         promptConfiguration = promptConfiguration,
     )

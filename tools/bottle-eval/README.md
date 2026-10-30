@@ -39,12 +39,17 @@ Use a private output path because it contains the exact prompt and bounded sourc
 ```sh
 ./gradlew :apps:androidApp:testDebugUnitTest \
   --tests '*BottleLookupEvaluationHarnessTest' \
-  -Pbottle.eval.export.jobs=/private/path/bottle-prompt-jobs.json
+  -PbottleEvalExportJobs=/private/path/bottle-prompt-jobs.json
 ```
 
 The exporter uses the production coordinator and extractor, exports only prompts that actually reach
-model inference, and includes no reference labels. It stops without creating a job file when there
-are no eligible cases.
+model inference, and includes no reference labels. The job index separately lists every eligible
+case, no-inference case IDs with bounded outcomes (`DETERMINISTIC_SOURCE`, `RETRIEVAL_ABSTENTION`,
+or `PRE_INFERENCE_REJECTION`), and the subset with actual prompt tasks. Deterministic extraction and
+retrieval abstention therefore remain part of the evaluation without creating fabricated prompts.
+If there are eligible cases but none requires inference, the
+job file records that explicitly with an empty task list; the desktop runner exits without starting
+the model. It stops without creating a job file when there are no eligible cases.
 
 ### 2. Run local inference on the Windows GPU machine
 
@@ -90,13 +95,18 @@ are not copied into the summary report.
 ```sh
 ./gradlew :apps:androidApp:testDebugUnitTest \
   --tests '*BottleLookupEvaluationHarnessTest' \
-  -Pbottle.eval.import.jobs=/private/path/bottle-prompt-jobs.json \
-  -Pbottle.eval.import.results=/private/path/bottle-host-results.json \
-  -Pbottle.eval.report=/private/path/bottle-evaluation-report.json
+  -PbottleEvalImportJobs=/private/path/bottle-prompt-jobs.json \
+  -PbottleEvalImportResults=/private/path/bottle-host-results.json \
+  -PbottleEvalReport=/private/path/bottle-evaluation-report.json
 ```
 
-The report identifies imported host inference and measured host timings. It does not claim the
-Android test JVM ran the model. Keep results files private and delete them when no longer needed.
+The importer verifies that eligible cases, no-inference outcomes, and exported task IDs are the exact
+sets reproduced by the current production coordinator and extractor. It evaluates all eligible
+cases, including deterministic and retrieval-abstention cases, while importing host responses only
+for cases that actually invoked inference. A zero-task manifest needs no host result file; run the
+offline evaluation instead. The report identifies imported host inference and measured host timings.
+It does not claim the Android test JVM ran the model. Keep results files private and delete them when
+no longer needed.
 
 ## Cases, labels, and limitations
 

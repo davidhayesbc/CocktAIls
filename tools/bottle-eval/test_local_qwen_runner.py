@@ -4,9 +4,12 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).with_name("run-local-qwen-gpu.py")
+README = Path(__file__).with_name("README.md")
+APP_GRADLE = SCRIPT.parents[2] / "apps" / "androidApp" / "build.gradle.kts"
 SPEC = importlib.util.spec_from_file_location("local_qwen_runner", SCRIPT)
 RUNNER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RUNNER)
@@ -36,6 +39,9 @@ class PromptJobValidationTests(unittest.TestCase):
             "configCanonicalJson": canonical,
             "configSha256": hashlib.sha256(canonical.encode()).hexdigest(),
             "caseIds": ["case-1"],
+            "eligibleCaseIds": ["case-1"],
+            "noInferenceCaseIds": [],
+            "noInferenceReasons": {},
             "tasks": [self.task],
             "answerKeyIncluded": False,
         }
@@ -68,6 +74,40 @@ class PromptJobValidationTests(unittest.TestCase):
         jobs["tasks"].append(dict(jobs["tasks"][0]))
         with self.assertRaisesRegex(ValueError, "duplicate case ID"):
             self.read_jobs(jobs)
+
+    def test_no_inference_manifest_is_valid_and_keeps_eligible_cases(self):
+        jobs = json.loads(json.dumps(self.jobs))
+        jobs["caseIds"] = []
+        jobs["noInferenceCaseIds"] = ["case-1"]
+        jobs["noInferenceReasons"] = {"case-1": "RETRIEVAL_ABSTENTION"}
+        jobs["tasks"] = []
+        loaded, _ = self.read_jobs(jobs)
+        self.assertEqual(["case-1"], loaded["eligibleCaseIds"])
+        self.assertEqual(["case-1"], loaded["noInferenceCaseIds"])
+        self.assertEqual([], loaded["tasks"])
+
+    def test_no_inference_manifest_does_not_start_or_require_local_runtime(self):
+        jobs = json.loads(json.dumps(self.jobs))
+        jobs["caseIds"] = []
+        jobs["noInferenceCaseIds"] = ["case-1"]
+        jobs["noInferenceReasons"] = {"case-1": "RETRIEVAL_ABSTENTION"}
+        jobs["tasks"] = []
+        with tempfile.TemporaryDirectory() as temp:
+            jobs_path = Path(temp) / "jobs.json"
+            results_path = Path(temp) / "results.json"
+            jobs_path.write_text(json.dumps(jobs), encoding="utf-8")
+            with patch("sys.argv", [str(SCRIPT), "--jobs", str(jobs_path), "--model", "missing.gguf",
+                                    "--llama-server", "missing.exe", "--results", str(results_path)]):
+                self.assertEqual(0, RUNNER.main())
+            self.assertFalse(results_path.exists())
+
+    def test_readme_uses_declared_gradle_property_names(self):
+        readme = README.read_text(encoding="utf-8")
+        gradle = APP_GRADLE.read_text(encoding="utf-8")
+        for property_name in ("bottleEvalExportJobs", "bottleEvalImportJobs", "bottleEvalImportResults", "bottleEvalReport"):
+            self.assertIn(f"-P{property_name}=", readme)
+            self.assertIn(f'gradleProperty("{property_name}")', gradle)
+        self.assertNotIn("-Pbottle.eval.", readme)
 
     def test_host_command_uses_android_context_batch_and_legacy_template_mode(self):
         command = RUNNER.build_server_command(Path("llama-server.exe"), Path("model.gguf"), 9931, self.config)

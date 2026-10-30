@@ -42,7 +42,7 @@ def load_jobs(path: Path, config: dict) -> tuple[dict, str]:
     jobs = json.loads(raw)
     if jobs.get("format") != "com.davidhayesbc.cocktails.bottle-evaluation-prompt-jobs" or jobs.get("schemaVersion") != 1:
         raise ValueError("Unsupported prompt-job file")
-    if set(jobs) != {"format", "schemaVersion", "datasetVersion", "splitPlan", "config", "configCanonicalJson", "configSha256", "caseIds", "tasks", "answerKeyIncluded"}:
+    if set(jobs) != {"format", "schemaVersion", "datasetVersion", "splitPlan", "config", "configCanonicalJson", "configSha256", "caseIds", "eligibleCaseIds", "noInferenceCaseIds", "noInferenceReasons", "tasks", "answerKeyIncluded"}:
         raise ValueError("Prompt-job file contains unsupported fields; expected a minimal no-answer-key payload")
     if jobs.get("answerKeyIncluded") is not False:
         raise ValueError("Prompt-job file must explicitly exclude reference answers")
@@ -53,8 +53,8 @@ def load_jobs(path: Path, config: dict) -> tuple[dict, str]:
     if exported_config != config:
         raise ValueError("Prompt-job config does not match the pinned runtime configuration")
     tasks = jobs.get("tasks")
-    if not isinstance(tasks, list) or not tasks or len(tasks) > 100:
-        raise ValueError("Prompt jobs must contain 1–100 tasks")
+    if not isinstance(tasks, list) or len(tasks) > 100:
+        raise ValueError("Prompt jobs must contain at most 100 tasks")
     ids = set()
     for task in tasks:
         if set(task) != {"caseId", "sourceId", "sourceInputSha256", "taskSha256", "systemPrompt", "userPrompt"}:
@@ -74,6 +74,20 @@ def load_jobs(path: Path, config: dict) -> tuple[dict, str]:
             raise ValueError("Prompt job is missing its frozen-source hash")
     if jobs.get("caseIds") != sorted(ids):
         raise ValueError("Prompt-job case index does not match tasks")
+    eligible = jobs.get("eligibleCaseIds")
+    no_inference = jobs.get("noInferenceCaseIds")
+    no_inference_reasons = jobs.get("noInferenceReasons")
+    if not isinstance(eligible, list) or not eligible or len(eligible) > 100 or eligible != sorted(set(eligible)):
+        raise ValueError("Prompt-job eligible-case index must contain 1–100 sorted unique case IDs")
+    if not isinstance(no_inference, list) or len(no_inference) > 100 or no_inference != sorted(set(no_inference)):
+        raise ValueError("Prompt-job no-inference index must contain at most 100 sorted unique case IDs")
+    allowed_no_inference_reasons = {"DETERMINISTIC_SOURCE", "RETRIEVAL_ABSTENTION", "PRE_INFERENCE_REJECTION"}
+    if not isinstance(no_inference_reasons, dict) or set(no_inference_reasons) != set(no_inference) or any(
+        reason not in allowed_no_inference_reasons for reason in no_inference_reasons.values()
+    ):
+        raise ValueError("Prompt-job no-inference reasons are missing, extra, or unsupported")
+    if sorted(ids | set(no_inference)) != eligible or ids.intersection(no_inference):
+        raise ValueError("Prompt tasks and no-inference cases must partition the eligible cases")
     return jobs, job_sha
 
 
@@ -230,6 +244,9 @@ def main() -> int:
         if not 1024 <= args.port <= 65535:
             raise ValueError("Port must be between 1024 and 65535")
         jobs, job_sha = load_jobs(args.jobs.expanduser().resolve(), config)
+        if not jobs["tasks"]:
+            print("No model prompts were produced by the production extractor; no GPU inference was needed.")
+            return 0
         model = args.model.expanduser().resolve()
         binary = args.llama_server.expanduser().resolve()
         check_model(model, config)

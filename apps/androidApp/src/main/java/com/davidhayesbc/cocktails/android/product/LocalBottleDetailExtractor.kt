@@ -533,7 +533,7 @@ internal interface DiagnosticLocalInferenceRunner : LocalInferenceRunner {
     ): String
 }
 
-private class LocalInferenceFailureException(val code: LocalInferenceFailureCode) : Exception()
+internal class LocalInferenceFailureException(val code: LocalInferenceFailureCode) : Exception()
 
 internal const val LOCAL_MODEL_LABEL = "Qwen3-0.6B-Q8_0"
 private const val LOCAL_SOURCE_TEXT_CHARS = 2_400
