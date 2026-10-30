@@ -74,7 +74,7 @@ class BottleLookupEvaluationHarnessTest {
     }
 
     @Test
-    fun hostResultImportRequiresExactJobHashAndMarksDesktopInferenceOrigin() {
+    fun hostResultImportRequiresExactJobHashAndMarksDesktopInferenceOrigin(): Unit = runBlocking {
         val config = readLocalRuntimeConfig()
         val page = WebPageText(
             title = "Sample Spirit 5011333150725",
@@ -94,12 +94,7 @@ class BottleLookupEvaluationHarnessTest {
             researchTargets = emptyList(), searchHits = emptyList(), pages = listOf(evalPage),
         )
         val dataset = EvalDataset("dataset-v1", "split-v1", 1, listOf(case))
-        val system = "system prompt fixture"
-        val user = "source prompt fixture"
-        val task = buildJsonObject {
-            put("caseId", case.id); put("sourceId", evalPage.sourceId); put("sourceInputSha256", sourceHash)
-            put("taskSha256", sha256("$system\u0000$user")); put("systemPrompt", system); put("userPrompt", user)
-        }
+        val task = captureProductionPromptTasks(dataset, listOf(case), config).single()
         val jobs = buildPortablePromptJobs(dataset.version, dataset.splitPlan, config, listOf(task))
         val baseline = config.getValue("androidBaseline").jsonObject
         val configSha = jobs.requiredString("configSha256")
@@ -139,8 +134,53 @@ class BottleLookupEvaluationHarnessTest {
             assertEquals(listOf(case.id), imported.caseIds)
             assertEquals("host_model_execution_result", imported.variant.outputSource)
             assertEquals("host_model_execution", imported.variant.responses.getValue(case.id).origin)
+
+            val alteredUserPrompt = "edited host-side prompt"
+            val alteredTaskSha = sha256("${task.requiredString("systemPrompt")}\u0000$alteredUserPrompt")
+            val alteredTask = buildJsonObject {
+                task.forEach { (key, value) ->
+                    when (key) {
+                        "userPrompt" -> put(key, alteredUserPrompt)
+                        "taskSha256" -> put(key, alteredTaskSha)
+                        else -> put(key, value)
+                    }
+                }
+            }
+            val alteredJobs = buildJsonObject {
+                jobs.forEach { (key, value) ->
+                    if (key == "tasks") put(key, buildJsonArray { add(alteredTask) }) else put(key, value)
+                }
+            }
+            jobsFile.writeText(Json.encodeToString(JsonObject.serializer(), alteredJobs), Charsets.UTF_8)
+            val alteredJobSha = sha256(jobsFile.readBytes())
+            val alteredResult = buildJsonObject {
+                boundResult.forEach { (key, value) ->
+                    when (key) {
+                        "jobFileSha256" -> put(key, alteredJobSha)
+                        "responses" -> put(key, buildJsonArray {
+                            value.jsonArray.forEach { response ->
+                                add(buildJsonObject {
+                                    response.jsonObject.forEach { (responseKey, responseValue) ->
+                                        put(responseKey, if (responseKey == "taskSha256") JsonPrimitive(alteredTaskSha) else responseValue)
+                                    }
+                                })
+                            }
+                        })
+                        else -> put(key, value)
+                    }
+                }
+            }
+            resultsFile.writeText(Json.encodeToString(JsonObject.serializer(), alteredResult), Charsets.UTF_8)
+            assertThrows(IllegalArgumentException::class.java) {
+                runBlocking { importHostInferenceResults(dataset, jobsFile, resultsFile) }
+            }
+
+            jobsFile.writeText(Json.encodeToString(JsonObject.serializer(), jobs), Charsets.UTF_8)
+            resultsFile.writeText(Json.encodeToString(JsonObject.serializer(), boundResult), Charsets.UTF_8)
             jobsFile.appendText(" ")
-            assertThrows(IllegalArgumentException::class.java) { importHostInferenceResults(dataset, jobsFile, resultsFile) }
+            assertThrows(IllegalArgumentException::class.java) {
+                runBlocking { importHostInferenceResults(dataset, jobsFile, resultsFile) }
+            }
         } finally {
             temp.deleteRecursively()
         }
@@ -673,18 +713,19 @@ private fun samplerConfigName(nativeName: String): String = when (nativeName) {
 private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes)
     .joinToString("") { "%02x".format(it) }
 
-private suspend fun exportProductionPromptJobs(dataset: EvalDataset, destination: File) {
-    assertPinnedRuntimeMatchesAndroidNativeSource()
-    val eligible = dataset.cases.filter { case ->
-        case.kind == "reviewed_product" && case.sourceCoverage == "complete" && case.pages.isNotEmpty() &&
-            case.sourceFacts.values.any { it.status != SourceLabelStatus.UNKNOWN.name }
-    }
-    require(eligible.isNotEmpty()) {
-        "No reviewed product case has a complete frozen source and independent source labels. No prompts or model jobs were exported."
-    }
-    val config = readLocalRuntimeConfig()
+private fun eligibleProductionPromptCases(dataset: EvalDataset): List<EvalCase> = dataset.cases.filter { case ->
+    case.kind == "reviewed_product" && case.sourceCoverage == "complete" && case.pages.isNotEmpty() &&
+        case.sourceFacts.values.any { it.status != SourceLabelStatus.UNKNOWN.name }
+}
+
+private suspend fun captureProductionPromptTasks(
+    dataset: EvalDataset,
+    cases: List<EvalCase>,
+    config: JsonObject,
+): List<JsonObject> {
+    require(cases.isNotEmpty()) { "Prompt capture requires at least one eligible reviewed product case" }
     val variant = localQwenVariant()
-    val tasks = eligible.sortedBy(EvalCase::id).map { case ->
+    return cases.sortedBy(EvalCase::id).map { case ->
         var captured: JsonObject? = null
         evaluateCase(case, variant, localServer = null) { systemPrompt, userPrompt, maxTokens, page ->
             require(maxTokens == config.getValue("androidBaseline").jsonObject.getValue("maxOutputTokens").jsonPrimitive.intOrNull)
@@ -702,6 +743,16 @@ private suspend fun exportProductionPromptJobs(dataset: EvalDataset, destination
         }
         captured ?: error("Production extraction did not request inference for ${case.id}; only actual inference prompts can be exported")
     }
+}
+
+private suspend fun exportProductionPromptJobs(dataset: EvalDataset, destination: File) {
+    assertPinnedRuntimeMatchesAndroidNativeSource()
+    val eligible = eligibleProductionPromptCases(dataset)
+    require(eligible.isNotEmpty()) {
+        "No reviewed product case has a complete frozen source and independent source labels. No prompts or model jobs were exported."
+    }
+    val config = readLocalRuntimeConfig()
+    val tasks = captureProductionPromptTasks(dataset, eligible, config)
     val result = buildPortablePromptJobs(dataset.version, dataset.splitPlan, config, tasks)
     destination.absoluteFile.parentFile?.mkdirs()
     destination.writeText(Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), result), Charsets.UTF_8)
@@ -728,7 +779,7 @@ private fun buildPortablePromptJobs(datasetVersion: String, splitPlan: String, c
 
 private data class ImportedHostEvaluation(val variant: EvalVariant, val caseIds: List<String>)
 
-private fun importHostInferenceResults(dataset: EvalDataset, jobsFile: File, resultsFile: File): ImportedHostEvaluation {
+private suspend fun importHostInferenceResults(dataset: EvalDataset, jobsFile: File, resultsFile: File): ImportedHostEvaluation {
     assertPinnedRuntimeMatchesAndroidNativeSource()
     require(jobsFile.length() <= 8L * 1024L * 1024L) { "Prompt-job file exceeds the 8 MiB safety limit" }
     val jobsBytes = jobsFile.readBytes()
@@ -758,12 +809,16 @@ private fun importHostInferenceResults(dataset: EvalDataset, jobsFile: File, res
     require(tasksById.keys == expectedCaseIds) {
         "Host results must cover the full frozen executable case set, including the held-out split"
     }
+    val expectedTasks = captureProductionPromptTasks(dataset, dataset.cases.filter { it.id in expectedCaseIds }, config).associateBy { it.requiredString("caseId") }
     tasks.forEach { task ->
         require(task.keys == setOf("caseId", "sourceId", "sourceInputSha256", "taskSha256", "systemPrompt", "userPrompt"))
         val system = task.requiredString("systemPrompt")
         val user = task.requiredString("userPrompt")
         require(system.length <= 16_000 && user.length <= 24_000)
         require(sha256("$system\u0000$user") == task.requiredString("taskSha256")) { "Prompt task hash mismatch" }
+        val productionTask = expectedTasks[task.requiredString("caseId")]
+            ?: error("Prompt task is not in the current production extraction job set")
+        require(task == productionTask) { "Exported prompt task differs from the current production extractor input" }
         val case = dataset.cases.singleOrNull { it.id == task.requiredString("caseId") }
             ?: error("Prompt result refers to a case outside the loaded dataset")
         require(case.kind == "reviewed_product" && case.sourceCoverage == "complete") {
