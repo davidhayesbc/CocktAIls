@@ -76,6 +76,7 @@ internal enum class BottleExtractionRejectionReason(val debugCode: String) {
     VALUE_NOT_IN_EVIDENCE("VALUE_NOT_IN_EVIDENCE"),
     INVALID_ABV_EVIDENCE("INVALID_ABV_EVIDENCE"),
     INVALID_QUANTITY_EVIDENCE("INVALID_QUANTITY_EVIDENCE"),
+    BRAND_NOT_DISTINCT_FROM_PRODUCT_NAME("BRAND_NOT_DISTINCT_FROM_PRODUCT_NAME"),
     CONFLICTING_FIELD_VALUES("CONFLICTING_FIELD_VALUES"),
     INVALID_TARGET_BARCODE("INVALID_TARGET_BARCODE"),
     BARCODE_EVIDENCE_MISSING("BARCODE_EVIDENCE_MISSING"),
@@ -521,9 +522,34 @@ internal fun parseBottleFactCandidate(
             fieldRejections.toList(),
         )
     }
+    val productNameForBrand = uniqueFacts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }
+    val titleOnlyBrands = uniqueFacts.filter { brandFact ->
+        if (brandFact.field != BottleFactField.BRAND) return@filter false
+        val productName = productNameForBrand ?: return@filter false
+        val sameEvidencePassage = normalizeFactSpacing(brandFact.quote).equals(
+            normalizeFactSpacing(productName.quote),
+            ignoreCase = true,
+        )
+        val brandIsPartOfProductName = containsWholeFactPhrase(productName.value, brandFact.value)
+        sameEvidencePassage && brandIsPartOfProductName && !hasExplicitBrandLabel(brandFact.quote)
+    }
+    if (titleOnlyBrands.isNotEmpty()) {
+        rejected += BottleExtractionRejectionReason.BRAND_NOT_DISTINCT_FROM_PRODUCT_NAME
+        fieldRejections += titleOnlyBrands.map {
+            BottleFactRejection(it.field, BottleExtractionRejectionReason.BRAND_NOT_DISTINCT_FROM_PRODUCT_NAME)
+        }
+    }
+    val acceptedUniqueFacts = uniqueFacts.filterNot { it in titleOnlyBrands }
+    if (acceptedUniqueFacts.isEmpty()) {
+        return BottleDetailExtractionResult.Rejected(
+            rejected.firstOrNull() ?: BottleExtractionRejectionReason.NO_SUPPORTED_FIELDS,
+            fieldRejections.map(BottleFactRejection::field).toSet(),
+            fieldRejections.toList(),
+        )
+    }
     val rejectedFields = fieldRejections.map(BottleFactRejection::field).toSet()
     val unresolvedFields = (unresolvedBottleSourceFields(sourceText) + rejectedFields).toMutableSet()
-    var candidateFacts = uniqueFacts
+    var candidateFacts = acceptedUniqueFacts
     var identityEvidence: String? = null
     if (requiredBarcode != null) {
         val expectedCode = normalizeGtinForLookup(requiredBarcode)
@@ -543,14 +569,14 @@ internal fun parseBottleFactCandidate(
             return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
         }
         identityEvidence = identityQuote
-        val unrelatedFields = uniqueFacts.filter { fact ->
+        val unrelatedFields = acceptedUniqueFacts.filter { fact ->
             fact.field != BottleFactField.PRODUCT_NAME &&
                 !fact.quote.contains(nameFact.value, ignoreCase = true) &&
                 !sourceMentionsScannedBarcode(requiredBarcode, fact.quote)
         }.map(BottleFactEvidence::field).toSet()
         if (unrelatedFields.isNotEmpty()) rejected += BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE
         unresolvedFields += unrelatedFields
-        candidateFacts = facts.filterNot { it.field in unrelatedFields }
+        candidateFacts = acceptedUniqueFacts.filterNot { it.field in unrelatedFields }
     }
     val acceptedFacts = candidateFacts
         .filterNot { it.field in unresolvedFields }
@@ -567,6 +593,9 @@ internal fun parseBottleFactCandidate(
         rejected,
     )
 }
+
+private fun hasExplicitBrandLabel(evidence: String): Boolean =
+    Regex("(?i)(?:^|[|\\n])\\s*brand(?:\\s+name)?\\s*[:|]").containsMatchIn(evidence)
 
 /** Permit only presentation differences that preserve the literal fact and unit. */
 private fun factValueIsSupported(field: BottleFactField, value: String, quote: String): Boolean {

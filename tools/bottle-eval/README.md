@@ -59,6 +59,28 @@ After the model, prompt, and runtime settings are frozen, export held-out cases 
 evaluation after configuration freeze. The importer checks the declared scope against the case
 manifest. Do not use holdout results to select prompts or model settings.
 
+To compare an archived supported prompt version with the current candidate, export each version
+separately with the same case split. The baseline prompt is versioned in test resources; runtime,
+model, grammar and decoding settings stay fixed:
+
+```sh
+./gradlew :apps:androidApp:testDebugUnitTest \
+  --tests '*BottleLookupEvaluationHarnessTest' \
+  -PbottleEvalExportSplit=holdout \
+  -PbottleEvalPromptVersion=bottle-facts-v1 \
+  -PbottleEvalExportJobs=/private/path/bottle-v1-holdout-jobs.json
+
+./gradlew :apps:androidApp:testDebugUnitTest \
+  --tests '*BottleLookupEvaluationHarnessTest' \
+  -PbottleEvalExportSplit=holdout \
+  -PbottleEvalPromptVersion=bottle-facts-v2-dev-candidate \
+  -PbottleEvalExportJobs=/private/path/bottle-v2-holdout-jobs.json
+```
+
+The paired-job regression verifies the four untouched product cases have identical frozen sources
+and user prompts; only the system prompt and prompt version differ. Both jobs must be run against the
+same model/runtime configuration before importing and comparing results.
+
 ### 2. Run local inference on the Windows GPU machine
 
 The desktop needs Python 3, the exact official Qwen GGUF, and an already available CUDA-enabled
@@ -97,21 +119,33 @@ generation stages are separately measured on device.
 
 ### Development-only prompt candidate
 
-The current unshipped candidate is `bottle-facts-v2-dev-candidate`. It keeps the same model artifact,
+The current frozen candidate is `bottle-facts-v2-dev-candidate`. It keeps the same model artifact,
 llama.cpp revision, GBNF, sampler order and values, context/batch sizes, temperature, and 160-token
 output cap. Its prompt asks for quantity values with the source unit, exact labeled ABV evidence
 (including English `Alcohol content` and French `Teneur en alcool`), and abstention on brand when a
 source does not distinguish it from the product or variant title. The parser recognizes those
-anchored labels while retaining exact quote and value checks. No candidate host inference result has
-been imported yet; do not interpret this as a measured improvement or run holdout until the candidate
-is frozen.
+anchored labels while retaining exact quote and value checks. Paired holdout export supports both
+`bottle-facts-v1` and the candidate version and verifies identical frozen cases and user prompts with
+only the system prompt changed.
 
 An audit of the three development excerpts found that their former brand gold values came from
 product titles alone, without a distinct brand field. Those source labels are now `UNKNOWN`; inventory
 brand truth remains unchanged. Recounting the original v1 responses with this corrected source-support
 mask gives 9 supported facts, 5 true positives, 0 false positives and 4 false negatives (100% precision,
-55.6% recall). This is a label correction, not candidate performance. The original v1 report remains
-preserved privately outside the repository; raw model outputs and evaluation reports are not committed.
+55.6% recall). The exact v2 development jobs ran on the pinned Qwen3-0.6B-Q8_0 artifact and llama.cpp
+revision using the CUDA host runner; all three responses ended normally. Replayed through the production
+parser, v2 had 9/9 supported-field true positives, 0 false positives and 0 false negatives, versus
+corrected v1's 5/9 true positives and 4 false negatives. Inventory truth matched 7/12 fields for v2
+versus 3/12 for v1. These are results for only three development products, not a general accuracy
+claim; desktop timings are not phone timings.
+
+All three v2 responses also proposed a brand copied from a product title. Brand source labels for these
+cases are `UNKNOWN`, so those proposals are not scored as correct or incorrect. The production parser
+now rejects brand claims that use the same title-only evidence passage as the product name without an
+explicit brand label. Regression tests cover Banff Ice, Dubonnet Rouge, and Wild Turkey 101 title-only
+claims, plus separately labeled brand evidence. This does not provide missing brand evidence or score
+unknown brands as correct abstentions. The original v1 report remains preserved privately outside the
+repository; raw model outputs and evaluation reports are not committed.
 
 ### 3. Import and score on the Android/JVM workspace
 

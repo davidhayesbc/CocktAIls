@@ -435,17 +435,28 @@ class LocalBottleDetailExtractorTest {
     }
 
     @Test
-    fun doesNotAcceptUnsupportedBrandClaimFromProductTitleEvidence() {
-        val result = parseBottleFactCandidate(
-            """{"facts":[{"field":"brand","value":"North Star Distilling","evidence":"North Star Special Reserve Gin"}]}""",
-            provider = "On-device Qwen3",
-            model = LOCAL_MODEL_LABEL,
-            sourceUrl = "https://example.org/gin",
-            sourceText = "North Star Special Reserve Gin",
-        ) as BottleDetailExtractionResult.Rejected
+    fun doesNotTreatTitleOnlyBrandAsIndependentEvidence() {
+        val fixtures = listOf(
+            Triple("Banff Ice", "Banff Ice", "Banff Ice 750ml"),
+            Triple("DUBONNET ROUGE", "DUBONNET ROUGE", "DUBONNET ROUGE"),
+            Triple("Wild Turkey 101", "Wild Turkey", "Wild Turkey 101 750ml"),
+        )
+        fixtures.forEach { (productName, brand, titleEvidence) ->
+            val result = parseBottleFactCandidate(
+                """{"facts":[{"field":"product_name","value":"$productName","evidence":"$titleEvidence"},{"field":"brand","value":"$brand","evidence":"$titleEvidence"}]}""",
+                provider = "On-device Qwen3",
+                model = LOCAL_MODEL_LABEL,
+                sourceUrl = "https://example.org/bottle",
+                sourceText = titleEvidence,
+            ) as BottleDetailExtractionResult.Found
 
-        assertEquals(BottleExtractionRejectionReason.VALUE_NOT_IN_EVIDENCE, result.reason)
-        assertEquals(setOf(BottleFactField.BRAND), result.rejectedFields)
+            assertEquals(setOf(BottleFactField.PRODUCT_NAME), result.suggestions.facts.map { it.field }.toSet())
+            assertTrue(BottleFactField.BRAND in result.suggestions.unresolvedFields)
+            assertTrue(result.suggestions.fieldRejections.any {
+                it.field == BottleFactField.BRAND &&
+                    it.reason == BottleExtractionRejectionReason.BRAND_NOT_DISTINCT_FROM_PRODUCT_NAME
+            })
+        }
     }
 
     @Test

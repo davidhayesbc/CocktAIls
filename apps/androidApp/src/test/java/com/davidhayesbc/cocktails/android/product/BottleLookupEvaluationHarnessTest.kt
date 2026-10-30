@@ -108,6 +108,49 @@ class BottleLookupEvaluationHarnessTest {
     }
 
     @Test
+    fun archivedV1AndCurrentCandidatePromptsAreExplicitlyVersionedForPairedEvaluation() {
+        val v1 = promptConfigurationForVersion("bottle-facts-v1", DEFAULT_LOCAL_MAX_OUTPUT_TOKENS)
+        val candidate = promptConfigurationForVersion(DEFAULT_LOCAL_PROMPT_VERSION, DEFAULT_LOCAL_MAX_OUTPUT_TOKENS)
+        assertEquals("bottle-facts-v1", v1.version)
+        assertTrue(v1.systemPrompt.contains("Every evidence quote must be copied exactly"))
+        assertEquals(DEFAULT_LOCAL_PROMPT_VERSION, candidate.version)
+        assertTrue(candidate.systemPrompt.contains("include the explicit unit exactly as shown"))
+        assertEquals(v1.maxOutputTokens, candidate.maxOutputTokens)
+    }
+
+    @Test
+    fun pairedHoldoutJobsUseSameFrozenCasesAndUserInputsWithOnlyPromptVersionChanged() = runBlocking {
+        val dataset = parseDataset(readInput("bottle.eval.cases", "/bottle-evaluation/v1/cases.json"))
+        val holdout = eligibleProductionPromptCases(dataset, "holdout")
+        val v1Prompt = promptConfigurationForVersion("bottle-facts-v1", DEFAULT_LOCAL_MAX_OUTPUT_TOKENS)
+        val candidatePrompt = LocalBottleExtractionPromptConfiguration.DEFAULT
+        val baselineConfig = readLocalRuntimeConfig(v1Prompt.version)
+        val candidateConfig = readLocalRuntimeConfig(candidatePrompt.version)
+        val baseline = captureProductionPromptBatch(dataset, holdout, baselineConfig, v1Prompt)
+        val candidate = captureProductionPromptBatch(dataset, holdout, candidateConfig, candidatePrompt)
+
+        assertEquals(
+            setOf("auchentoshan-three-wood", "esquimalt-dry-vermouth", "esquimalt-rosso-sweet-vermouth", "giffard-grenadine-syrup"),
+            baseline.eligibleCaseIds.toSet(),
+        )
+        assertEquals(baseline.eligibleCaseIds, candidate.eligibleCaseIds)
+        assertEquals(baseline.noInferenceCaseIds, candidate.noInferenceCaseIds)
+        val baselineTasks = baseline.tasks.associateBy { it.requiredString("caseId") }
+        val candidateTasks = candidate.tasks.associateBy { it.requiredString("caseId") }
+        assertEquals(baselineTasks.keys, candidateTasks.keys)
+        baselineTasks.forEach { (caseId, oldTask) ->
+            val newTask = candidateTasks.getValue(caseId)
+            assertEquals(oldTask.requiredString("sourceId"), newTask.requiredString("sourceId"))
+            assertEquals(oldTask.requiredString("sourceInputSha256"), newTask.requiredString("sourceInputSha256"))
+            assertEquals(oldTask.requiredString("userPrompt"), newTask.requiredString("userPrompt"))
+            assertTrue(oldTask.requiredString("systemPrompt") != newTask.requiredString("systemPrompt"))
+        }
+        val oldBaseline = baselineConfig.getValue("androidBaseline").jsonObject
+        val newBaseline = candidateConfig.getValue("androidBaseline").jsonObject
+        assertEquals(JsonObject(oldBaseline - "promptVersion"), JsonObject(newBaseline - "promptVersion"))
+    }
+
+    @Test
     fun developmentPromptJobsContainProductHeadingsButNotHeldoutCases() = runBlocking {
         val dataset = parseDataset(readInput("bottle.eval.cases", "/bottle-evaluation/v1/cases.json"))
         val development = eligibleProductionPromptCases(dataset, "development")
@@ -780,17 +823,19 @@ private suspend fun evaluate(dataset: EvalDataset, variants: List<EvalVariant>, 
     }
 }
 
-private fun localQwenVariant() = EvalVariant(
+private fun localQwenVariant(
+    promptConfiguration: LocalBottleExtractionPromptConfiguration = LocalBottleExtractionPromptConfiguration.DEFAULT,
+) = EvalVariant(
     id = "qwen3-0.6b-q8_0-local-gpu-baseline",
     modelId = LOCAL_MODEL_LABEL,
     quantization = "Q8_0",
     runtime = System.getProperty("bottle.eval.local.runtime") ?: "llama.cpp host server; build identity unavailable",
-    promptVersion = DEFAULT_LOCAL_PROMPT_VERSION,
+    promptVersion = promptConfiguration.version,
     temperature = 0.3,
     maxOutputTokens = DEFAULT_LOCAL_MAX_OUTPUT_TOKENS,
     outputSource = "local_model_execution",
     timingSource = "host_runtime_observed",
-    systemPrompt = LocalBottleExtractionPromptConfiguration.DEFAULT.systemPrompt,
+    systemPrompt = promptConfiguration.systemPrompt,
     additionalInstructions = null,
     responses = emptyMap(),
 )
@@ -804,9 +849,26 @@ private fun findRepositoryRoot(): File {
     error("Could not locate the repository root for the bottle evaluation tools")
 }
 
-private fun readLocalRuntimeConfig(): JsonObject = Json.parseToJsonElement(
-    File(findRepositoryRoot(), "tools/bottle-eval/qwen3-0.6b-q8-gpu.json").readText(Charsets.UTF_8),
-).jsonObject
+private fun readLocalRuntimeConfig(promptVersion: String? = null): JsonObject {
+    val config = Json.parseToJsonElement(
+        File(findRepositoryRoot(), "tools/bottle-eval/qwen3-0.6b-q8-gpu.json").readText(Charsets.UTF_8),
+    ).jsonObject
+    if (promptVersion == null) return config
+    val baseline = config.getValue("androidBaseline").jsonObject + ("promptVersion" to JsonPrimitive(promptVersion))
+    return JsonObject(config + ("androidBaseline" to JsonObject(baseline)))
+}
+
+private fun promptConfigurationForVersion(version: String, maxOutputTokens: Int): LocalBottleExtractionPromptConfiguration {
+    val systemPrompt = when (version) {
+        DEFAULT_LOCAL_PROMPT_VERSION -> LocalBottleExtractionPromptConfiguration.DEFAULT.systemPrompt
+        "bottle-facts-v1" -> BottleLookupEvaluationHarnessTest::class.java
+            .getResourceAsStream("/bottle-evaluation/v1/prompts/bottle-facts-v1.txt")
+            ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+            ?: error("Archived baseline prompt bottle-facts-v1 is missing")
+        else -> error("Unsupported bottle evaluation prompt version: $version")
+    }
+    return LocalBottleExtractionPromptConfiguration(version, systemPrompt, maxOutputTokens = maxOutputTokens)
+}
 
 private fun assertPinnedRuntimeMatchesAndroidNativeSource() {
     val root = findRepositoryRoot()
@@ -947,9 +1009,10 @@ private suspend fun captureProductionPromptBatch(
     dataset: EvalDataset,
     cases: List<EvalCase>,
     config: JsonObject,
+    promptConfiguration: LocalBottleExtractionPromptConfiguration = LocalBottleExtractionPromptConfiguration.DEFAULT,
 ): ProductionPromptBatch {
     require(cases.isNotEmpty()) { "Prompt capture requires at least one eligible reviewed product case" }
-    val variant = localQwenVariant()
+    val variant = localQwenVariant(promptConfiguration)
     val tasks = mutableListOf<JsonObject>()
     val noInferenceCaseIds = mutableListOf<String>()
     val noInferenceReasons = mutableMapOf<String, String>()
@@ -998,12 +1061,15 @@ private suspend fun exportProductionPromptJobs(
     evaluationSplit: String = System.getProperty("bottle.eval.export.split")?.takeIf(String::isNotBlank) ?: "development",
 ) {
     assertPinnedRuntimeMatchesAndroidNativeSource()
+    val promptVersion = System.getProperty("bottle.eval.prompt.version")
+        ?.takeIf(String::isNotBlank) ?: DEFAULT_LOCAL_PROMPT_VERSION
+    val promptConfiguration = promptConfigurationForVersion(promptVersion, DEFAULT_LOCAL_MAX_OUTPUT_TOKENS)
     val eligible = eligibleProductionPromptCases(dataset, evaluationSplit)
     require(eligible.isNotEmpty()) {
         "No reviewed product case has a complete frozen source and independent source labels. No prompts or model jobs were exported."
     }
-    val config = readLocalRuntimeConfig()
-    val batch = captureProductionPromptBatch(dataset, eligible, config)
+    val config = readLocalRuntimeConfig(promptVersion)
+    val batch = captureProductionPromptBatch(dataset, eligible, config, promptConfiguration)
     val result = buildPortablePromptJobs(
         dataset.version, dataset.splitPlan, config, batch.eligibleCaseIds, batch.noInferenceCaseIds,
         batch.noInferenceReasons, batch.tasks, evaluationSplit,
@@ -1065,10 +1131,17 @@ private suspend fun importHostInferenceResults(dataset: EvalDataset, jobsFile: F
     require(jobs.requiredString("format") == "com.davidhayesbc.cocktails.bottle-evaluation-prompt-jobs" && jobs.int("schemaVersion") == 1)
     require(jobs.keys == setOf("format", "schemaVersion", "datasetVersion", "splitPlan", "evaluationSplit", "config", "configCanonicalJson", "configSha256", "caseIds", "eligibleCaseIds", "noInferenceCaseIds", "noInferenceReasons", "tasks", "answerKeyIncluded"))
     require(jobs["answerKeyIncluded"]?.jsonPrimitive?.booleanOrNull == false)
-    val config = readLocalRuntimeConfig()
     val configText = jobs.requiredString("configCanonicalJson")
     require(sha256(configText) == jobs.requiredString("configSha256")) { "Exported job config hash mismatch" }
-    require(Json.parseToJsonElement(configText).jsonObject == config && jobs["config"]?.jsonObject == config) {
+    val jobConfig = Json.parseToJsonElement(configText).jsonObject
+    val promptVersion = jobConfig.getValue("androidBaseline").jsonObject.requiredString("promptVersion")
+    val baselineForPrompt = jobConfig.getValue("androidBaseline").jsonObject
+    val promptConfiguration = promptConfigurationForVersion(
+        promptVersion,
+        baselineForPrompt.getValue("maxOutputTokens").jsonPrimitive.intOrNull ?: DEFAULT_LOCAL_MAX_OUTPUT_TOKENS,
+    )
+    val config = readLocalRuntimeConfig(promptVersion)
+    require(jobConfig == config && jobs["config"]?.jsonObject == config) {
         "Exported jobs do not match the currently pinned Android runtime configuration"
     }
     require(jobs.requiredString("datasetVersion") == dataset.version && jobs.requiredString("splitPlan") == dataset.splitPlan)
@@ -1095,7 +1168,7 @@ private suspend fun importHostInferenceResults(dataset: EvalDataset, jobsFile: F
     val eligibleCases = eligibleProductionPromptCases(dataset, evaluationSplit)
     val expectedEligibleIds = eligibleCases.map(EvalCase::id).sorted()
     require(eligibleCaseIds == expectedEligibleIds) { "Prompt jobs do not cover the current frozen executable case set" }
-    val expectedBatch = captureProductionPromptBatch(dataset, eligibleCases, config)
+    val expectedBatch = captureProductionPromptBatch(dataset, eligibleCases, config, promptConfiguration)
     require(noInferenceCaseIds == expectedBatch.noInferenceCaseIds) {
         "Prompt jobs misclassify cases where the production extractor does not request inference"
     }
@@ -1194,7 +1267,7 @@ private suspend fun importHostInferenceResults(dataset: EvalDataset, jobsFile: F
             maxOutputTokens = maxTokens,
             outputSource = "host_model_execution_result",
             timingSource = "host_runtime_observed",
-            systemPrompt = LocalBottleExtractionPromptConfiguration.DEFAULT.systemPrompt,
+            systemPrompt = promptConfiguration.systemPrompt,
             additionalInstructions = null,
             responses = parsedResponses,
             modelArtifactSha256 = results.requiredString("modelSha256"),
