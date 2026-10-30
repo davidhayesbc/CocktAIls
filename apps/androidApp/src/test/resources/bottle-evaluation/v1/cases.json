@@ -42,7 +42,7 @@
       "expectedSourceId": null,
       "searchHits": [],
       "pages": [],
-      "sourceAccessNote": "Research target domains are outside the current enforced egress allowlist; no HTTP request was attempted."
+      "sourceAccessNote": "Access attempted on 2026-10-30 through the enforced proxy for www.anbl.com, www.liquormarts.ca; CONNECT tunnel was rejected with HTTP 403 before an origin response. No source bytes were captured."
     },
     {
       "id": "banff-ice-vodka",
@@ -81,7 +81,7 @@
       "expectedSourceId": null,
       "searchHits": [],
       "pages": [],
-      "sourceAccessNote": "Research target domains are outside the current enforced egress allowlist; no HTTP request was attempted."
+      "sourceAccessNote": "Access attempted on 2026-10-30 through the enforced proxy for www.anbl.com; CONNECT tunnel was rejected with HTTP 403 before an origin response. No source bytes were captured."
     },
     {
       "id": "campari",
@@ -158,7 +158,7 @@
       "expectedSourceId": null,
       "searchHits": [],
       "pages": [],
-      "sourceAccessNote": "Research target domains are outside the current enforced egress allowlist; no HTTP request was attempted.",
+      "sourceAccessNote": "Access attempted on 2026-10-30 through the enforced proxy for www.liquormarts.ca; CONNECT tunnel was rejected with HTTP 403 before an origin response. No source bytes were captured. Other research targets not attempted: www.saq.com.",
       "reviewNotes": [
         "User-reviewed correction retained."
       ]
@@ -200,7 +200,7 @@
       "expectedSourceId": null,
       "searchHits": [],
       "pages": [],
-      "sourceAccessNote": "Research target domains are outside the current enforced egress allowlist; no HTTP request was attempted."
+      "sourceAccessNote": "Access attempted on 2026-10-30 through the enforced proxy for esquimaltvermouth.ca; CONNECT tunnel was rejected with HTTP 403 before an origin response. No source bytes were captured."
     },
     {
       "id": "esquimalt-rosso-sweet-vermouth",
@@ -239,7 +239,7 @@
       "expectedSourceId": null,
       "searchHits": [],
       "pages": [],
-      "sourceAccessNote": "Research target domains are outside the current enforced egress allowlist; no HTTP request was attempted."
+      "sourceAccessNote": "Access attempted on 2026-10-30 through the enforced proxy for esquimaltvermouth.ca; CONNECT tunnel was rejected with HTTP 403 before an origin response. No source bytes were captured."
     },
     {
       "id": "flor-de-cana-anejo-clasico",
@@ -316,7 +316,7 @@
       "expectedSourceId": null,
       "searchHits": [],
       "pages": [],
-      "sourceAccessNote": "Research target domains are outside the current enforced egress allowlist; no HTTP request was attempted.",
+      "sourceAccessNote": "Access attempted on 2026-10-30 through the enforced proxy for www.giffardcanada.com; CONNECT tunnel was rejected with HTTP 403 before an origin response. No source bytes were captured. Other research targets not attempted: www.unitedbeverages.pl.",
       "reviewNotes": [
         "Numeric ABV is unknown, not zero."
       ]
@@ -700,7 +700,7 @@
       "expectedSourceId": null,
       "searchHits": [],
       "pages": [],
-      "sourceAccessNote": "Research target domains are outside the current enforced egress allowlist; no HTTP request was attempted.",
+      "sourceAccessNote": "Access attempted on 2026-10-30 through the enforced proxy for www.anbl.com; CONNECT tunnel was rejected with HTTP 403 before an origin response. No source bytes were captured.",
       "reviewNotes": [
         "User-reviewed correction retained."
       ]
