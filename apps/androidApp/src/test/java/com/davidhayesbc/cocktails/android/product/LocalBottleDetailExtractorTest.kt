@@ -435,6 +435,47 @@ class LocalBottleDetailExtractorTest {
     }
 
     @Test
+    fun doesNotAcceptUnsupportedBrandClaimFromProductTitleEvidence() {
+        val result = parseBottleFactCandidate(
+            """{"facts":[{"field":"brand","value":"North Star Distilling","evidence":"North Star Special Reserve Gin"}]}""",
+            provider = "On-device Qwen3",
+            model = LOCAL_MODEL_LABEL,
+            sourceUrl = "https://example.org/gin",
+            sourceText = "North Star Special Reserve Gin",
+        ) as BottleDetailExtractionResult.Rejected
+
+        assertEquals(BottleExtractionRejectionReason.VALUE_NOT_IN_EVIDENCE, result.reason)
+        assertEquals(setOf(BottleFactField.BRAND), result.rejectedFields)
+    }
+
+    @Test
+    fun defaultPromptRequiresUnitsAnchoredAbvEvidenceAndBrandDistinction() = runBlocking {
+        var observedSystemPrompt = ""
+        val extractor = LocalBottleDetailExtractor(
+            { "/model.gguf" },
+            LocalInferenceRunner { _, systemPrompt, _, _ ->
+                observedSystemPrompt = systemPrompt
+                """{"facts":[]}"""
+            },
+        )
+        extractor.extract(
+            WebPageText(
+                title = "Sample Gin",
+                sourceUrl = "https://example.org/gin",
+                markdown = "Sample Gin\nContainer Size: 750 mL\nAlcohol content: 40%",
+                provider = "fixture",
+            ),
+            LOCAL_MODEL_LABEL,
+        )
+
+        assertEquals("bottle-facts-v2-dev-candidate", DEFAULT_LOCAL_PROMPT_VERSION)
+        assertTrue(observedSystemPrompt.contains("include the explicit unit exactly as shown"))
+        assertTrue(observedSystemPrompt.contains("Teneur en alcool : 40%"))
+        assertTrue(observedSystemPrompt.contains("Do not copy a full product name into brand"))
+        assertTrue(observedSystemPrompt.contains("otherwise omit brand"))
+    }
+
+    @Test
     fun acceptsOnlyEquivalentAbvNotationAndWhitespaceWithoutConvertingFacts() {
         val source = "Auchentoshan Three Wood: Alcohol by volume 43.0%. Bottle size 750 mL."
         val formattedAbv = parseBottleFactCandidate(
@@ -442,6 +483,36 @@ class LocalBottleDetailExtractorTest {
             "On-device Qwen3", LOCAL_MODEL_LABEL, "https://example.org/whisky", source,
         ) as BottleDetailExtractionResult.Found
         assertEquals("43 % ABV", formattedAbv.suggestions.facts.single().value)
+
+        val englishLabeledAbv = parseBottleFactCandidate(
+            """{"facts":[{"field":"abv_percent","value":"40.0%","evidence":"Alcohol content: 40.0%"}]}""",
+            "On-device Qwen3", LOCAL_MODEL_LABEL, "https://example.org/vodka", "Banff Ice\nAlcohol content: 40.0%",
+        ) as BottleDetailExtractionResult.Found
+        assertEquals("40.0%", englishLabeledAbv.suggestions.facts.single().value)
+
+        val frenchLabeledAbv = parseBottleFactCandidate(
+            """{"facts":[{"field":"abv_percent","value":"50.5%","evidence":"Teneur en alcool : 50.5%"}]}""",
+            "On-device Qwen3", LOCAL_MODEL_LABEL, "https://example.org/bourbon", "Wild Turkey 101\nTeneur en alcool : 50.5%",
+        ) as BottleDetailExtractionResult.Found
+        assertEquals("50.5%", frenchLabeledAbv.suggestions.facts.single().value)
+
+        val unrelatedPercentage = parseBottleFactCandidate(
+            """{"facts":[{"field":"abv_percent","value":"40%","evidence":"Sale 40%; the alcohol content is not stated"}]}""",
+            "On-device Qwen3", LOCAL_MODEL_LABEL, "https://example.org/gin", "Sale 40%; the alcohol content is not stated",
+        ) as BottleDetailExtractionResult.Rejected
+        assertEquals(BottleExtractionRejectionReason.VALUE_NOT_IN_EVIDENCE, unrelatedPercentage.reason)
+
+        val unrelatedAvailabilityNumber = parseBottleFactCandidate(
+            """{"facts":[{"field":"quantity","value":"2","evidence":"Availability: 2"}]}""",
+            "On-device Qwen3", LOCAL_MODEL_LABEL, "https://example.org/gin", "Availability: 2",
+        ) as BottleDetailExtractionResult.Rejected
+        assertEquals(BottleExtractionRejectionReason.VALUE_NOT_IN_EVIDENCE, unrelatedAvailabilityNumber.reason)
+
+        val quantityWithoutUnit = parseBottleFactCandidate(
+            """{"facts":[{"field":"quantity","value":"750","evidence":"Container Size: 750 mL"}]}""",
+            "On-device Qwen3", LOCAL_MODEL_LABEL, "https://example.org/gin", "Container Size: 750 mL",
+        ) as BottleDetailExtractionResult.Rejected
+        assertEquals(BottleExtractionRejectionReason.VALUE_NOT_IN_EVIDENCE, quantityWithoutUnit.reason)
 
         val formattedQuantity = parseBottleFactCandidate(
             """{"facts":[{"field":"quantity","value":"750ml","evidence":"Bottle size 750 mL"}]}""",

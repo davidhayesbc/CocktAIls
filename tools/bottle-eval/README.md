@@ -95,6 +95,24 @@ Host prompt-evaluation, generation, and request timings are recorded separately 
 treated as Pixel timings. `timings_per_token` is requested from llama.cpp, while the app's prefill and
 generation stages are separately measured on device.
 
+### Development-only prompt candidate
+
+The current unshipped candidate is `bottle-facts-v2-dev-candidate`. It keeps the same model artifact,
+llama.cpp revision, GBNF, sampler order and values, context/batch sizes, temperature, and 160-token
+output cap. Its prompt asks for quantity values with the source unit, exact labeled ABV evidence
+(including English `Alcohol content` and French `Teneur en alcool`), and abstention on brand when a
+source does not distinguish it from the product or variant title. The parser recognizes those
+anchored labels while retaining exact quote and value checks. No candidate host inference result has
+been imported yet; do not interpret this as a measured improvement or run holdout until the candidate
+is frozen.
+
+An audit of the three development excerpts found that their former brand gold values came from
+product titles alone, without a distinct brand field. Those source labels are now `UNKNOWN`; inventory
+brand truth remains unchanged. Recounting the original v1 responses with this corrected source-support
+mask gives 9 supported facts, 5 true positives, 0 false positives and 4 false negatives (100% precision,
+55.6% recall). This is a label correction, not candidate performance. The original v1 report remains
+preserved privately outside the repository; raw model outputs and evaluation reports are not committed.
+
 ### 3. Import and score on the Android/JVM workspace
 
 Copy the exact job file and matching host result file back privately. Import verifies exact job-file

@@ -117,9 +117,7 @@
           "evidence": "Banff Ice 750ml"
         },
         "brand": {
-          "status": "SUPPORTED",
-          "value": "Banff Ice",
-          "evidence": "Banff Ice"
+          "status": "UNKNOWN"
         },
         "quantity": {
           "status": "SUPPORTED",
@@ -230,9 +228,7 @@
           "evidence": "DUBONNET ROUGE"
         },
         "brand": {
-          "status": "SUPPORTED",
-          "value": "Dubonnet",
-          "evidence": "DUBONNET ROUGE"
+          "status": "UNKNOWN"
         },
         "quantity": {
           "status": "SUPPORTED",
@@ -909,9 +905,7 @@
           "evidence": "Wild Turkey 101 750ml"
         },
         "brand": {
-          "status": "SUPPORTED",
-          "value": "Wild Turkey",
-          "evidence": "Wild Turkey 101"
+          "status": "UNKNOWN"
         },
         "quantity": {
           "status": "SUPPORTED",

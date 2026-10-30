@@ -640,12 +640,14 @@ private fun evidencedAbvNumbers(evidence: String): Set<Double> {
     val unit = "(?:ABV|ALC(?:OHOL)?(?:\\s+BY\\s+VOLUME)?|ALC\\.?\\s*/\\s*VOL\\.?|VOL(?:UME)?)"
     val number = "(\\d{1,3}(?:[.,]\\d{1,2})?)"
     val unitAfter = Regex("""(?i)(?<![\d.,])$number\s*%\s*$unit\b""")
-    val unitBefore = Regex("""(?i)$unit\s*[:=]?\s*$number\s*%""")
+    val labeledAlcoholStrength = Regex(
+        """(?i)^\s*(?:\|\s*)?(?:ABV|Alcohol(?:\s+(?:content|by\s+volume))?|Teneur\s+en\s+alcool)\s*(?:\|\s*)?[:=]?\s*$number\s*%""",
+    )
     // A markdown table separates the label and value into adjacent cells. Normalize only the
     // presentation delimiter for this check; the stored evidence remains the exact source quote.
     val normalizedEvidence = evidence.replace('|', ' ')
     return (unitAfter.findAll(normalizedEvidence).mapNotNull { it.groups[1]?.value } +
-        unitBefore.findAll(normalizedEvidence).mapNotNull { it.groups[1]?.value })
+        labeledAlcoholStrength.findAll(normalizedEvidence).mapNotNull { it.groups[1]?.value })
         .mapNotNull { it.replace(',', '.').toDoubleOrNull() }
         .toSet()
 }

@@ -93,6 +93,21 @@ class BottleLookupEvaluationHarnessTest {
     }
 
     @Test
+    fun developmentTitleOnlyBrandLabelsRemainUnknownAndAreNotForcedIntoSourceGold() {
+        val dataset = parseDataset(readInput("bottle.eval.cases", "/bottle-evaluation/v1/cases.json"))
+        val development = dataset.cases.filter {
+            it.kind == "reviewed_product" && it.split == "development" && it.sourceFacts.isNotEmpty()
+        }
+        assertEquals(setOf("banff-ice-vodka", "dubonnet-rouge", "wild-turkey-101"), development.map { it.id }.toSet())
+        development.forEach { case ->
+            val brand = case.sourceFacts[BottleFactField.BRAND]
+            assertEquals("Brand should not be treated as source gold from a title alone for ${case.id}", SourceLabelStatus.UNKNOWN.name, brand?.status)
+            assertEquals(null, brand?.value)
+            assertEquals(null, brand?.evidence)
+        }
+    }
+
+    @Test
     fun developmentPromptJobsContainProductHeadingsButNotHeldoutCases() = runBlocking {
         val dataset = parseDataset(readInput("bottle.eval.cases", "/bottle-evaluation/v1/cases.json"))
         val development = eligibleProductionPromptCases(dataset, "development")

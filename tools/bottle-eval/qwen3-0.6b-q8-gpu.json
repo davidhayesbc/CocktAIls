@@ -17,7 +17,7 @@
   },
   "androidBaseline": {
     "modelLabel": "Qwen3-0.6B-Q8_0",
-    "promptVersion": "bottle-facts-v1",
+    "promptVersion": "bottle-facts-v2-dev-candidate",
     "temperature": 0.3,
     "seed": -1,
     "maxOutputTokens": 160,
