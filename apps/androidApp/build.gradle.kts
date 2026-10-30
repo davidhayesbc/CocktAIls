@@ -91,4 +91,7 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
     providers.gradleProperty("bottleEvalLocalBackend").orNull?.let { systemProperty("bottle.eval.local.backend", it) }
     providers.gradleProperty("bottleEvalModelSha256").orNull?.let { systemProperty("bottle.eval.local.model.sha256", it) }
     providers.gradleProperty("bottleEvalLlamaCppCommit").orNull?.let { systemProperty("bottle.eval.local.llama.commit", it) }
+    providers.gradleProperty("bottleEvalExportJobs").orNull?.let { systemProperty("bottle.eval.export.jobs", it) }
+    providers.gradleProperty("bottleEvalImportJobs").orNull?.let { systemProperty("bottle.eval.import.jobs", it) }
+    providers.gradleProperty("bottleEvalImportResults").orNull?.let { systemProperty("bottle.eval.import.results", it) }
 }

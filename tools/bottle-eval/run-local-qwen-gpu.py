@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Run the production extraction pipeline against a caller-provided local llama.cpp CUDA server.
+"""Run exported production prompts through an already-installed local llama.cpp server.
 
-No model downloads, package installs, external service calls, or raw prompt/output files are made.
-The server is bound to loopback and stopped when the evaluation ends.
+This Windows-friendly stage does not invoke Gradle, download artifacts, or send data off-device.
+Inputs and raw model outputs contain public-source text; keep both files private.
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import subprocess
@@ -20,11 +19,12 @@ import time
 import urllib.error
 import urllib.request
 
-ROOT = Path(__file__).resolve().parents[2]
-CONFIG_PATH = ROOT / "tools/bottle-eval/qwen3-0.6b-q8-gpu.json"
-CASES_PATH = ROOT / "apps/androidApp/src/test/resources/bottle-evaluation/v1/cases.json"
-DEFAULT_REPORT = ROOT / "build/reports/bottle-evaluation/local-qwen3-gpu.json"
-LOCAL_HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+CONFIG_PATH = Path(__file__).resolve().with_name("qwen3-0.6b-q8-gpu.json")
+NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def read_config() -> dict:
@@ -34,207 +34,260 @@ def read_config() -> dict:
     return config
 
 
-def eligible_case_ids(cases_path: Path, requested: list[str] | None) -> list[str]:
-    dataset = json.loads(cases_path.read_text(encoding="utf-8"))
-    if dataset.get("format") != "com.davidhayesbc.cocktails.bottle-evaluation-cases":
-        raise ValueError("Invalid bottle evaluation case manifest")
-    eligible_cases = {
-        case["id"]: case for case in dataset.get("cases", [])
-        if case.get("kind") == "reviewed_product"
-        and case.get("sourceCoverage") == "complete"
-        and bool(case.get("pages"))
-        and any(value.get("status") in {"SUPPORTED", "ABSENT", "CONFLICTING"}
-                for value in case.get("sourceFacts", {}).values())
-    }
-    eligible = set(eligible_cases)
-    selected = sorted(eligible if requested is None else set(requested))
-    if not set(selected).issubset(eligible):
-        invalid = sorted(set(selected) - eligible)
-        raise ValueError("Local model evaluation only accepts complete reviewed-product source cases; rejected case IDs: " + ", ".join(invalid))
-    if requested is not None and any(eligible_cases[case_id].get("split") != "development" for case_id in selected):
-        raise ValueError("A selected subset may include development cases only; evaluate the full frozen manifest to score holdout.")
-    return selected
-
-
-def check_model(model_path: Path, config: dict) -> None:
-    if not model_path.is_file():
-        raise ValueError("The caller-provided Qwen model file does not exist; downloads are not performed by this runner.")
-    expected = config["model"]["sha256"]
-    digest = hashlib.sha256()
-    with model_path.open("rb") as stream:
-        for block in iter(lambda: stream.read(4 * 1024 * 1024), b""):
-            digest.update(block)
-    if digest.hexdigest() != expected:
-        raise ValueError("Model SHA-256 does not match the pinned official Qwen artifact.")
-    if model_path.stat().st_size != config["model"]["bytes"]:
-        raise ValueError("Model file size does not match the pinned official Qwen artifact.")
+def load_jobs(path: Path, config: dict) -> tuple[dict, str]:
+    if path.stat().st_size > 8 * 1024 * 1024:
+        raise ValueError("Prompt-job file exceeds the 8 MiB safety limit")
+    raw = path.read_bytes()
+    job_sha = sha256(raw)
+    jobs = json.loads(raw)
+    if jobs.get("format") != "com.davidhayesbc.cocktails.bottle-evaluation-prompt-jobs" or jobs.get("schemaVersion") != 1:
+        raise ValueError("Unsupported prompt-job file")
+    if set(jobs) != {"format", "schemaVersion", "datasetVersion", "splitPlan", "config", "configCanonicalJson", "configSha256", "caseIds", "tasks", "answerKeyIncluded"}:
+        raise ValueError("Prompt-job file contains unsupported fields; expected a minimal no-answer-key payload")
+    if jobs.get("answerKeyIncluded") is not False:
+        raise ValueError("Prompt-job file must explicitly exclude reference answers")
+    canonical = jobs.get("configCanonicalJson")
+    if not isinstance(canonical, str) or sha256(canonical.encode("utf-8")) != jobs.get("configSha256"):
+        raise ValueError("Prompt-job configuration hash is invalid")
+    exported_config = json.loads(canonical)
+    if exported_config != config:
+        raise ValueError("Prompt-job config does not match the pinned runtime configuration")
+    tasks = jobs.get("tasks")
+    if not isinstance(tasks, list) or not tasks or len(tasks) > 100:
+        raise ValueError("Prompt jobs must contain 1–100 tasks")
+    ids = set()
+    for task in tasks:
+        if set(task) != {"caseId", "sourceId", "sourceInputSha256", "taskSha256", "systemPrompt", "userPrompt"}:
+            raise ValueError("Prompt task contains unsupported fields")
+        case_id = task.get("caseId")
+        if not isinstance(case_id, str) or not case_id or case_id in ids:
+            raise ValueError("Prompt jobs contain a missing or duplicate case ID")
+        ids.add(case_id)
+        system = task.get("systemPrompt")
+        user = task.get("userPrompt")
+        if not isinstance(system, str) or not isinstance(user, str) or len(system) > 16_000 or len(user) > 24_000:
+            raise ValueError("Prompt job is malformed or exceeds bounded prompt size")
+        expected = sha256((system + "\0" + user).encode("utf-8"))
+        if task.get("taskSha256") != expected:
+            raise ValueError("Prompt task hash mismatch")
+        if not re.fullmatch(r"[a-f0-9]{64}", task.get("sourceInputSha256", "")):
+            raise ValueError("Prompt job is missing its frozen-source hash")
+    if jobs.get("caseIds") != sorted(ids):
+        raise ValueError("Prompt-job case index does not match tasks")
+    return jobs, job_sha
 
 
 def command_output(binary: Path, *args: str) -> str:
-    result = subprocess.run([str(binary), *args], cwd=ROOT, text=True, capture_output=True, check=False)
-    output = (result.stdout or "") + "\n" + (result.stderr or "")
+    result = subprocess.run([str(binary), *args], text=True, capture_output=True, check=False, timeout=30)
     if result.returncode != 0:
-        raise ValueError(f"llama.cpp preflight command failed ({args[0]}).")
-    return output
+        raise ValueError(f"llama.cpp preflight command failed ({args[0]})")
+    return (result.stdout or "") + "\n" + (result.stderr or "")
 
 
-def verify_server_build(binary: Path, config: dict) -> tuple[str, str]:
-    submodule = subprocess.run(
-        ["git", "-C", str(ROOT / config["llamaCpp"]["submodulePath"]), "rev-parse", "HEAD"],
-        cwd=ROOT, text=True, capture_output=True, check=False,
-    )
-    if submodule.returncode != 0 or submodule.stdout.strip() != config["llamaCpp"]["commit"]:
-        raise ValueError("Repository llama.cpp submodule does not match the configured pinned commit.")
+def check_model(path: Path, config: dict) -> None:
+    model = config["model"]
+    if not path.is_file() or path.stat().st_size != model["bytes"]:
+        raise ValueError("Model file is missing or has an unexpected size; no download is attempted")
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(4 * 1024 * 1024), b""):
+            digest.update(block)
+    if digest.hexdigest() != model["sha256"]:
+        raise ValueError("Model SHA-256 does not match the pinned official Qwen artifact")
+
+
+def verify_server(binary: Path, config: dict) -> tuple[str, str]:
     version = command_output(binary, "--version")
     expected = config["llamaCpp"]["serverVersionMustContain"]
     if expected not in version:
-        raise ValueError("llama-server version does not identify the repository's pinned llama.cpp commit.")
+        raise ValueError("llama-server version does not match the pinned llama.cpp build")
     devices = command_output(binary, "--list-devices")
     if not re.search(r"(?i)CUDA\s*\d*", devices):
-        raise ValueError("This llama-server build does not report a CUDA device; no inference was started.")
-    clean_version = " ".join(version.split())[:300]
-    clean_devices = " ".join(devices.split())[:500]
-    return clean_version, clean_devices
+        raise ValueError("This llama-server build reports no CUDA device")
+    return " ".join(version.split())[:300], " ".join(devices.split())[:500]
 
 
-def wait_for_health(process: subprocess.Popen, base_url: str, timeout_seconds: int = 240) -> None:
-    deadline = time.monotonic() + timeout_seconds
+def post_json(url: str, body: dict, timeout: int) -> dict:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with NO_PROXY.open(request, timeout=timeout) as response:
+        data = response.read(1_048_577)
+        if len(data) > 1_048_576:
+            raise ValueError("Local llama.cpp response exceeded 1 MiB")
+        return json.loads(data)
+
+
+def wait_for_health(process: subprocess.Popen, base: str, timeout: int = 240) -> None:
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            raise ValueError("llama-server exited before becoming ready; inspect its local startup output.")
+            raise ValueError("llama-server exited before becoming ready")
         try:
-            with LOCAL_HTTP.open(base_url + "/health", timeout=2) as response:
+            with NO_PROXY.open(base + "/health", timeout=2) as response:
                 if response.status == 200:
                     return
         except (urllib.error.URLError, TimeoutError, OSError):
             pass
         time.sleep(1)
-    raise ValueError("llama-server did not become healthy before the startup timeout.")
+    raise ValueError("llama-server startup timed out")
 
 
-def start_private_log_reader(process: subprocess.Popen) -> tuple[threading.Event, dict[str, str]]:
-    """Consume runtime logs without retaining raw lines or allowing pipe backpressure."""
-    confirmed = threading.Event()
-    result: dict[str, str] = {}
+def safe_log_reader(process: subprocess.Popen) -> tuple[threading.Event, dict[str, str]]:
+    gpu = threading.Event()
+    summary: dict[str, str] = {}
     pattern = re.compile(r"offloaded\s+(\d+)/(\d+)\s+layers\s+to\s+GPU", re.IGNORECASE)
 
-    def read_lines() -> None:
+    def consume() -> None:
         if process.stdout is None:
             return
         for line in process.stdout:
             match = pattern.search(line)
             if match and int(match.group(1)) > 0:
-                result["offloadedLayers"] = f"{match.group(1)}/{match.group(2)}"
-                confirmed.set()
+                summary["gpuOffloadedLayers"] = f"{match.group(1)}/{match.group(2)}"
+                gpu.set()
 
-    threading.Thread(target=read_lines, name="llama-server-safe-log-reader", daemon=True).start()
-    return confirmed, result
+    threading.Thread(target=consume, name="llama-safe-log-reader", daemon=True).start()
+    return gpu, summary
+
+
+def run_task(base: str, task: dict, config: dict) -> dict:
+    templated = post_json(base + "/apply-template", {"messages": [
+        {"role": "system", "content": task["systemPrompt"]},
+        {"role": "user", "content": task["userPrompt"]},
+    ], "add_generation_prompt": True}, timeout=30)
+    rendered = templated.get("prompt")
+    if not isinstance(rendered, str) or not rendered:
+        raise ValueError("Pinned llama.cpp template endpoint omitted rendered prompt")
+
+    android = config["androidBaseline"]
+    sampler = android["samplerParameters"]
+    body = {
+        "prompt": rendered,
+        "n_predict": android["maxOutputTokens"],
+        "seed": android["seed"],
+        "temperature": android["temperature"],
+        "top_k": sampler["top_k"], "top_p": sampler["top_p"], "min_p": sampler["min_p"],
+        "top_n_sigma": sampler["top_n_sigma"], "typical_p": sampler["typical_p"],
+        "xtc_probability": sampler["xtc_probability"], "xtc_threshold": sampler["xtc_threshold"],
+        "repeat_last_n": sampler["repeat_last_n"], "repeat_penalty": sampler["repeat_penalty"],
+        "frequency_penalty": sampler["frequency_penalty"], "presence_penalty": sampler["presence_penalty"],
+        "dry_multiplier": sampler["dry_multiplier"], "dry_base": sampler["dry_base"],
+        "dry_allowed_length": sampler["dry_allowed_length"], "dry_penalty_last_n": sampler["dry_penalty_last_n"],
+        "dry_sequence_breakers": sampler["dry_sequence_breakers"],
+        "samplers": android["samplers"],
+        "grammar": android["grammar"],
+        "cache_prompt": False,
+        "timings_per_token": True,
+    }
+    started = time.monotonic_ns()
+    completion = post_json(base + "/completion", body, timeout=600)
+    request_ms = max(0, (time.monotonic_ns() - started) // 1_000_000)
+    timings = completion.get("timings") or {}
+    stop = {"eos": "END_OF_SEQUENCE", "limit": "TOKEN_LIMIT", "word": "STOP_WORD"}.get(completion.get("stop_type"), "UNKNOWN")
+    output = completion.get("content")
+    if not isinstance(output, str):
+        raise ValueError("Pinned llama.cpp completion endpoint omitted model output")
+    return {
+        "caseId": task["caseId"], "taskSha256": task["taskSha256"],
+        "sourceInputSha256": task["sourceInputSha256"],
+        "modelOutput": output,
+        "finishReason": stop,
+        "generatedTokens": timings.get("predicted_n", completion.get("tokens_predicted")),
+        "generationMillis": round(timings["predicted_ms"]) if isinstance(timings.get("predicted_ms"), (int, float)) else None,
+        "promptEvaluationMillis": round(timings["prompt_ms"]) if isinstance(timings.get("prompt_ms"), (int, float)) else None,
+        "promptTokens": timings.get("prompt_n"),
+        "requestRoundTripMillis": request_ms,
+    }
+
+
+def build_server_command(binary: Path, model: Path, port: int, config: dict) -> list[str]:
+    baseline = config["androidBaseline"]
+    host = config["hostRuntime"]
+    return [
+        str(binary), "--model", str(model), "--host", "127.0.0.1", "--port", str(port),
+        "--ctx-size", str(baseline["contextTokens"]), "--batch-size", str(baseline["batchTokens"]),
+        "--ubatch-size", str(baseline["batchTokens"]), "--threads", str(host["threads"]),
+        "--threads-batch", str(host["threads"]), "--parallel", "1", "--no-jinja", "--no-webui",
+        "--device", host["device"], "--n-gpu-layers", str(host["gpuLayers"]),
+    ]
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", type=Path, help="Existing official Qwen3-0.6B-Q8_0.gguf file; never downloaded here")
-    parser.add_argument("--llama-server", type=Path, help="Existing llama-server built from the pinned submodule")
-    parser.add_argument("--cases", type=Path, default=CASES_PATH)
-    parser.add_argument("--case-id", action="append", dest="case_ids", help="Run a selected complete development case only; repeatable")
-    parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
+    parser.add_argument("--jobs", type=Path, required=True, help="Prompt jobs exported by the Android JVM harness")
+    parser.add_argument("--model", type=Path, required=True, help="Existing pinned Qwen GGUF; never downloaded here")
+    parser.add_argument("--llama-server", type=Path, required=True, help="Existing pinned CUDA llama-server executable")
+    parser.add_argument("--results", type=Path, required=True, help="Private output path for raw model results")
     parser.add_argument("--port", type=int, default=9931)
-    parser.add_argument("--preflight", action="store_true", help="Validate repository config/source coverage without starting a model")
     args = parser.parse_args()
-
+    process = None
     try:
         config = read_config()
         if not 1024 <= args.port <= 65535:
-            raise ValueError("Port must be between 1024 and 65535.")
-        selected_ids = eligible_case_ids(args.cases, args.case_ids)
-        print(f"Evaluation config: {CONFIG_PATH.relative_to(ROOT)}")
-        print(f"Eligible reviewed source cases: {len(selected_ids)} ({', '.join(selected_ids)})")
-        if args.preflight:
-            if not selected_ids:
-                print("No complete, labeled frozen source cases are ready. No model or server was used.")
-            else:
-                print("Preflight only; no model or server was used.")
-            return 0
-        if not selected_ids:
-            raise ValueError("No complete, labeled reviewed-product source cases are available; no model request was made.")
-        if args.model is None or args.llama_server is None:
-            raise ValueError("Provide --model and --llama-server. The runner does not download or build either artifact.")
-
-        model_path = args.model.expanduser().resolve()
+            raise ValueError("Port must be between 1024 and 65535")
+        jobs, job_sha = load_jobs(args.jobs.expanduser().resolve(), config)
+        model = args.model.expanduser().resolve()
         binary = args.llama_server.expanduser().resolve()
-        check_model(model_path, config)
-        version, devices = verify_server_build(binary, config)
-        host = config["hostRuntime"]
-        base_url = f"http://127.0.0.1:{args.port}"
-        server_args = [
-            "--model", str(model_path), "--host", "127.0.0.1", "--port", str(args.port),
-            "--ctx-size", str(config["androidBaseline"]["contextTokens"]),
-            "--batch-size", str(config["androidBaseline"]["batchTokens"]),
-            "--ubatch-size", str(config["androidBaseline"]["batchTokens"]),
-            "--threads", str(host["threads"]), "--threads-batch", str(host["threads"]),
-            "--parallel", "1", "--no-jinja", "--no-webui",
-            "--device", host["device"], "--n-gpu-layers", str(host["gpuLayers"]),
-            "--samplers", "penalties;dry;top_n_sigma;top_k;typ_p;top_p;min_p;xtc;temperature",
-            "--temp", str(config["androidBaseline"]["temperature"]),
-            "--seed", str(config["androidBaseline"]["seed"]),
-            "--top-k", "40", "--top-p", "0.95", "--min-p", "0.05",
-            "--top-n-sigma", "-1", "--typical-p", "1", "--xtc-probability", "0",
-            "--xtc-threshold", "0.1", "--repeat-last-n", "64", "--repeat-penalty", "1",
-            "--frequency-penalty", "0", "--presence-penalty", "0", "--dry-multiplier", "0",
-            "--dry-base", "1.75", "--dry-allowed-length", "2", "--dry-penalty-last-n", "64",
-        ]
-        print("Starting a loopback-only llama.cpp server; requests stay on this machine.")
-        process = subprocess.Popen(
-            [str(binary), *server_args], cwd=ROOT, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1,
-        )
-        gpu_confirmed, log_summary = start_private_log_reader(process)
-        try:
-            wait_for_health(process, base_url)
-            if not gpu_confirmed.wait(timeout=5):
-                raise ValueError("llama-server became ready but did not confirm any layers offloaded to GPU; evaluation stopped.")
-            gradle = ROOT / ("gradlew.bat" if os.name == "nt" else "gradlew")
-            gpu_driver = "unavailable"
-            try:
-                driver_result = subprocess.run(
-                    ["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
-                    cwd=ROOT, text=True, capture_output=True, check=False, timeout=10,
-                )
-                if driver_result.returncode == 0:
-                    gpu_driver = "; ".join(" ".join(line.split()) for line in driver_result.stdout.splitlines()[:2])
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-            command = [
-                str(gradle), ":apps:androidApp:testDebugUnitTest",
-                "--tests", "*BottleLookupEvaluationHarnessTest",
-                f"-PbottleEvalCases={args.cases.resolve()}",
-                f"-PbottleEvalReport={args.report.resolve()}",
-                f"-PbottleEvalLocalServer={base_url}",
-                f"-PbottleEvalLocalRuntime={version}",
-                f"-PbottleEvalLocalBackend=CUDA; visible devices: {devices}; offloaded layers: {log_summary['offloadedLayers']}; driver: {gpu_driver}; host threads: {host['threads']}",
-                f"-PbottleEvalModelSha256={config['model']['sha256']}",
-                f"-PbottleEvalLlamaCppCommit={config['llamaCpp']['commit']}",
-            ]
-            if args.case_ids is not None:
-                command.append(f"-PbottleEvalLocalCaseIds={','.join(selected_ids)}")
-            if os.name == "nt":
-                command = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", subprocess.list2cmdline(command)]
-            completed = subprocess.run(command, cwd=ROOT, check=False)
-            if completed.returncode != 0:
-                return completed.returncode
-        finally:
+        check_model(model, config)
+        version, devices = verify_server(binary, config)
+        baseline = config["androidBaseline"]
+        base = f"http://127.0.0.1:{args.port}"
+        command = build_server_command(binary, model, args.port, config)
+        print("Starting pinned llama.cpp on loopback; prompts and raw results stay on this desktop.")
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1)
+        gpu_ready, log_summary = safe_log_reader(process)
+        wait_for_health(process, base)
+        if not gpu_ready.wait(timeout=5):
+            raise ValueError("Runtime did not confirm CUDA layer offload; evaluation stopped")
+
+        outputs = []
+        for index, task in enumerate(jobs["tasks"], start=1):
+            print(f"Running local inference {index}/{len(jobs['tasks'])}: {task['caseId']}")
+            outputs.append(run_task(base, task, config))
+
+        result = {
+            "format": "com.davidhayesbc.cocktails.bottle-evaluation-host-results",
+            "schemaVersion": 1,
+            "jobFileSha256": job_sha,
+            "configSha256": jobs["configSha256"],
+            "modelSha256": config["model"]["sha256"],
+            "llamaCppCommit": config["llamaCpp"]["commit"],
+            "runtimeVersion": version,
+            "runtimeBackend": "CUDA",
+            "devices": devices,
+            "gpuOffloadedLayers": log_summary.get("gpuOffloadedLayers", "unavailable"),
+            "inferenceSettings": {
+                "contextTokens": baseline["contextTokens"],
+                "batchTokens": baseline["batchTokens"],
+                "maxOutputTokens": baseline["maxOutputTokens"],
+                "temperature": baseline["temperature"],
+                "grammarSha256": sha256(baseline["grammar"].encode("utf-8")),
+                "samplers": baseline["samplers"],
+            },
+            "hostRuntime": "Windows/desktop CUDA; not comparable to Android CPU timing",
+            "responses": outputs,
+        }
+        destination = args.results.expanduser().resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"Wrote {len(outputs)} result records to {destination}")
+        print("The results include raw model output; review and transfer privately to the cloud JVM importer.")
+        return 0
+    except (OSError, ValueError, KeyError, json.JSONDecodeError, urllib.error.URLError, TimeoutError, subprocess.TimeoutExpired) as error:
+        print(f"Local Qwen evaluation stopped: {error}", file=sys.stderr)
+        return 2
+    finally:
+        if process is not None:
             process.terminate()
             try:
                 process.wait(timeout=15)
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
-        print(f"Evaluation report written to {args.report.resolve()}")
-        print("The report contains metrics and timings only. Host GPU timings are not Pixel CPU timings.")
-        return 0
-    except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
-        print(f"Local Qwen evaluation stopped: {error}", file=sys.stderr)
-        return 2
 
 
 if __name__ == "__main__":

@@ -39,10 +39,122 @@ import org.junit.Test
  */
 class BottleLookupEvaluationHarnessTest {
     @Test
+    fun portableJobsContainProductionInputsButNoExpectedLabels() {
+        val config = readLocalRuntimeConfig()
+        val prompt = buildPortablePromptJobs("dataset-v1", "split-v1", config, listOf(buildJsonObject {
+            put("caseId", "product-a")
+            put("sourceId", "source-a")
+            put("sourceInputSha256", "a".repeat(64))
+            put("taskSha256", sha256("system\u0000user"))
+            put("systemPrompt", "system")
+            put("userPrompt", "user")
+        }))
+        assertEquals(false, prompt.getValue("answerKeyIncluded").jsonPrimitive.booleanOrNull)
+        assertEquals(listOf("product-a"), prompt.getValue("caseIds").jsonArray.map { it.jsonPrimitive.content })
+        val encoded = Json.encodeToString(JsonObject.serializer(), prompt)
+        listOf("sourceFacts", "inventoryTruth", "confirmedValue", "householdBottleId").forEach { key ->
+            assertFalse("Prompt jobs must not serialize the gold label field $key", encoded.contains("\"$key\""))
+        }
+        assertTrue(encoded.contains("\"systemPrompt\":\"system\""))
+        assertTrue(encoded.contains("\"userPrompt\":\"user\""))
+    }
+
+    @Test
+    fun exporterStopsWhenReviewedCasesHaveNoFrozenSources() = runBlocking {
+        val dataset = parseDataset(readInput("bottle.eval.cases", "/bottle-evaluation/v1/cases.json"))
+        val output = kotlin.io.path.createTempDirectory("bottle-eval-empty-export").toFile()
+        try {
+            assertThrows(IllegalArgumentException::class.java) {
+                runBlocking { exportProductionPromptJobs(dataset, File(output, "jobs.json")) }
+            }
+            assertFalse(File(output, "jobs.json").exists())
+        } finally {
+            output.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun hostResultImportRequiresExactJobHashAndMarksDesktopInferenceOrigin() {
+        val config = readLocalRuntimeConfig()
+        val page = WebPageText(
+            title = "Sample Spirit 5011333150725",
+            sourceUrl = "https://products.example/items/sample-spirit",
+            markdown = "UPC: 5011333150725\n### Sample Spirit\nBrand: Sample House",
+            provider = "Frozen test source",
+        )
+        val sourceHash = frozenSourceInputSha256(page)
+        val evalPage = EvalPage("source-a", page.sourceUrl, page, "2026-10-29T00:00:00Z", "test fixture",
+            sourceHash, "short factual test excerpt")
+        val case = EvalCase(
+            id = "sample-product", kind = "reviewed_product", split = "development", groupId = "sample-family",
+            sourceCoverage = "complete", sourceCaptureStatus = "fixture", sourceSelectionMode = "independent_product_source",
+            barcode = "5011333150725", identityExpectation = IdentityExpectation.TARGET, expectedSourceId = "source-a",
+            inventoryTruth = emptyMap(),
+            sourceFacts = mapOf(BottleFactField.PRODUCT_NAME to LabeledValue("SUPPORTED", "Sample Spirit", "### Sample Spirit")),
+            researchTargets = emptyList(), searchHits = emptyList(), pages = listOf(evalPage),
+        )
+        val dataset = EvalDataset("dataset-v1", "split-v1", 1, listOf(case))
+        val system = "system prompt fixture"
+        val user = "source prompt fixture"
+        val task = buildJsonObject {
+            put("caseId", case.id); put("sourceId", evalPage.sourceId); put("sourceInputSha256", sourceHash)
+            put("taskSha256", sha256("$system\u0000$user")); put("systemPrompt", system); put("userPrompt", user)
+        }
+        val jobs = buildPortablePromptJobs(dataset.version, dataset.splitPlan, config, listOf(task))
+        val baseline = config.getValue("androidBaseline").jsonObject
+        val configSha = jobs.requiredString("configSha256")
+        val resultJson = buildJsonObject {
+            put("format", "com.davidhayesbc.cocktails.bottle-evaluation-host-results"); put("schemaVersion", 1)
+            put("jobFileSha256", "pending"); put("configSha256", configSha)
+            put("modelSha256", config.getValue("model").jsonObject.requiredString("sha256"))
+            put("llamaCppCommit", config.getValue("llamaCpp").jsonObject.requiredString("commit"))
+            put("runtimeVersion", "llama.cpp d854d98 build fixture"); put("runtimeBackend", "CUDA")
+            put("devices", "CUDA0"); put("gpuOffloadedLayers", "20/20"); put("hostRuntime", "fixture only")
+            put("inferenceSettings", buildJsonObject {
+                put("contextTokens", baseline.getValue("contextTokens")); put("batchTokens", baseline.getValue("batchTokens"))
+                put("maxOutputTokens", baseline.getValue("maxOutputTokens")); put("temperature", baseline.getValue("temperature"))
+                put("grammarSha256", sha256(baseline.requiredString("grammar"))); put("samplers", baseline.getValue("samplers"))
+            })
+            put("responses", buildJsonArray { add(buildJsonObject {
+                put("caseId", case.id); put("taskSha256", task.requiredString("taskSha256")); put("sourceInputSha256", sourceHash)
+                put("modelOutput", "{\"facts\":[]}"); put("finishReason", "END_OF_SEQUENCE")
+                put("generatedTokens", 2); put("generationMillis", 10); put("promptEvaluationMillis", 2)
+                put("promptTokens", 8); put("requestRoundTripMillis", 12)
+            }) })
+        }
+        val expectedResultKeys = setOf("format", "schemaVersion", "jobFileSha256", "configSha256", "modelSha256", "llamaCppCommit", "runtimeVersion", "runtimeBackend", "devices", "gpuOffloadedLayers", "hostRuntime", "inferenceSettings", "responses")
+        assertEquals(expectedResultKeys, resultJson.keys)
+
+        val temp = kotlin.io.path.createTempDirectory("bottle-eval-import").toFile()
+        try {
+            val jobsFile = File(temp, "jobs.json")
+            jobsFile.writeText(Json.encodeToString(JsonObject.serializer(), jobs), Charsets.UTF_8)
+            val jobSha = sha256(jobsFile.readBytes())
+            val boundResult = buildJsonObject {
+                resultJson.forEach { (key, value) -> put(key, if (key == "jobFileSha256") JsonPrimitive(jobSha) else value) }
+            }
+            val resultsFile = File(temp, "results.json")
+            resultsFile.writeText(Json.encodeToString(JsonObject.serializer(), boundResult), Charsets.UTF_8)
+            val imported = importHostInferenceResults(dataset, jobsFile, resultsFile)
+            assertEquals(listOf(case.id), imported.caseIds)
+            assertEquals("host_model_execution_result", imported.variant.outputSource)
+            assertEquals("host_model_execution", imported.variant.responses.getValue(case.id).origin)
+            jobsFile.appendText(" ")
+            assertThrows(IllegalArgumentException::class.java) { importHostInferenceResults(dataset, jobsFile, resultsFile) }
+        } finally {
+            temp.deleteRecursively()
+        }
+    }
+
+    @Test
     fun localLlamaRunnerUsesLoopbackLegacyTemplateAndAndroidSamplerContract() = runBlocking {
+        assertPinnedRuntimeMatchesAndroidNativeSource()
+        val runtimeConfig = readLocalRuntimeConfig()
+        val baseline = runtimeConfig.getValue("androidBaseline").jsonObject
         val requests = mutableListOf<Pair<String, JsonObject>>()
         val result = runLocalLlamaServer(
             "http://127.0.0.1:9931", "system marker", "/no_think\nsource marker", 160,
+            baseline.getValue("grammar").jsonPrimitive.content,
         ) { url, body, onRoundTrip ->
             requests += url to body
             onRoundTrip(12L)
@@ -70,7 +182,7 @@ class BottleLookupEvaluationHarnessTest {
         assertEquals(-1, completionBody.getValue("seed").jsonPrimitive.intOrNull)
         assertEquals(false, completionBody.getValue("cache_prompt").jsonPrimitive.booleanOrNull)
         assertEquals(0.3, completionBody.getValue("temperature").jsonPrimitive.doubleOrNull!!, 0.0001)
-        assertFalse(completionBody.containsKey("grammar"))
+        assertEquals(baseline.getValue("grammar").jsonPrimitive.content, completionBody.getValue("grammar").jsonPrimitive.content)
         assertFalse(completionBody.containsKey("json_schema"))
         assertEquals(
             listOf("penalties", "dry", "top_n_sigma", "top_k", "typ_p", "top_p", "min_p", "xtc", "temperature"),
@@ -100,6 +212,22 @@ class BottleLookupEvaluationHarnessTest {
         val casesRoot = readInput("bottle.eval.cases", "/bottle-evaluation/v1/cases.json")
         val runsRoot = readInput("bottle.eval.runs", "/bottle-evaluation/v1/replay-runs.json")
         val dataset = parseDataset(casesRoot)
+        val exportPath = System.getProperty("bottle.eval.export.jobs")?.takeIf(String::isNotBlank)
+        if (exportPath != null) {
+            exportProductionPromptJobs(dataset, File(exportPath))
+            return@runBlocking
+        }
+        val importJobsPath = System.getProperty("bottle.eval.import.jobs")?.takeIf(String::isNotBlank)
+        val importResultsPath = System.getProperty("bottle.eval.import.results")?.takeIf(String::isNotBlank)
+        require((importJobsPath == null) == (importResultsPath == null)) {
+            "Host result import requires both bottle.eval.import.jobs and bottle.eval.import.results."
+        }
+        if (importJobsPath != null && importResultsPath != null) {
+            val imported = importHostInferenceResults(dataset, File(importJobsPath), File(importResultsPath))
+            val selected = dataset.copy(cases = imported.caseIds.map { id -> dataset.cases.single { it.id == id } })
+            writeReport(evaluate(selected, listOf(imported.variant)))
+            return@runBlocking
+        }
         val localServer = System.getProperty("bottle.eval.local.server")?.takeIf(String::isNotBlank)
         if (localServer != null) {
             val selectedIds = System.getProperty("bottle.eval.local.caseIds")
@@ -220,6 +348,7 @@ private data class EvalResponse(
     val requestRoundTripMillis: Long? = null,
     val promptEvaluationMillis: Long? = null,
     val promptTokens: Int? = null,
+    val origin: String = "fixture_replay",
 )
 private data class LocalServerCompletion(val response: EvalResponse)
 private data class EvalVariant(
@@ -235,6 +364,9 @@ private data class EvalVariant(
     val systemPrompt: String?,
     val additionalInstructions: String?,
     val responses: Map<String, EvalResponse>,
+    val modelArtifactSha256: String? = null,
+    val llamaCppCommit: String? = null,
+    val runtimeBackend: String? = null,
 )
 private data class EvaluatedCase(
     val case: EvalCase,
@@ -440,6 +572,7 @@ private suspend fun evaluate(dataset: EvalDataset, variants: List<EvalVariant>, 
             add(JsonPrimitive("Synthetic fixture results validate harness behavior and are excluded from product-quality aggregates."))
             if (executableReal == 0) add(JsonPrimitive("Product-level reviewed labels are present, but no case has complete frozen source inputs; no real-product accuracy is computed."))
             if (variants.all { it.outputSource == "synthetic_fixture" }) add(JsonPrimitive("No model or live provider ran; fixture replay timings are not performance measurements."))
+            if (variants.any { it.outputSource == "host_model_execution_result" }) add(JsonPrimitive("Model inference was performed on the separate desktop host; the cloud JVM only imported and validated outputs. Host CUDA timings are not Android device timings."))
         })
     }
 }
@@ -459,6 +592,265 @@ private fun localQwenVariant() = EvalVariant(
     responses = emptyMap(),
 )
 
+private fun findRepositoryRoot(): File {
+    var current = File(System.getProperty("user.dir") ?: ".").absoluteFile
+    while (true) {
+        if (File(current, "tools/bottle-eval/qwen3-0.6b-q8-gpu.json").isFile) return current
+        current = current.parentFile ?: break
+    }
+    error("Could not locate the repository root for the bottle evaluation tools")
+}
+
+private fun readLocalRuntimeConfig(): JsonObject = Json.parseToJsonElement(
+    File(findRepositoryRoot(), "tools/bottle-eval/qwen3-0.6b-q8-gpu.json").readText(Charsets.UTF_8),
+).jsonObject
+
+private fun assertPinnedRuntimeMatchesAndroidNativeSource() {
+    val root = findRepositoryRoot()
+    val nativeSource = File(root, "apps/androidApp/src/main/cpp/ai_chat.cpp").readText(Charsets.UTF_8)
+    val commonHeader = File(root, "third_party/llama.cpp/common/common.h").readText(Charsets.UTF_8)
+    val config = readLocalRuntimeConfig()
+    val baseline = config.getValue("androidBaseline").jsonObject
+    fun cppInt(name: String): Int = Regex("constexpr int\\s+$name\\s*=\\s*(\\d+)").find(nativeSource)
+        ?.groupValues?.get(1)?.toInt() ?: error("Android JNI constant $name was not found")
+    fun samplingNumber(name: String): String = Regex("(?:int32_t|float)\\s+$name\\s*=\\s*([-0-9.]+)")
+        .find(commonHeader)?.groupValues?.get(1) ?: error("Pinned llama.cpp sampler default $name was not found")
+    fun samplingInt(name: String): Int = Regex("(?:int32_t|float)\\s+$name\\s*=\\s*(\\d+)")
+        .find(commonHeader)?.groupValues?.get(1)?.toInt() ?: error("Pinned llama.cpp sampler default $name was not found")
+
+    assertEquals(cppInt("DEFAULT_CONTEXT_SIZE"), baseline.getValue("contextTokens").jsonPrimitive.intOrNull)
+    assertEquals(cppInt("BATCH_SIZE"), baseline.getValue("batchTokens").jsonPrimitive.intOrNull)
+    assertEquals(DEFAULT_LOCAL_MAX_OUTPUT_TOKENS, baseline.getValue("maxOutputTokens").jsonPrimitive.intOrNull)
+    assertEquals(DEFAULT_LOCAL_PROMPT_VERSION, baseline.getValue("promptVersion").jsonPrimitive.content)
+    val nativeTemp = Regex("constexpr float\\s+DEFAULT_SAMPLER_TEMP\\s*=\\s*([0-9.]+)f").find(nativeSource)
+        ?.groupValues?.get(1)?.toDouble() ?: error("Android JNI sampler temperature was not found")
+    assertEquals(nativeTemp, baseline.getValue("temperature").jsonPrimitive.doubleOrNull!!, 0.0001)
+    assertTrue(nativeSource.contains("/* use_jinja */ false"))
+    val nativeGrammar = Regex("LOCAL_FACTS_GBNF\\[\\]\\s*=\\s*R\\\"GBNF\\(\\n(.*?)\\n\\)GBNF\\\"", RegexOption.DOT_MATCHES_ALL)
+        .find(nativeSource)?.groupValues?.get(1) ?: error("Android JNI GBNF grammar was not found")
+    assertEquals(nativeGrammar, baseline.getValue("grammar").jsonPrimitive.content)
+    assertEquals("GBNF", baseline.getValue("grammarType").jsonPrimitive.content)
+
+    listOf("top_k", "top_p", "min_p", "xtc_probability", "xtc_threshold", "typ_p", "top_n_sigma",
+        "penalty_repeat", "penalty_freq", "penalty_present", "dry_multiplier", "dry_base")
+        .forEach { name -> assertEquals(samplingNumber(name).toDouble(), baseline.getValue("samplerParameters").jsonObject
+            .getValue(samplerConfigName(name)).jsonPrimitive.doubleOrNull!!, 0.0001) }
+    listOf("n_prev" to "repeat_last_n", "dry_allowed_length" to "dry_allowed_length", "dry_penalty_last_n" to "dry_penalty_last_n")
+        .forEach { (nativeName, configName) -> assertEquals(samplingInt(nativeName), baseline.getValue("samplerParameters").jsonObject
+            .getValue(configName).jsonPrimitive.intOrNull) }
+    assertEquals(
+        listOf("penalties", "dry", "top_n_sigma", "top_k", "typ_p", "top_p", "min_p", "xtc", "temperature"),
+        baseline.getValue("samplers").jsonArray.map { it.jsonPrimitive.content },
+    )
+    assertEquals(listOf("\n", ":", "\"", "*"),
+        baseline.getValue("samplerParameters").jsonObject.getValue("dry_sequence_breakers").jsonArray.map { it.jsonPrimitive.content })
+    val samplerBlock = commonHeader.substringAfter("std::vector<enum common_sampler_type> samplers = {").substringBefore("};")
+    val samplerNames = Regex("COMMON_SAMPLER_TYPE_([A-Z_]+)").findAll(samplerBlock).map { match ->
+        when (match.groupValues[1]) {
+            "PENALTIES" -> "penalties"
+            "DRY" -> "dry"
+            "TOP_N_SIGMA" -> "top_n_sigma"
+            "TOP_K" -> "top_k"
+            "TYPICAL_P" -> "typ_p"
+            "TOP_P" -> "top_p"
+            "MIN_P" -> "min_p"
+            "XTC" -> "xtc"
+            "TEMPERATURE" -> "temperature"
+            else -> error("Unexpected pinned sampler ${match.groupValues[1]}")
+        }
+    }.toList()
+    assertEquals(samplerNames, baseline.getValue("samplers").jsonArray.map { it.jsonPrimitive.content })
+}
+
+private fun samplerConfigName(nativeName: String): String = when (nativeName) {
+    "typ_p" -> "typical_p"
+    "penalty_repeat" -> "repeat_penalty"
+    "penalty_freq" -> "frequency_penalty"
+    "penalty_present" -> "presence_penalty"
+    else -> nativeName
+}
+
+private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes)
+    .joinToString("") { "%02x".format(it) }
+
+private suspend fun exportProductionPromptJobs(dataset: EvalDataset, destination: File) {
+    assertPinnedRuntimeMatchesAndroidNativeSource()
+    val eligible = dataset.cases.filter { case ->
+        case.kind == "reviewed_product" && case.sourceCoverage == "complete" && case.pages.isNotEmpty() &&
+            case.sourceFacts.values.any { it.status != SourceLabelStatus.UNKNOWN.name }
+    }
+    require(eligible.isNotEmpty()) {
+        "No reviewed product case has a complete frozen source and independent source labels. No prompts or model jobs were exported."
+    }
+    val config = readLocalRuntimeConfig()
+    val variant = localQwenVariant()
+    val tasks = eligible.sortedBy(EvalCase::id).map { case ->
+        var captured: JsonObject? = null
+        evaluateCase(case, variant, localServer = null) { systemPrompt, userPrompt, maxTokens, page ->
+            require(maxTokens == config.getValue("androidBaseline").jsonObject.getValue("maxOutputTokens").jsonPrimitive.intOrNull)
+            val pageInput = case.pages.firstOrNull { it.page.sourceUrl == page.sourceUrl }
+                ?: error("Production extraction selected a page outside this frozen case")
+            val taskSha = sha256("$systemPrompt\u0000$userPrompt")
+            captured = buildJsonObject {
+                put("caseId", case.id)
+                put("sourceId", pageInput.sourceId)
+                put("sourceInputSha256", pageInput.inputSha256 ?: frozenSourceInputSha256(page))
+                put("taskSha256", taskSha)
+                put("systemPrompt", systemPrompt)
+                put("userPrompt", userPrompt)
+            }
+        }
+        captured ?: error("Production extraction did not request inference for ${case.id}; only actual inference prompts can be exported")
+    }
+    val result = buildPortablePromptJobs(dataset.version, dataset.splitPlan, config, tasks)
+    destination.absoluteFile.parentFile?.mkdirs()
+    destination.writeText(Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), result), Charsets.UTF_8)
+}
+
+private fun buildPortablePromptJobs(datasetVersion: String, splitPlan: String, config: JsonObject, tasks: List<JsonObject>): JsonObject {
+    require(tasks.isNotEmpty()) { "Prompt jobs cannot be empty" }
+    val configText = Json.encodeToString(JsonObject.serializer(), config)
+    val ids = tasks.map { it.requiredString("caseId") }
+    require(ids.distinct().size == ids.size)
+    return buildJsonObject {
+        put("format", "com.davidhayesbc.cocktails.bottle-evaluation-prompt-jobs")
+        put("schemaVersion", 1)
+        put("datasetVersion", datasetVersion)
+        put("splitPlan", splitPlan)
+        put("config", config)
+        put("configCanonicalJson", configText)
+        put("configSha256", sha256(configText))
+        put("caseIds", buildJsonArray { ids.sorted().forEach { add(JsonPrimitive(it)) } })
+        put("tasks", buildJsonArray { tasks.forEach(::add) })
+        put("answerKeyIncluded", false)
+    }
+}
+
+private data class ImportedHostEvaluation(val variant: EvalVariant, val caseIds: List<String>)
+
+private fun importHostInferenceResults(dataset: EvalDataset, jobsFile: File, resultsFile: File): ImportedHostEvaluation {
+    assertPinnedRuntimeMatchesAndroidNativeSource()
+    require(jobsFile.length() <= 8L * 1024L * 1024L) { "Prompt-job file exceeds the 8 MiB safety limit" }
+    val jobsBytes = jobsFile.readBytes()
+    val jobSha = sha256(jobsBytes)
+    val jobs = Json.parseToJsonElement(jobsBytes.toString(Charsets.UTF_8)).jsonObject
+    require(jobs.requiredString("format") == "com.davidhayesbc.cocktails.bottle-evaluation-prompt-jobs" && jobs.int("schemaVersion") == 1)
+    require(jobs.keys == setOf("format", "schemaVersion", "datasetVersion", "splitPlan", "config", "configCanonicalJson", "configSha256", "caseIds", "tasks", "answerKeyIncluded"))
+    require(jobs["answerKeyIncluded"]?.jsonPrimitive?.booleanOrNull == false)
+    val config = readLocalRuntimeConfig()
+    val configText = jobs.requiredString("configCanonicalJson")
+    require(sha256(configText) == jobs.requiredString("configSha256")) { "Exported job config hash mismatch" }
+    require(Json.parseToJsonElement(configText).jsonObject == config && jobs["config"]?.jsonObject == config) {
+        "Exported jobs do not match the currently pinned Android runtime configuration"
+    }
+    require(jobs.requiredString("datasetVersion") == dataset.version && jobs.requiredString("splitPlan") == dataset.splitPlan)
+    val tasks = jobs.requiredArray("tasks").map { it.jsonObject }
+    require(tasks.size <= 100)
+    val tasksById = tasks.associateBy { it.requiredString("caseId") }
+    require(tasksById.size == tasks.size && tasks.isNotEmpty()) { "Prompt jobs contain missing or duplicate cases" }
+    require(jobs.requiredArray("caseIds").map { it.jsonPrimitive.content } == tasksById.keys.sorted()) {
+        "Prompt job case index does not match task list"
+    }
+    val expectedCaseIds = dataset.cases.filter { case ->
+        case.kind == "reviewed_product" && case.sourceCoverage == "complete" && case.pages.isNotEmpty() &&
+            case.sourceFacts.values.any { it.status != SourceLabelStatus.UNKNOWN.name }
+    }.map(EvalCase::id).toSet()
+    require(tasksById.keys == expectedCaseIds) {
+        "Host results must cover the full frozen executable case set, including the held-out split"
+    }
+    tasks.forEach { task ->
+        require(task.keys == setOf("caseId", "sourceId", "sourceInputSha256", "taskSha256", "systemPrompt", "userPrompt"))
+        val system = task.requiredString("systemPrompt")
+        val user = task.requiredString("userPrompt")
+        require(system.length <= 16_000 && user.length <= 24_000)
+        require(sha256("$system\u0000$user") == task.requiredString("taskSha256")) { "Prompt task hash mismatch" }
+        val case = dataset.cases.singleOrNull { it.id == task.requiredString("caseId") }
+            ?: error("Prompt result refers to a case outside the loaded dataset")
+        require(case.kind == "reviewed_product" && case.sourceCoverage == "complete") {
+            "Only complete reviewed product cases can be imported as product evaluation results"
+        }
+        require(case.pages.any { it.sourceId == task.requiredString("sourceId") && it.inputSha256 == task.requiredString("sourceInputSha256") }) {
+            "Prompt task source does not match the frozen dataset"
+        }
+    }
+    require(resultsFile.length() <= 12L * 1024L * 1024L) { "Host result file exceeds the 12 MiB safety limit" }
+    val results = Json.parseToJsonElement(resultsFile.readText(Charsets.UTF_8)).jsonObject
+    require(results.requiredString("format") == "com.davidhayesbc.cocktails.bottle-evaluation-host-results" && results.int("schemaVersion") == 1)
+    require(results.keys == setOf("format", "schemaVersion", "jobFileSha256", "configSha256", "modelSha256", "llamaCppCommit", "runtimeVersion", "runtimeBackend", "devices", "gpuOffloadedLayers", "hostRuntime", "inferenceSettings", "responses"))
+    require(results.requiredString("jobFileSha256") == jobSha) { "Host result belongs to a different exact prompt-job file" }
+    require(results.requiredString("configSha256") == jobs.requiredString("configSha256"))
+    require(results.requiredString("modelSha256") == config.getValue("model").jsonObject.requiredString("sha256"))
+    val llamaCommit = config.getValue("llamaCpp").jsonObject.requiredString("commit")
+    require(results.requiredString("llamaCppCommit") == llamaCommit)
+    require(results.requiredString("runtimeVersion").contains(llamaCommit.take(7))) { "Host runtime version does not identify the pinned llama.cpp commit" }
+    require(results.requiredString("runtimeBackend") == "CUDA")
+    require(results.requiredString("runtimeVersion").length <= 300)
+    require(results.requiredString("devices").length <= 500)
+    require(results.requiredString("gpuOffloadedLayers").matches(Regex("\\d{1,4}/\\d{1,4}")))
+    val baseline = config.getValue("androidBaseline").jsonObject
+    val hostSettings = results.requiredObject("inferenceSettings")
+    require(hostSettings.getValue("contextTokens").jsonPrimitive.intOrNull == baseline.getValue("contextTokens").jsonPrimitive.intOrNull)
+    require(hostSettings.getValue("batchTokens").jsonPrimitive.intOrNull == baseline.getValue("batchTokens").jsonPrimitive.intOrNull)
+    require(hostSettings.getValue("maxOutputTokens").jsonPrimitive.intOrNull == baseline.getValue("maxOutputTokens").jsonPrimitive.intOrNull)
+    require(hostSettings.getValue("temperature").jsonPrimitive.doubleOrNull == baseline.getValue("temperature").jsonPrimitive.doubleOrNull)
+    require(hostSettings.getValue("samplers") == baseline.getValue("samplers"))
+    require(hostSettings.requiredString("grammarSha256") == sha256(baseline.requiredString("grammar")))
+    val responses = results.requiredArray("responses").map { it.jsonObject }
+    require(responses.size <= 100)
+    val responseById = responses.associateBy { it.requiredString("caseId") }
+    require(responseById.size == responses.size && responseById.keys == tasksById.keys) {
+        "Host results must include exactly one response for every exported task"
+    }
+    val maxTokens = baseline.getValue("maxOutputTokens").jsonPrimitive.intOrNull!!
+    val parsedResponses = responseById.mapValues { (id, response) ->
+        require(response.keys == setOf("caseId", "taskSha256", "sourceInputSha256", "modelOutput", "finishReason", "generatedTokens", "generationMillis", "promptEvaluationMillis", "promptTokens", "requestRoundTripMillis"))
+        val task = tasksById.getValue(id)
+        require(response.requiredString("taskSha256") == task.requiredString("taskSha256"))
+        require(response.requiredString("sourceInputSha256") == task.requiredString("sourceInputSha256"))
+        val tokens = response.int("generatedTokens")
+        require(tokens == null || tokens in 0..maxTokens)
+        val promptTokens = response.int("promptTokens")
+        require(promptTokens == null || promptTokens in 0..(baseline.getValue("contextTokens").jsonPrimitive.intOrNull ?: 4096))
+        val generation = response.long("generationMillis")
+        require(generation == null || generation in 0..600_000)
+        val promptEval = response.long("promptEvaluationMillis")
+        val requestRtt = response.long("requestRoundTripMillis")
+        require(promptEval == null || promptEval in 0..600_000)
+        require(requestRtt == null || requestRtt in 0..600_000)
+        require(response.requiredString("finishReason") in setOf("END_OF_SEQUENCE", "TOKEN_LIMIT", "STOP_WORD", "UNKNOWN"))
+        EvalResponse(
+            response = response.requiredString("modelOutput").also { require(it.length <= 100_000) },
+            finishReason = response.requiredString("finishReason"),
+            generatedTokens = tokens,
+            generationMillis = generation,
+            requestRoundTripMillis = response.long("requestRoundTripMillis"),
+            promptEvaluationMillis = promptEval,
+            promptTokens = promptTokens,
+            origin = "host_model_execution",
+        )
+    }
+    return ImportedHostEvaluation(
+        EvalVariant(
+            id = "qwen3-0.6b-q8_0-imported-host-result",
+            modelId = LOCAL_MODEL_LABEL,
+            quantization = "Q8_0",
+            runtime = results.requiredString("runtimeVersion"),
+            promptVersion = baseline.requiredString("promptVersion"),
+            temperature = baseline.double("temperature"),
+            maxOutputTokens = maxTokens,
+            outputSource = "host_model_execution_result",
+            timingSource = "host_runtime_observed",
+            systemPrompt = LocalBottleExtractionPromptConfiguration.DEFAULT.systemPrompt,
+            additionalInstructions = null,
+            responses = parsedResponses,
+            modelArtifactSha256 = results.requiredString("modelSha256"),
+            llamaCppCommit = llamaCommit,
+            runtimeBackend = results.requiredString("runtimeBackend"),
+        ),
+        tasksById.keys.sorted(),
+    )
+}
+
 /**
  * Sends the production extractor's exact system/user text to the pinned llama.cpp server.
  * The server first formats those two messages with its legacy template path, matching Android's
@@ -470,6 +862,7 @@ private suspend fun runLocalLlamaServer(
     systemPrompt: String,
     userPrompt: String,
     maxTokens: Int,
+    grammar: String,
     postJson: (String, JsonObject, (Long) -> Unit) -> JsonObject = ::postLocalJson,
 ): LocalServerCompletion = withContext(Dispatchers.IO) {
     val base = validateLoopbackEndpoint(baseUrl)
@@ -478,6 +871,7 @@ private suspend fun runLocalLlamaServer(
             add(buildJsonObject { put("role", "system"); put("content", systemPrompt) })
             add(buildJsonObject { put("role", "user"); put("content", userPrompt) })
         })
+        put("add_generation_prompt", true)
     }, {})
     val renderedPrompt = template.string("prompt") ?: error("llama.cpp /apply-template omitted the prompt")
     var requestRoundTripMillis = 0L
@@ -504,6 +898,7 @@ private suspend fun runLocalLlamaServer(
         put("dry_sequence_breakers", buildJsonArray {
             listOf("\n", ":", "\"", "*").forEach { add(JsonPrimitive(it)) }
         })
+        put("grammar", grammar)
         put("samplers", buildJsonArray {
             listOf("penalties", "dry", "top_n_sigma", "top_k", "typ_p", "top_p", "min_p", "xtc", "temperature")
                 .forEach { add(JsonPrimitive(it)) }
@@ -565,7 +960,12 @@ private fun postLocalJson(url: String, payload: JsonObject, onRoundTrip: (Long) 
     }
 }
 
-private suspend fun evaluateCase(case: EvalCase, variant: EvalVariant, localServer: String?): EvaluatedCase {
+private suspend fun evaluateCase(
+    case: EvalCase,
+    variant: EvalVariant,
+    localServer: String?,
+    onPromptCapture: ((systemPrompt: String, userPrompt: String, maxTokens: Int, page: WebPageText) -> Unit)? = null,
+): EvaluatedCase {
     val replayResponse = variant.responses[case.id]
     val promptConfiguration = LocalBottleExtractionPromptConfiguration(
         version = variant.promptVersion,
@@ -576,14 +976,20 @@ private suspend fun evaluateCase(case: EvalCase, variant: EvalVariant, localServ
     var invokedModel = false
     var observedPrompt: String? = null
     var actualResponse: EvalResponse? = null
+    var activeExtractionPage: WebPageText? = null
     val events = mutableListOf<BottleLookupDebugEvent>()
     val localExtractor = LocalBottleDetailExtractor(
         modelPath = { "/evaluation/not-a-real-model.gguf" },
-        runner = LocalInferenceRunner { _, _, userPrompt, _ ->
+        runner = LocalInferenceRunner { _, systemPrompt, userPrompt, maxTokens ->
             invokedModel = true
             observedPrompt = userPrompt
-            if (localServer != null) {
-                val completion = runLocalLlamaServer(localServer, promptConfiguration.systemPrompt, userPrompt, variant.maxOutputTokens)
+            if (onPromptCapture != null) {
+                val promptPage = activeExtractionPage ?: error("An extraction prompt was created without its source page")
+                onPromptCapture(systemPrompt, userPrompt, maxTokens, promptPage)
+                "{\"facts\":[]}"
+            } else if (localServer != null) {
+                val grammar = readLocalRuntimeConfig().getValue("androidBaseline").jsonObject.getValue("grammar").jsonPrimitive.content
+                val completion = runLocalLlamaServer(localServer, systemPrompt, userPrompt, maxTokens, grammar)
                 actualResponse = completion.response
                 completion.response.response
             } else replayResponse?.response ?: ""
@@ -599,6 +1005,7 @@ private suspend fun evaluateCase(case: EvalCase, variant: EvalVariant, localServ
                 ?: BottleProviderCall(WebPageResult.Unavailable, 404)
         },
         extract = { page, _, barcode ->
+            activeExtractionPage = page
             val result = localExtractor.extractWithDiagnostics(page, variant.modelIdForApp(), barcode, events::add)
             BottleProviderCall(result, 200)
         },
@@ -614,12 +1021,13 @@ private suspend fun evaluateCase(case: EvalCase, variant: EvalVariant, localServ
     )
     val evaluatedOutcome = if (case.sourceSelectionMode == "independent_product_source") {
         val selectedPage = case.pages.single { it.sourceId == case.expectedSourceId }.page
+        activeExtractionPage = selectedPage
         val extraction = localExtractor.extractWithDiagnostics(selectedPage, variant.modelIdForApp(), null, events::add)
         outcome.copy(page = WebPageResult.Found(selectedPage), extraction = extraction)
     } else outcome
     // If a fixture has a response, it must either be consumed or be deliberately unreachable because retrieval abstained.
-    require(localServer != null || !invokedModel || replayResponse != null) { "Unexpected model call without a replay response for ${case.id}/${variant.id}" }
-    if (localServer == null && replayResponse == null) require(!invokedModel) { "Model ran without a recorded response for ${case.id}/${variant.id}" }
+    require(onPromptCapture != null || localServer != null || !invokedModel || replayResponse != null) { "Unexpected model call without a replay response for ${case.id}/${variant.id}" }
+    if (onPromptCapture == null && localServer == null && replayResponse == null) require(!invokedModel) { "Model ran without a recorded response for ${case.id}/${variant.id}" }
     return EvaluatedCase(
         case, evaluatedOutcome, events, invokedModel, observedPrompt,
         (actualResponse ?: replayResponse).takeIf { invokedModel },
@@ -656,9 +1064,9 @@ private fun reportVariant(variant: EvalVariant, evaluated: List<EvaluatedCase>):
         put("model", variant.modelId)
         put("quantization", variant.quantization)
         put("runtime", variant.runtime)
-        put("runtimeBackend", System.getProperty("bottle.eval.local.backend") ?: "not_applicable_or_unverified")
-        put("modelArtifactSha256", System.getProperty("bottle.eval.local.model.sha256") ?: "not_run")
-        put("llamaCppCommit", System.getProperty("bottle.eval.local.llama.commit") ?: "not_run")
+        put("runtimeBackend", variant.runtimeBackend ?: System.getProperty("bottle.eval.local.backend") ?: "not_applicable_or_unverified")
+        put("modelArtifactSha256", variant.modelArtifactSha256 ?: System.getProperty("bottle.eval.local.model.sha256") ?: "not_run")
+        put("llamaCppCommit", variant.llamaCppCommit ?: System.getProperty("bottle.eval.local.llama.commit") ?: "not_run")
         put("promptVersion", variant.promptVersion)
         val systemPrompt = variant.systemPrompt ?: LocalBottleExtractionPromptConfiguration.DEFAULT.systemPrompt
         put("systemPromptSha256", sha256(systemPrompt))
@@ -668,6 +1076,7 @@ private fun reportVariant(variant: EvalVariant, evaluated: List<EvaluatedCase>):
         put("maxOutputTokens", variant.maxOutputTokens)
         put("outputSource", variant.outputSource)
         put("timingSource", variant.timingSource)
+        put("inferenceLocation", if (variant.outputSource == "host_model_execution_result") "host_gpu_imported" else "not_run_in_host_runner")
         put("recordedSourceRunGenerationMillisMedian", measuredGenerationMedian(variant, evaluated)?.let(::JsonPrimitive) ?: JsonPrimitive("unavailable"))
         put("hostRequestRoundTripMillisMedian", evaluated.mapNotNull { it.response?.requestRoundTripMillis }.sorted()
             .takeIf(List<Long>::isNotEmpty)?.let { JsonPrimitive(it[it.size / 2]) } ?: JsonPrimitive("unavailable"))
@@ -817,8 +1226,9 @@ private fun reportCase(item: EvaluatedCase) = buildJsonObject {
     put("inferenceExecutedByHarness", item.inferenceExecuted)
     put("sourceCaptureStatus", item.case.sourceCaptureStatus)
     put("researchTargetCount", item.case.researchTargets.size)
-    put("replayResponseConsumed", item.invokedModel && !item.inferenceExecuted)
-    put("localModelExecution", item.inferenceExecuted)
+    put("replayResponseConsumed", item.invokedModel && item.response?.origin != "host_model_execution")
+    put("hostModelExecutionImported", item.response?.origin == "host_model_execution")
+    put("localModelExecution", item.inferenceExecuted || item.response?.origin == "host_model_execution")
     put("finishReason", item.response?.finishReason ?: "not_run")
     put("recordedSourceRunGenerationMillis", item.response?.generationMillis?.let(::JsonPrimitive) ?: JsonPrimitive("unavailable"))
     put("replayedUserPromptCharacters", item.promptText?.length?.let(::JsonPrimitive) ?: JsonPrimitive("unavailable"))

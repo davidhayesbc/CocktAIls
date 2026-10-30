@@ -21,10 +21,20 @@
     "temperature": 0.3,
     "seed": -1,
     "maxOutputTokens": 160,
-    "contextTokens": 8192,
-    "batchTokens": 512,
+    "contextTokens": 4096,
+    "batchTokens": 128,
     "androidThreadPolicy": "max(2, min(4, online CPU count - 2)); runtime count is device-dependent",
-    "samplers": ["penalties", "dry", "top_n_sigma", "top_k", "typ_p", "top_p", "min_p", "xtc", "temperature"],
+    "samplers": [
+      "penalties",
+      "dry",
+      "top_n_sigma",
+      "top_k",
+      "typ_p",
+      "top_p",
+      "min_p",
+      "xtc",
+      "temperature"
+    ],
     "samplerParameters": {
       "top_k": 40,
       "top_p": 0.95,
@@ -41,9 +51,16 @@
       "dry_base": 1.75,
       "dry_allowed_length": 2,
       "dry_penalty_last_n": 64,
-      "dry_sequence_breakers": ["\n", ":", "\"", "*"]
+      "dry_sequence_breakers": [
+        "\n",
+        ":",
+        "\"",
+        "*"
+      ]
     },
-    "grammar": "none; app parser/evidence checks remain active"
+    "grammarType": "GBNF",
+    "grammar": "root ::= \"{\\\"facts\\\":[\" fact-list \"]}\"\nfact-list ::= | fact (\",\" fact)*\nfact ::= \"{\\\"field\\\":\" field \",\\\"value\\\":\" string \",\\\"evidence\\\":\" string \"}\"\nfield ::= \"\\\"product_name\\\"\" | \"\\\"brand\\\"\" | \"\\\"quantity\\\"\" | \"\\\"abv_percent\\\"\"\nstring ::= \"\\\"\" char* \"\\\"\"\nchar ::= [^\"\\\\\\x7F\\x00-\\x1F] | \"\\\\\" ([\"\\\\bfnrt] | \"u\" [0-9a-fA-F]{4})",
+    "grammarSource": "apps/androidApp/src/main/cpp/ai_chat.cpp:LOCAL_FACTS_GBNF"
   },
   "hostRuntime": {
     "bindAddress": "127.0.0.1",
@@ -58,7 +75,7 @@
     "source": "versioned bottle-evaluation cases manifest",
     "eligibleCaseRule": "reviewed_product + complete frozen source + at least one page + independently reviewed source-supported labels",
     "syntheticCases": "never sent to the model in local quality-evaluation mode",
-    "rawPromptOrResponsePersistence": false,
+    "rawPromptOrResponsePersistence": "Only in caller-selected local prompt-job/results files; never in summary reports or source control",
     "networkSearch": false,
     "cloudProviders": false
   }

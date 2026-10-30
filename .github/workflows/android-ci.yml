@@ -25,6 +25,9 @@ jobs:
       - name: Test preview workflow gate helpers
         run: python3 -m unittest discover -s .github/scripts -p 'test_preview_*.py'
 
+      - name: Test offline local bottle evaluation job contract
+        run: python3 -m unittest tools/bottle-eval/test_local_qwen_runner.py
+
       - name: Test native generation budget and safe model-load diagnostics
         shell: bash
         run: |
