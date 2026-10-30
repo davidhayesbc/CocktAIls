@@ -28,7 +28,7 @@ internal data class BottleFactEvidence(
     val field: BottleFactField,
     val value: String,
     val quote: String,
-    /** Present only when the deterministic Markdown table parser bound this fact to one UPC record. */
+    /** Present only when a deterministic source parser bound this fact to one UPC record. */
     val barcodeBoundProductCode: String? = null,
     val barcodeBoundProductName: String? = null,
 )

@@ -290,7 +290,13 @@ internal fun bindPageBarcodeIdentity(
         return rejectWithIdentityReasons(result, BottleExtractionRejectionReason.INVALID_TARGET_BARCODE)
     }
     if (result !is BottleDetailExtractionResult.Found) return result
+    val labeledSpecifications = labeledBottleSpecifications(page, requiredBarcode)?.suggestions
+    val labeledFacts = labeledSpecifications?.facts.orEmpty()
     val nameFact = result.suggestions.facts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }
+        ?: labeledFacts.firstNotNullOfOrNull { it.barcodeBoundProductName }?.let {
+            // Identity metadata scopes the scalar facts; it is not a proposed product-name fact.
+            BottleFactEvidence(BottleFactField.PRODUCT_NAME, it, page.title.orEmpty())
+        }
         ?: return rejectWithIdentityReasons(result, BottleExtractionRejectionReason.PRODUCT_NAME_MISSING)
     val markdownProduct = barcodeBoundMarkdownProduct(requiredBarcode, page.markdown)
     val identityEvidence = if (markdownProduct != null) {
@@ -303,13 +309,14 @@ internal fun bindPageBarcodeIdentity(
         if (!title.isNullOrBlank() && !structuredProductNamesAgree(nameFact.value, title)) {
             return rejectWithIdentityReasons(result, BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
         }
-        scannedProductIdentityEvidence(requiredBarcode, nameFact.value, page.markdown)
+        labeledSpecifications?.identityEvidence
+            ?: scannedProductIdentityEvidence(requiredBarcode, nameFact.value, page.markdown)
             ?: return rejectWithIdentityReasons(result, BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE)
     }
     val unboundFacts = result.suggestions.facts.filter { fact ->
         fact.field != BottleFactField.PRODUCT_NAME && when {
             markdownProduct != null -> fact.quote.trim() !in markdownProduct.sourceSection.lineSequence().map(String::trim)
-            else -> !factQuoteIsBoundToProductIdentity(fact, nameFact.value)
+            else -> fact !in labeledFacts && !factQuoteIsBoundToProductIdentity(fact, nameFact.value)
         }
     }
     val unresolvedFields = result.suggestions.unresolvedFields + unboundFacts.map(BottleFactEvidence::field)

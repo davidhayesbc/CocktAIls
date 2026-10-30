@@ -109,7 +109,15 @@ internal class LocalBottleDetailExtractor(
         val structuredFallback = structuredIdentity?.let { identity ->
             structuredProductNameFallback(requiredBarcode.orEmpty(), page, identity)
         }
+        val labeledSpecifications = labeledBottleSpecifications(page, requiredBarcode)?.let { labeled ->
+            if (structuredFallback == null) labeled else labeled.copy(suggestions = labeled.suggestions.copy(
+                facts = structuredFallback.suggestions.facts + labeled.suggestions.facts,
+                unresolvedFields = labeled.suggestions.unresolvedFields - BottleFactField.PRODUCT_NAME,
+                identityEvidence = structuredFallback.suggestions.identityEvidence,
+            ))
+        }
         val independentlyVerifiedFallback = markdownProduct?.toDeterministicExtraction(sourceUrl, page.provider)
+            ?: labeledSpecifications
             ?: structuredFallback
         if (cleanPageText.isBlank()) {
             record(BottleLookupDebugEvent(BottleLookupDebugStage.LOCAL_INPUT_VALIDATION, providerLabel, "INVALID_RESPONSE"))
@@ -117,6 +125,16 @@ internal class LocalBottleDetailExtractor(
         }
         record(BottleLookupDebugEvent(BottleLookupDebugStage.LOCAL_INPUT_VALIDATION, providerLabel, "READY"))
 
+        labeledSpecifications?.let { specifications ->
+            record(BottleLookupDebugEvent(
+                stage = BottleLookupDebugStage.LOCAL_DETERMINISTIC_FACTS,
+                provider = providerLabel,
+                result = "FOUND",
+                reasonCodes = listOf("LABELED_SINGLE_PRODUCT_SPECIFICATIONS"),
+                factFields = specifications.suggestions.facts.map { it.field.wireValue },
+                rejectedFacts = specifications.suggestions.fieldRejections,
+            ))
+        }
         markdownProduct?.let { product ->
             record(BottleLookupDebugEvent(
                 stage = BottleLookupDebugStage.LOCAL_DETERMINISTIC_FACTS,
@@ -143,11 +161,11 @@ internal class LocalBottleDetailExtractor(
         val path = modelPath()
         if (path == null) {
             record(BottleLookupDebugEvent(BottleLookupDebugStage.LOCAL_INPUT_VALIDATION, providerLabel, "MISSING_MODEL", reasonCodes = listOf("MODEL_NOT_CONFIGURED")))
-            return independentlyVerifiedFallback ?: BottleDetailExtractionResult.SetupRequired
+            return independentlyVerifiedFallback?.takeIf { it.suggestions.facts.isNotEmpty() } ?: BottleDetailExtractionResult.SetupRequired
         }
         if (model != LOCAL_MODEL_LABEL) {
             record(BottleLookupDebugEvent(BottleLookupDebugStage.LOCAL_INPUT_VALIDATION, providerLabel, "INVALID_MODEL"))
-            return independentlyVerifiedFallback ?: BottleDetailExtractionResult.InvalidModel
+            return independentlyVerifiedFallback?.takeIf { it.suggestions.facts.isNotEmpty() } ?: BottleDetailExtractionResult.InvalidModel
         }
 
         val requestedFactFields = BottleFactField.entries
@@ -204,7 +222,7 @@ internal class LocalBottleDetailExtractor(
         } catch (failure: Exception) {
             val code = (failure as? LocalInferenceFailureException)?.code ?: classifyLocalFailure(currentFailureStage, failure)
             if (!runnerReportedFailure) recordLocalFailure(currentFailureStage, code, failure, ::record)
-            val safeFallback = independentlyVerifiedFallback
+            val safeFallback = independentlyVerifiedFallback?.takeIf { it.suggestions.facts.isNotEmpty() }
             if (code in setOf(LocalInferenceFailureCode.GENERATION_TIMEOUT, LocalInferenceFailureCode.MODEL_OUTPUT_TRUNCATED) && safeFallback != null) {
                 val fallbackReason = if (code == LocalInferenceFailureCode.GENERATION_TIMEOUT) {
                     "STRUCTURED_FACTS_FALLBACK_AFTER_TIMEOUT"
@@ -256,6 +274,10 @@ internal class LocalBottleDetailExtractor(
 
         val safeDeterministicFallback = independentlyVerifiedFallback
         if (parsed is BottleDetailExtractionResult.Rejected && safeDeterministicFallback != null) {
+            if (safeDeterministicFallback.suggestions.facts.isEmpty()) {
+                return parsed.copy(fieldRejections = (parsed.fieldRejections +
+                    safeDeterministicFallback.suggestions.fieldRejections).distinct())
+            }
             val independentlySupportedFields = safeDeterministicFallback.suggestions.facts.map { it.field }.toSet()
             val fallback = safeDeterministicFallback.copy(
                 suggestions = safeDeterministicFallback.suggestions.copy(
@@ -270,6 +292,8 @@ internal class LocalBottleDetailExtractor(
             )
             val fallbackReason = if (markdownProduct != null) {
                 "BARCODE_BOUND_MARKDOWN_FACTS_FALLBACK_AFTER_MODEL_REJECTION"
+            } else if (labeledSpecifications != null) {
+                "LABELED_SPECIFICATIONS_FALLBACK_AFTER_MODEL_REJECTION"
             } else if (parsed.reason == BottleExtractionRejectionReason.MALFORMED_MODEL_RESPONSE) {
                 "STRUCTURED_FACTS_FALLBACK_AFTER_MALFORMED_RESPONSE"
             } else {
@@ -304,6 +328,12 @@ internal class LocalBottleDetailExtractor(
             mergeVerifiedSourceAndModelFacts(safeDeterministicFallback, parsed, requestedFactFields, providerLabel, markdownProduct)
         } else parsed
 
+        if (labeledSpecifications != null && resultWithVerifiedFacts is BottleDetailExtractionResult.Found && resultWithVerifiedFacts.suggestions.facts.isEmpty()) {
+            return BottleDetailExtractionResult.Rejected(
+                BottleExtractionRejectionReason.NO_SUPPORTED_FIELDS,
+                fieldRejections = resultWithVerifiedFacts.suggestions.fieldRejections,
+            )
+        }
         if (structuredIdentity == null && requiredBarcode == null) return resultWithVerifiedFacts
         record(BottleLookupDebugEvent(BottleLookupDebugStage.LOCAL_IDENTITY_BINDING, providerLabel, "RUNNING"))
         val bound = try {
@@ -365,8 +395,13 @@ internal fun mergeVerifiedSourceAndModelFacts(
 ): BottleDetailExtractionResult.Found {
     val sourceFacts = verifiedSource.suggestions.facts
     val sourceFields = sourceFacts.map(BottleFactEvidence::field).toSet()
+    val blockedSourceFields = verifiedSource.suggestions.fieldRejections.map { it.field }.toSet()
+    val sourceProductName = sourceFacts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }?.value
+        ?: sourceFacts.firstNotNullOfOrNull { it.barcodeBoundProductName }
     val acceptedModelFacts = modelResult.suggestions.facts.filter { fact ->
-        fact.field in requestedFields && fact.field !in sourceFields
+        fact.field in requestedFields && fact.field !in sourceFields && fact.field !in blockedSourceFields &&
+            (fact.field != BottleFactField.PRODUCT_NAME || sourceProductName == null ||
+                structuredProductNamesAgree(fact.value, sourceProductName))
     }.map { fact ->
         val quoteBelongsToBarcodeBoundTable = barcodeBoundMarkdownProduct?.let { product ->
             fact.quote.trim() in product.sourceSection.lineSequence().map(String::trim).toSet()
@@ -381,7 +416,7 @@ internal fun mergeVerifiedSourceAndModelFacts(
     val ignoredModelFacts = modelResult.suggestions.facts.filterNot(acceptedModelFacts::contains)
     val combinedFacts = sourceFacts + acceptedModelFacts
     val combinedFields = combinedFacts.map(BottleFactEvidence::field).toSet()
-    val verifiedProductName = sourceFacts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }?.value
+    val verifiedProductName = sourceProductName
     val ignoredReasons = ignoredModelFacts.associateWith { fact ->
         if (fact.field == BottleFactField.PRODUCT_NAME && verifiedProductName != null &&
             !structuredProductNamesAgree(fact.value, verifiedProductName)

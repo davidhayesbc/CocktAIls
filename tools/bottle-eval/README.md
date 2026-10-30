@@ -201,3 +201,39 @@ Keep every UPC, variant, page, and capture from one family in one split. In part
 Esquimalt variants together and all Sons of Vancouver products together. Do not feed the expected
 facts to the desktop model. Report retrieval coverage separately from extraction quality and
 inventory truth. An 18-product pilot is not a catalog-wide accuracy estimate.
+
+### Labeled specification fallback (development; not release validation)
+
+The on-device extractor now recognizes a narrow plain-text specification record: its first line
+must exactly match the page title, and all subsequent nonempty lines must be recognized labeled
+specifications. It extracts only explicitly labeled size (`Container Size`, `Bottle size`,
+`Taille du contenant`) and numeric alcohol strength (`ABV`, `Alcohol content`, `Teneur en alcool`).
+It retains exact quotes, normalizes decimal separators and unit spelling, compares equivalent L/mL
+quantities, and rejects conflicting, invalid, unlabeled, mixed-product, or incidental numeric claims.
+For scanned bottles it additionally requires the exact barcode in that same record. Product name
+and brand remain unresolved until independently supported by the existing model/identity path.
+The existing web/provider workflow and cloud extractor are unchanged. This deliberately does not
+parse arbitrary full pages or treat a nearby percentage as ABV. It never infers numeric zero from
+“non-alcoholic”.
+
+`LabeledSpecificationComparisonTest` runs the seven unchanged captured excerpts with the identical
+empty model response on both revisions. This isolates deterministic recovery when a model abstains;
+it is **not** an actual model run or an end-to-end model quality comparison. The test was run on
+baseline `dc8c6eb0` in a separate worktree and on the candidate. Baseline recovered 0/13 source-supported
+scalar fields; candidate recovered 6/13, with 0 scored false positives in either run. Candidate gains
+are size and ABV for Banff Ice, Wild Turkey 101, and Auchentoshan. By the existing split, development
+is 4/6 versus 0/6 and previously consumed holdout is 2/7 versus 0/7. This is reused regression evidence,
+not a fresh holdout. Unknown labels are excluded, and source/inventory gold is unchanged. No name or
+brand output is fabricated for this comparison. Per-case reports are written to
+`build/reports/bottle-evaluation/deterministic-comparison.json`.
+
+The remaining seven supported scalar fields are not recovered by this narrow fallback: Dubonnet
+uses an inline UPC/size row, the two Esquimalt excerpts use unstructured inline facts and lack page
+titles, and Giffard uses a different bottle-availability label with no verified UPC in the excerpt.
+They continue through model extraction where configured; this test makes no claim about that model's
+new outputs. Eleven of the 18 reviewed bottles still have no captured input. Source coverage,
+barcode-association uncertainty, and extraction misses remain separate; no retrieval improvement is
+claimed. Existing data suffices for this scoped regression, but broader release confidence requires
+representative full-page inputs and a new paired model execution (the requested-field prompts have
+changed), followed by fresh bottles. The earlier 4/13 versus 3/13 supported holdout-fact model result
+and 2/15 inventory matches must not be replaced with this scalar-only comparison.
