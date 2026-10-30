@@ -236,7 +236,10 @@ internal fun sanitizeSourceTextForCloud(markdown: String): String {
 internal fun redactBarcodeIdentifiers(sourceText: String): String =
     Regex("(?<!\\d)(?:\\d[\\s-]?){7,17}(?!\\d)").replace(sourceText) { match ->
         val normalized = normalizeGtinForLookup(match.value.filter(Char::isDigit))
-        if (normalized == null) match.value else "[barcode omitted]"
+        if (normalized == null) match.value else {
+            val separators = match.value.filter(Char::isWhitespace)
+            "[barcode omitted]$separators"
+        }
     }
 
 internal fun buildOllamaRequest(

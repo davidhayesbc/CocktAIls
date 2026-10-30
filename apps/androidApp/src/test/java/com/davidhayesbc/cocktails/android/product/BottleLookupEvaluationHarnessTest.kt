@@ -93,6 +93,25 @@ class BottleLookupEvaluationHarnessTest {
     }
 
     @Test
+    fun developmentPromptJobsContainProductHeadingsButNotHeldoutCases() = runBlocking {
+        val dataset = parseDataset(readInput("bottle.eval.cases", "/bottle-evaluation/v1/cases.json"))
+        val development = eligibleProductionPromptCases(dataset, "development")
+        val batch = captureProductionPromptBatch(dataset, development, readLocalRuntimeConfig())
+        assertEquals(listOf("banff-ice-vodka", "dubonnet-rouge", "wild-turkey-101"), batch.eligibleCaseIds)
+        assertTrue(batch.tasks.none { it.requiredString("caseId").startsWith("esquimalt") || it.requiredString("caseId") == "auchentoshan-three-wood" })
+        batch.tasks.forEach { task ->
+            val prompt = task.requiredString("userPrompt")
+            val expectedHeading = when (task.requiredString("caseId")) {
+                "banff-ice-vodka" -> "Banff Ice 750ml"
+                "dubonnet-rouge" -> "DUBONNET ROUGE"
+                "wild-turkey-101" -> "Wild Turkey 101 750ml"
+                else -> error("Unexpected development case")
+            }
+            assertTrue("The model prompt must contain the source product heading", prompt.contains(expectedHeading))
+        }
+    }
+
+    @Test
     fun hostResultImportRequiresExactJobHashAndMarksDesktopInferenceOrigin(): Unit = runBlocking {
         val config = readLocalRuntimeConfig()
         val page = WebPageText(

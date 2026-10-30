@@ -26,6 +26,18 @@ import java.io.File
 import java.nio.file.Files
 
 class LocalBottleDetailExtractorTest {
+    @Test
+    fun barcodeRedactionKeepsFollowingSourceLineBreak() {
+        assertEquals(
+            "Product Code: [barcode omitted]\nAlcohol content: 40.0%",
+            redactBarcodeIdentifiers("Product Code: 080686032069\nAlcohol content: 40.0%"),
+        )
+        assertEquals(
+            "UPC [barcode omitted] | 750 ml",
+            redactBarcodeIdentifiers("UPC 3163933575001 | 750 ml"),
+        )
+    }
+
     private companion object {
         val COOK_STREET_AUCHENTOSHAN = """
             Free in-store pickup

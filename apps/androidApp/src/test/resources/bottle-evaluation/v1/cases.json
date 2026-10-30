@@ -69,12 +69,12 @@
           "title": "Auchentoshan Three Wood 750ml",
           "sourceUrl": "https://www.anbl.com/lowland/auchentoshan-three-wood-750ml-16968",
           "provider": "Direct public HTTP capture; manually selected product-detail excerpt",
-          "markdown": "Product Code: 5011333150725\nAlcohol content: 43.0%\nContainer Size: 750 mL",
+          "markdown": "Auchentoshan Three Wood 750ml\nProduct Code: 5011333150725\nAlcohol content: 43.0%\nContainer Size: 750 mL",
           "structuredIdentities": [],
           "capturedAtUtc": "2026-10-30T14:56:47Z",
           "selectionMethod": "Manually selected the product identity/specification text from the successful 200 response. This exact short excerpt is the complete model input fixture, not a full-page snapshot.",
           "sourceResponseSha256": "8a810e69ee8ec11bf61f0ad09a3ea6fdaa1205bfb01be057730da170b5e44467",
-          "inputSha256": "3e186e51ccf1e08446f75ad96dbfd5b758f8eb545a5bf5f24b76796b1c8a416f",
+          "inputSha256": "363cdc74ef9ea75074ed3f582ad353927c7165b8ccfdad9a9d270b23e66b397a",
           "contentLicense": "Minimal factual excerpt under 25 verbatim source words; source URL attributed; no broader license asserted."
         }
       ],
@@ -145,12 +145,12 @@
           "title": "Banff Ice 750ml",
           "sourceUrl": "https://www.anbl.com/unflavoured/banff-ice-750ml-10794",
           "provider": "Direct public HTTP capture; manually selected product-detail excerpt",
-          "markdown": "Product Code: 080686032069\nAlcohol content: 40.0%\nContainer Size: 750 mL",
+          "markdown": "Banff Ice 750ml\nProduct Code: 080686032069\nAlcohol content: 40.0%\nContainer Size: 750 mL",
           "structuredIdentities": [],
           "capturedAtUtc": "2026-10-30T14:56:47Z",
           "selectionMethod": "Manually selected the product identity/specification text from the successful 200 response. This exact short excerpt is the complete model input fixture, not a full-page snapshot.",
           "sourceResponseSha256": "ac579f6892b3907502e8caf999234a2327bc346fadc6aa11b5e69ff9a6250460",
-          "inputSha256": "dcf09bb0426efaade0b4fcda12e2d046cf4ed6261044d6f008ffda2ca893297e",
+          "inputSha256": "f5c793d90cc4df5ed9ac80cf75ec67a026b917c2278824fc342f19431f64bcbb",
           "contentLicense": "Minimal factual excerpt under 25 verbatim source words; source URL attributed; no broader license asserted."
         }
       ],
@@ -259,12 +259,12 @@
           "title": "DUBONNET ROUGE",
           "sourceUrl": "https://www.liquormarts.ca/product/dubonnet-rouge/750-ml",
           "provider": "Direct public HTTP capture; manually selected product-detail excerpt",
-          "markdown": "UPC 3163933575001 | 750 ml\nAlcohol: 14.80%",
+          "markdown": "DUBONNET ROUGE\nUPC 3163933575001 | 750 ml\nAlcohol: 14.80%",
           "structuredIdentities": [],
           "capturedAtUtc": "2026-10-30T14:56:49Z",
           "selectionMethod": "Manually selected the product identity/specification text from the successful 200 response. This exact short excerpt is the complete model input fixture, not a full-page snapshot.",
           "sourceResponseSha256": "e46aea4eb724770637519156ae8aa46297d60a8393dae0a06e83b9f659071b74",
-          "inputSha256": "cb9b7551c56bda5c8b29818fcdce1a463488aba21374129e083be713a48ef897",
+          "inputSha256": "6c2928df921ae7d42ad0c524cdcaa92f503a8e88f061e688b4b947d4abe6eb07",
           "contentLicense": "Minimal factual excerpt under 25 verbatim source words; source URL attributed; no broader license asserted."
         }
       ],
@@ -516,12 +516,12 @@
           "title": "Grenadine Syrup | giffard",
           "sourceUrl": "https://www.giffardcanada.com/grenadine-syrup",
           "provider": "Direct public HTTP capture; manually selected product-detail excerpt",
-          "markdown": "Alcohol Grade: Non-Alcholic\nBottles available in: 1 L\nProduct Code: W00143",
+          "markdown": "Grenadine Syrup | giffard\nAlcohol Grade: Non-Alcholic\nBottles available in: 1 L\nProduct Code: W00143",
           "structuredIdentities": [],
           "capturedAtUtc": "2026-10-30T14:56:47Z",
           "selectionMethod": "Manually selected the product identity/specification text from the successful 200 response. This exact short excerpt is the complete model input fixture, not a full-page snapshot.",
           "sourceResponseSha256": "cf7e3643a3daa1f95fb84d51dd990a2b6c107f0df381f518ccf0b8edea12687a",
-          "inputSha256": "6099eb8a0334c41b52e8c0f094c064e99b880c1f2b55139a0b3f4c0f28961034",
+          "inputSha256": "db9357c7976f1e9e10d6084b43fb04ea549ed0c55e3900f7697060ea598e3bca",
           "contentLicense": "Minimal factual excerpt under 25 verbatim source words; source URL attributed; no broader license asserted."
         }
       ],
@@ -937,12 +937,12 @@
           "title": "Wild Turkey 101 750ml",
           "sourceUrl": "https://www.anbl.com/fr/wild-turkey-101-750ml-29499",
           "provider": "Direct public HTTP capture; manually selected product-detail excerpt",
-          "markdown": "Code de produit : 721059897501\nTeneur en alcool : 50.5%\nTaille du contenant : 750 mL",
+          "markdown": "Wild Turkey 101 750ml\nCode de produit : 721059897501\nTeneur en alcool : 50.5%\nTaille du contenant : 750 mL",
           "structuredIdentities": [],
           "capturedAtUtc": "2026-10-30T14:56:47Z",
           "selectionMethod": "Manually selected the product identity/specification text from the successful 200 response. This exact short excerpt is the complete model input fixture, not a full-page snapshot.",
           "sourceResponseSha256": "a6625e815bf208f6e1d2f4ccc9fb8b553b1a5405697064a2912e927d7b184fa7",
-          "inputSha256": "bf7842d79a1ec7943f4848bf5c201d26e06c6abfa8656d76e1217f02a413fdc3",
+          "inputSha256": "1d1809e15de1706e1a973eadea0b1df782118127c46253745a2c2799a0710b76",
           "contentLicense": "Minimal factual excerpt under 25 verbatim source words; source URL attributed; no broader license asserted."
         }
       ],
