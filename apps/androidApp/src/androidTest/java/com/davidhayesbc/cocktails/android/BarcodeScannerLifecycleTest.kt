@@ -94,9 +94,21 @@ class BarcodeScannerLifecycleTest {
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("CI Manual Barcode Gin", substring = true))
             composeRule.onAllNodesWithText("CI Manual Barcode Gin", substring = true).assertCountEquals(1)
             composeRule.onNodeWithTag("intake-exit").performClick()
-            composeRule.onNodeWithTag("my-bar-exit").performClick()
-            InstrumentationRegistry.getInstrumentation().waitForIdleSync()
-            assertEquals(androidx.lifecycle.Lifecycle.State.DESTROYED, composeRule.activityRule.scenario.state)
+            val exitingActivity = composeRule.activity
+            composeRule.onNodeWithTag("my-bar-exit").assertIsDisplayed().performClick()
+            // finish() completes through Android lifecycle callbacks, beyond UI queue idle.
+            // Observe the real transition; never close/move the scenario to force it.
+            val exitDeadline = SystemClock.uptimeMillis() + 10_000
+            while (composeRule.activityRule.scenario.state != androidx.lifecycle.Lifecycle.State.DESTROYED &&
+                SystemClock.uptimeMillis() < exitDeadline
+            ) {
+                SystemClock.sleep(50)
+            }
+            assertEquals(
+                "App Exit lifecycle timeout; isFinishing=${exitingActivity.isFinishing}; isDestroyed=${exitingActivity.isDestroyed}",
+                androidx.lifecycle.Lifecycle.State.DESTROYED,
+                composeRule.activityRule.scenario.state,
+            )
         } finally {
             removeIntakeTestDraft("CI Manual Barcode Gin", "036000291452")
         }

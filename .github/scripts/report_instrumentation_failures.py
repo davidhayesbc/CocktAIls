@@ -1,4 +1,4 @@
-"""Expose failing test names and bounded intake route diagnostics in CI annotations."""
+"""Expose failing test names and bounded intake diagnostics in CI annotations."""
 
 from pathlib import Path
 import sys
@@ -20,9 +20,19 @@ def annotations(directory):
                 continue
             message = f"Instrumentation failed: {case.get('classname', '?')}.{case.get('name', '?')}"
             # Do not publish raw test output, trees, or arbitrary assertion values.
-            # This fixture's route diagnostics contain only UI routes/validation messages.
-            first_line = (failure.get("message") or failure.text or "").splitlines()
-            if first_line and first_line[0].startswith("java.lang.AssertionError: Intake route "):
+            # These fixtures report only UI routes/validation messages or lifecycle flags.
+            first_line = (failure.get("message") or failure.text or "").strip().splitlines()
+            # JUnit's String assertEquals throws ComparisonFailure. XML writers
+            # may serialize Throwable.toString(), or just getMessage() with a
+            # separate type attribute. Require an exact fixture diagnostic prefix.
+            diagnostic_prefixes = (
+                "org.junit.ComparisonFailure: Intake route ",
+                "java.lang.AssertionError: Intake route ",
+                "Intake route ",
+                "java.lang.AssertionError: App Exit lifecycle timeout; ",
+                "App Exit lifecycle timeout; ",
+            )
+            if first_line and first_line[0].startswith(diagnostic_prefixes):
                 message += "; " + first_line[0][:1500]
             yield "::error::" + escape(message)
 
