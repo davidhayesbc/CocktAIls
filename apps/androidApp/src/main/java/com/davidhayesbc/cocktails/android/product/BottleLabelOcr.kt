@@ -97,18 +97,30 @@ internal object BottleLabelOcrScheduler {
     }
     private fun enqueueChecked(context: Context, draft: BottleIntakeDraft, attemptToken: String?) {
         if (draft.photoData == null || draft.photoSha256 == null) return
-        val token = UUID.randomUUID().toString()
-        val store = BottleLabelEvidenceStore.forContext(context)
-        if (!store.request(draft.id, token)) return
-        val request = OneTimeWorkRequestBuilder<BottleLabelOcrWorker>().setInputData(workDataOf(
-            "session" to draft.sessionId, "draft" to draft.id, "photo" to draft.photoSha256,
-            "request" to token, "attempt" to attemptToken,
-        )).addTag("cocktails-bottle-session-${draft.sessionId}").build()
-        WorkManager.getInstance(context).enqueueUniqueWork(name(draft.id), ExistingWorkPolicy.REPLACE, request)
+        val runtime = BottleScanEnrichmentRuntime(context)
+        BottleLabelSchedulingGate.processWide.scheduleIfCurrent(draft, attemptToken, currentState = {
+            runtime.openRepository().use { repositories ->
+                val current = repositories.repository.openBottleIntakeSession()?.takeIf { it.id == draft.sessionId }
+                    ?.drafts?.firstOrNull { it.id == draft.id }
+                current to BottleEnrichmentQueue(SharedPreferencesBottleEnrichmentQueueStorage(context)).status(draft.id)
+            }
+        }) {
+            val token = UUID.randomUUID().toString()
+            val store = BottleLabelEvidenceStore.forContext(context)
+            if (!store.request(draft.id, token)) return@scheduleIfCurrent false
+            val request = OneTimeWorkRequestBuilder<BottleLabelOcrWorker>().setInputData(workDataOf(
+                "session" to draft.sessionId, "draft" to draft.id, "photo" to draft.photoSha256,
+                "request" to token, "attempt" to attemptToken,
+            )).addTag("cocktails-bottle-session-${draft.sessionId}").build()
+            WorkManager.getInstance(context).enqueueUniqueWork(name(draft.id), ExistingWorkPolicy.REPLACE, request)
+            true
+        }
     }
     fun cancel(context: Context, draftId: String) {
-        BottleLabelEvidenceStore.forContext(context).cancel(draftId)
-        runCatching { WorkManager.getInstance(context).cancelUniqueWork(name(draftId)) }
+        BottleLabelSchedulingGate.processWide.serialized {
+            BottleLabelEvidenceStore.forContext(context).cancel(draftId)
+            runCatching { WorkManager.getInstance(context).cancelUniqueWork(name(draftId)) }
+        }
     }
 }
 

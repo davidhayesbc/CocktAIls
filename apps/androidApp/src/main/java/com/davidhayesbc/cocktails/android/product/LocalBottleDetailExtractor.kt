@@ -150,6 +150,11 @@ internal class LocalBottleDetailExtractor(
             ?: labeledSpecifications
             ?: structuredFallback
             ?: partialSpecifications
+        // Preserve negative evidence too: a field-only barcode record with conflicting
+        // scalars must not disappear and later be silently "resolved" by a label value.
+        if (partialSpecifications != null && independentlyVerifiedFallback === partialSpecifications &&
+            partialSpecifications.suggestions.facts.isEmpty()
+        ) return partialSpecifications
         if (cleanPageText.isBlank()) {
             record(BottleLookupDebugEvent(BottleLookupDebugStage.LOCAL_INPUT_VALIDATION, providerLabel, "INVALID_RESPONSE"))
             return BottleDetailExtractionResult.InvalidResponse

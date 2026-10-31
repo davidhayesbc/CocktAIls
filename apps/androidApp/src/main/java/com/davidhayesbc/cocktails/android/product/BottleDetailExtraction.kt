@@ -526,23 +526,7 @@ internal fun parseBottleFactCandidate(
             fieldRejections.toList(),
         )
     }
-    val productNameForBrand = uniqueFacts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }
-    val titleOnlyBrands = uniqueFacts.filter { brandFact ->
-        if (brandFact.field != BottleFactField.BRAND) return@filter false
-        if (hasExplicitBrandLabel(brandFact.quote, brandFact.value)) return@filter false
-        if (Regex("""(?im)(?:^|\|)\s*brand(?:\s+name)?\s*[:|]""").containsMatchIn(brandFact.quote)) return@filter true
-        val brandQuote = normalizeFactSpacing(brandFact.quote)
-        if (brandQuote.equals(normalizeFactSpacing(brandFact.value), ignoreCase = true)) return@filter true
-        val productName = productNameForBrand
-        val overlappingNameEvidence = productName != null &&
-            containsWholeFactPhrase(productName.value, brandFact.value) &&
-            (containsWholeFactPhrase(productName.quote, brandQuote) ||
-                containsWholeFactPhrase(brandQuote, normalizeFactSpacing(productName.quote)))
-        val firstSourceLine = sourceText.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty()
-        val titleFragment = containsWholeFactPhrase(firstSourceLine, brandQuote) &&
-            containsWholeFactPhrase(firstSourceLine, brandFact.value)
-        overlappingNameEvidence || titleFragment
-    }
+    val titleOnlyBrands = titleOnlyBottleBrands(uniqueFacts, sourceText)
     if (titleOnlyBrands.isNotEmpty()) {
         rejected += BottleExtractionRejectionReason.BRAND_NOT_DISTINCT_FROM_PRODUCT_NAME
         fieldRejections += titleOnlyBrands.map {
@@ -720,4 +704,25 @@ private fun Int.toExtractionFailure(): BottleDetailExtractionResult = when (this
     404 -> BottleDetailExtractionResult.InvalidModel
     in 500..599, 0 -> BottleDetailExtractionResult.Unavailable
     else -> BottleDetailExtractionResult.InvalidResponse
+}
+
+/** Shared cross-field check for ordinary extraction and independently validated OCR facts. */
+internal fun titleOnlyBottleBrands(facts: List<BottleFactEvidence>, sourceText: String): List<BottleFactEvidence> {
+    val productNames = facts.filter { it.field == BottleFactField.PRODUCT_NAME }
+    return facts.filter { brandFact ->
+        if (brandFact.field != BottleFactField.BRAND) return@filter false
+        if (hasExplicitBrandLabel(brandFact.quote, brandFact.value)) return@filter false
+        if (Regex("""(?im)(?:^|\|)\s*brand(?:\s+name)?\s*[:|]""").containsMatchIn(brandFact.quote)) return@filter true
+        val brandQuote = normalizeFactSpacing(brandFact.quote)
+        if (brandQuote.equals(normalizeFactSpacing(brandFact.value), ignoreCase = true)) return@filter true
+        val overlappingNameEvidence = productNames.any { productName ->
+            containsWholeFactPhrase(productName.value, brandFact.value) &&
+                (containsWholeFactPhrase(productName.quote, brandQuote) ||
+                    containsWholeFactPhrase(brandQuote, normalizeFactSpacing(productName.quote)))
+        }
+        val firstSourceLine = sourceText.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty()
+        val titleFragment = containsWholeFactPhrase(firstSourceLine, brandQuote) &&
+            containsWholeFactPhrase(firstSourceLine, brandFact.value)
+        overlappingNameEvidence || titleFragment
+    }
 }

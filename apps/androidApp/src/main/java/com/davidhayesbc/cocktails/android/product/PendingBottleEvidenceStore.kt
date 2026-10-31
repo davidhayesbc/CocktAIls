@@ -67,6 +67,10 @@ internal class PendingBottleEvidenceStore(private val storage: PendingBottleEvid
             put("unresolved", buildJsonArray {
                 suggestions.unresolvedFields.forEach { add(kotlinx.serialization.json.JsonPrimitive(it.wireValue)) }
             })
+            put("conflicting_fields", buildJsonArray {
+                suggestions.fieldRejections.filter { it.reason == BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES }
+                    .map { it.field }.distinct().forEach { add(JsonPrimitive(it.wireValue)) }
+            })
             put("edited_fields", buildJsonArray {
                 editedFields(draftId).forEach { add(JsonPrimitive(it.storedValue)) }
             })
@@ -111,14 +115,18 @@ internal class PendingBottleEvidenceStore(private val storage: PendingBottleEvid
         val unresolved = root["unresolved"]?.jsonArray.orEmpty().mapNotNull { item ->
             item.jsonPrimitive.contentOrNull?.let { wire -> BottleFactField.entries.firstOrNull { it.wireValue == wire } }
         }.toSet()
-        if (facts.size > MAX_FACTS || facts.isEmpty() && unresolved.isEmpty()) return null
+        val conflicts = root["conflicting_fields"]?.jsonArray.orEmpty().mapNotNull { item ->
+            item.jsonPrimitive.contentOrNull?.let { wire -> BottleFactField.entries.firstOrNull { it.wireValue == wire } }
+        }.toSet()
+        if (facts.size > MAX_FACTS || facts.isEmpty() && unresolved.isEmpty() && conflicts.isEmpty()) return null
         BottleDetailSuggestions(
             provider = provider,
             model = model,
             retrievalProvider = root["retrieval_provider"]?.jsonPrimitive?.contentOrNull?.takeIf { it.length <= 120 } ?: "Unknown",
             sourceUrl = sourceUrl,
-            facts = facts,
-            unresolvedFields = unresolved,
+            facts = facts.filterNot { it.field in conflicts },
+            unresolvedFields = unresolved + conflicts,
+            fieldRejections = conflicts.map { BottleFactRejection(it, BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES) },
             targetBarcode = root["target_barcode"]?.jsonPrimitive?.contentOrNull,
             identityEvidence = root["identity_evidence"]?.jsonPrimitive?.contentOrNull,
         )

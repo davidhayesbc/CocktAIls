@@ -71,7 +71,9 @@ class BottleLabelEvidenceTest {
         assertNull(barcodeBoundPartialSpecifications(page("UPC $code; try another bottle: 750 mL · 40% ALC/VOL"), code))
         assertNull(barcodeBoundPartialSpecifications(page("UPC $code\nOther bottle: 750 mL · 40% ALC/VOL"), code))
         assertNull(barcodeBoundPartialSpecifications(page("UPC 080480007577 · 750 mL · 40% ALC/VOL"), code))
-        assertNull(barcodeBoundPartialSpecifications(page("UPC $code · 750 mL\nSize 700 mL"), code))
+        val conflictingSize = barcodeBoundPartialSpecifications(page("UPC $code · 750 mL\nSize 700 mL"), code)!!.suggestions
+        assertTrue(conflictingSize.facts.isEmpty())
+        assertTrue(BottleFactRejection(BottleFactField.QUANTITY, BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES) in conflictingSize.fieldRejections)
     }
     @Test fun localPipelinePreservesBarcodeBoundPartialFactsAfterModelAbstains() = runBlocking {
         val result = LocalBottleDetailExtractor({ "fixture.gguf" }, LocalInferenceRunner { _, _, _, _ -> "{\"facts\":[]}" })
@@ -79,6 +81,44 @@ class BottleLabelEvidenceTest {
         assertTrue(result is BottleDetailExtractionResult.Found)
         assertEquals(setOf(BottleFactField.QUANTITY, BottleFactField.ABV_PERCENT),
             (result as BottleDetailExtractionResult.Found).suggestions.facts.map { it.field }.toSet())
+    }
+    @Test fun webConflictSurvivesExtractionPersistenceAndLabelMerge() = runBlocking {
+        for (size in listOf("750 mL · ", "")) {
+            val result = LocalBottleDetailExtractor({ "fixture.gguf" }, LocalInferenceRunner { _, _, _, _ -> "{\"facts\":[]}" })
+                .extract(WebPageText("Fixture", "https://shop.example/item",
+                    "UPC $code · ${size}40% ALC/VOL · 45% ALC/VOL", "Fixture"), LOCAL_MODEL_LABEL, code)
+                as BottleDetailExtractionResult.Found
+            val conflict = BottleFactRejection(BottleFactField.ABV_PERCENT, BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES)
+            assertTrue(conflict in result.suggestions.fieldRejections)
+            val memory = object : PendingBottleEvidenceStorage {
+                var value: String? = null
+                override fun read(draftId: String) = value
+                override fun write(draftId: String, value: String): Boolean { this.value = value; return true }
+                override fun remove(draftId: String): Boolean { value = null; return true }
+            }
+            assertTrue(PendingBottleEvidenceStore(memory).save(draft.id, result.suggestions))
+            assertTrue(PendingBottleEvidenceStore(memory).markEdited(draft.id, BottleDraftField.QUANTITY))
+            val restored = PendingBottleEvidenceStore(memory).read(draft.id)!!
+            assertTrue(conflict in restored.fieldRejections)
+            val merged = mergeLabelAndWebEvidence(restored, label("750 mL\n40% ALC/VOL"), draft)!!
+            assertEquals(listOf(BottleFactField.QUANTITY), merged.facts.map { it.field })
+            assertTrue(BottleFactField.ABV_PERCENT in merged.unresolvedFields)
+            // Review UI uses this same marker to display its always-visible conflict warning.
+            assertTrue(conflict in merged.fieldRejections)
+        }
+    }
+    @Test fun independentFieldsDoNotInferBrandFromProductTitleAfterAnotherLine() = runBlocking {
+        val result = LocalBottleDetailExtractor({ "fixture.gguf" }, LocalInferenceRunner { _, _, _, _ ->
+            """{"facts":[{"field":"product_name","value":"Acme Gin","evidence":"Acme Gin"},{"field":"brand","value":"Acme","evidence":"Acme Gin"}]}"""
+        }).extractLabelText("Distilled in England\nAcme Gin\n750 mL", emptyList())
+        assertEquals(setOf(BottleFactField.PRODUCT_NAME, BottleFactField.QUANTITY), result.facts.map { it.field }.toSet())
+        assertTrue(BottleFactField.BRAND in result.unresolved)
+    }
+    @Test fun explicitlyLabeledBrandRemainsValidAlongsideProductNameAndSize() = runBlocking {
+        val result = LocalBottleDetailExtractor({ "fixture.gguf" }, LocalInferenceRunner { _, _, _, _ ->
+            """{"facts":[{"field":"product_name","value":"Acme Gin","evidence":"Acme Gin"},{"field":"brand","value":"Acme","evidence":"Brand: Acme"}]}"""
+        }).extractLabelText("Distilled in England\nAcme Gin\nBrand: Acme\n750 mL", emptyList())
+        assertEquals(setOf(BottleFactField.PRODUCT_NAME, BottleFactField.BRAND, BottleFactField.QUANTITY), result.facts.map { it.field }.toSet())
     }
     @Test fun persistedEvidenceRejectsStaleRequestsAndChangedPhotos() {
         val memory = object : PendingBottleEvidenceStorage {

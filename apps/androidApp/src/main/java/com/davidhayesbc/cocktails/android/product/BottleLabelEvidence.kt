@@ -33,7 +33,8 @@ internal fun independentBottleFacts(source: String, candidates: List<JsonObject>
     val conflicts = accepted.groupBy { it.field }.filterValues { values ->
         values.map(::bottleFactFingerprint).distinct().size > 1
     }.keys + unresolvedBottleSourceFields(source)
-    val facts = accepted.filterNot { it.field in conflicts }.distinctBy { it.field }
+    val titleOnlyBrands = titleOnlyBottleBrands(accepted, source)
+    val facts = accepted.filterNot { it.field in conflicts || it in titleOnlyBrands }.distinctBy { it.field }
     return IndependentBottleFacts(facts, BottleFactField.entries.toSet() - facts.map { it.field }.toSet(), conflicts)
 }
 
@@ -98,11 +99,14 @@ internal fun barcodeBoundPartialSpecifications(page: WebPageText, barcode: Strin
         it.length <= 320 && scannedBarcodePageDecision(barcode, it) == ScannedBarcodePageDecision.VERIFIED &&
             isBarcodeSpecificationRecord(it, barcode)
     }.toList()
-    val partial = independentBottleFacts(page.markdown, lines.flatMap(::explicitLabelCandidates))
-    if (partial.facts.isEmpty()) return null
+    val candidates = lines.flatMap(::explicitLabelCandidates)
+    if (candidates.isEmpty()) return null
+    val partial = independentBottleFacts(page.markdown, candidates)
+    if (partial.facts.isEmpty() && partial.conflicts.isEmpty()) return null
     return BottleDetailExtractionResult.Found(BottleDetailSuggestions(
         provider = "Verified barcode-bound specifications", model = "Deterministic extraction",
         sourceUrl = page.sourceUrl, facts = partial.facts, unresolvedFields = partial.unresolved,
+        fieldRejections = partial.conflicts.map { BottleFactRejection(it, BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES) },
         targetBarcode = barcode, identityEvidence = lines.first(), retrievalProvider = page.provider,
         extractionMethod = BottleExtractionMethod.DETERMINISTIC_SOURCE_PARTIAL,
     ))

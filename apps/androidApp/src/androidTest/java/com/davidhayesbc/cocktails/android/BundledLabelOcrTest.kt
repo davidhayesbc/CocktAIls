@@ -11,7 +11,8 @@ import com.davidhayesbc.cocktails.android.product.explicitLabelCandidates
 import com.davidhayesbc.cocktails.android.product.independentBottleFacts
 import com.davidhayesbc.cocktails.android.product.BottleFactField
 import kotlinx.coroutines.runBlocking
-import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
+import com.davidhayesbc.cocktails.android.product.bottleFactFingerprint
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.ByteArrayOutputStream
@@ -38,8 +39,8 @@ class BundledLabelOcrTest {
             bitmap.recycle()
             val text = kotlinx.coroutines.withTimeout(30_000) { recognizeBottleLabel(bytes) }
             val facts = independentBottleFacts(text, explicitLabelCandidates(text)).facts
-            assertTrue("Bundled offline OCR must read the synthetic bottle size", facts.any { it.field == BottleFactField.QUANTITY })
-            assertTrue("Bundled offline OCR must read the synthetic alcohol strength", facts.any { it.field == BottleFactField.ABV_PERCENT })
+            assertEquals("Bundled offline OCR must read exactly 750 mL", "750", facts.singleOrNull { it.field == BottleFactField.QUANTITY }?.let(::bottleFactFingerprint))
+            assertEquals("Bundled offline OCR must read exactly 40%", "40", facts.singleOrNull { it.field == BottleFactField.ABV_PERCENT }?.let(::bottleFactFingerprint))
         } finally {
             shell("svc wifi ${if (wifiEnabled) "enable" else "disable"}")
             shell("svc data ${if (dataEnabled) "enable" else "disable"}")
