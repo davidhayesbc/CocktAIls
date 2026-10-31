@@ -1497,6 +1497,7 @@ class OfflineRecipeSmokeTest {
                 context.deleteDatabase(databaseName)
             }
         } finally {
+            removeIntakeTestDraft("My Manual Gin", "036000291452")
             preferences.edit().clear().commit()
         }
     }
