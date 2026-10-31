@@ -77,9 +77,13 @@ model, grammar and decoding settings stay fixed:
   -PbottleEvalExportJobs=/private/path/bottle-v2-holdout-jobs.json
 ```
 
-The paired-job regression verifies the four untouched product cases have identical frozen sources
-and user prompts; only the system prompt and prompt version differ. Both jobs must be run against the
-same model/runtime configuration before importing and comparing results.
+The prompt-version contract test compares the same four previously consumed holdout cases within
+one checkout: frozen sources and user prompts match, while the system prompt and prompt version
+differ. This does not establish prompt equality across code revisions. In the `dc8c6eb0` versus
+`bc293cd` code comparison, all four source hashes match but the Auchentoshan requested fields change
+because labeled size/ABV are extracted deterministically. Verify exact task and runtime hashes before
+reusing any prior output; otherwise generate a new response. These cases are regression data, not
+fresh holdout validation.
 
 ### 2. Run local inference on the Windows GPU machine
 
@@ -183,12 +187,13 @@ not scored. Giffard's manufacturer page states a non-alcoholic grade but contain
 does not show the reviewed UPC, so this page does not independently establish that barcode
 association. Numeric ABV remains unknown in inventory truth.
 
-The first desktop job export is limited to development cases. Keep that run for development only.
-Do not tune against holdout outputs. After the model and prompt are frozen, export and run holdout
-separately using `-PbottleEvalExportSplit=holdout`; `full` is available only for a one-time final
-evaluation after configuration freeze. Both Esquimalt variants and all Sons of Vancouver variants
-remain in their existing family-level holdout groups. The Auchentoshan detailed diagnostic is still
-not a scored case because it lacks a complete historical model/source replay.
+Desktop exports default to development cases. The four captured cases assigned to `holdout` have
+already been evaluated; subsequent runs using `-PbottleEvalExportSplit=holdout` are consumed-case
+regressions, not fresh holdout results. Do not tune prompts or change gold using their outputs.
+`full` selects both existing splits and does not make either split fresh. Both Esquimalt variants and
+all Sons of Vancouver variants retain their existing family-level split assignments. The frozen
+Auchentoshan excerpt is an executable regression case; its separate historical detailed diagnostic
+still lacks a complete model/source replay and is not scored.
 
 The reviewed product manifest and inventory truth are kept separate from what any supplied source
 supports. Junicopia's barcode-linked identity and ABV remain unresolved; Giffard's unknown numeric
