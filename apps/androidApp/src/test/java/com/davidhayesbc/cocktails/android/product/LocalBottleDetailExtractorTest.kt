@@ -525,13 +525,13 @@ class LocalBottleDetailExtractorTest {
             """{"facts":[{"field":"abv_percent","value":"43 % ABV","evidence":"Alcohol by volume 43.0%"}]}""",
             "On-device Qwen3", LOCAL_MODEL_LABEL, "https://example.org/whisky", source,
         ) as BottleDetailExtractionResult.Found
-        assertEquals("43 % ABV", formattedAbv.suggestions.facts.single().value)
+        assertEquals("43%", formattedAbv.suggestions.facts.single().value)
 
         val englishLabeledAbv = parseBottleFactCandidate(
             """{"facts":[{"field":"abv_percent","value":"40.0%","evidence":"Alcohol content: 40.0%"}]}""",
             "On-device Qwen3", LOCAL_MODEL_LABEL, "https://example.org/vodka", "Banff Ice\nAlcohol content: 40.0%",
         ) as BottleDetailExtractionResult.Found
-        assertEquals("40.0%", englishLabeledAbv.suggestions.facts.single().value)
+        assertEquals("40%", englishLabeledAbv.suggestions.facts.single().value)
 
         val frenchLabeledAbv = parseBottleFactCandidate(
             """{"facts":[{"field":"abv_percent","value":"50.5%","evidence":"Teneur en alcool : 50.5%"}]}""",
@@ -561,7 +561,7 @@ class LocalBottleDetailExtractorTest {
             """{"facts":[{"field":"quantity","value":"750ml","evidence":"Bottle size 750 mL"}]}""",
             "On-device Qwen3", LOCAL_MODEL_LABEL, "https://example.org/whisky", source,
         ) as BottleDetailExtractionResult.Found
-        assertEquals("750ml", formattedQuantity.suggestions.facts.single().value)
+        assertEquals("750 mL", formattedQuantity.suggestions.facts.single().value)
 
         val partialQuantity = parseBottleFactCandidate(
             """{"facts":[{"field":"quantity","value":"75 mL","evidence":"Bottle size 750 mL"}]}""",

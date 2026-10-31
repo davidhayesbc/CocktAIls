@@ -591,6 +591,7 @@ internal fun parseBottleFactCandidate(
         .filterNot { it.field in unresolvedFields }
         .distinctBy(BottleFactEvidence::field)
         .take(MAX_FACTS)
+        .map { it.copy(value = canonicalValidatedBottleValue(it.field, it.value)) }
     if (acceptedFacts.isEmpty() && unresolvedFields.isEmpty()) {
         return BottleDetailExtractionResult.Rejected(BottleExtractionRejectionReason.NO_SUPPORTED_FIELDS)
     }
@@ -601,6 +602,23 @@ internal fun parseBottleFactCandidate(
         ),
         rejected,
     )
+}
+
+/** Presentation only, after evidence, ambiguity and identity checks; never used to accept a fact. */
+private fun canonicalValidatedBottleValue(field: BottleFactField, value: String): String = when (field) {
+    BottleFactField.ABV_PERCENT -> {
+        val number = Regex("[0-9]+(?:[.,][0-9]+)?").find(value)!!.value
+            .replace(',', '.').toBigDecimal().stripTrailingZeros().toPlainString()
+        "$number%"
+    }
+    BottleFactField.QUANTITY -> {
+        val match = Regex("""(?i)^(\d{1,4}(?:[.,]\d{1,2})?)\s*(mL|L)$""")
+            .matchEntire(normalizeFactSpacing(value))!!
+        val number = match.groupValues[1].replace(',', '.').toBigDecimal().stripTrailingZeros().toPlainString()
+        val unit = if (match.groupValues[2].equals("L", true)) "L" else "mL"
+        "$number $unit"
+    }
+    else -> value
 }
 
 internal fun hasExplicitBrandLabel(evidence: String, value: String): Boolean =

@@ -310,3 +310,24 @@ artifact metadata. Different model configs/job-file hashes are expected, but eve
 hash must remain identical. The runner accepts `--config /private/path/exported-config.json` so each
 job can use its matching frozen config without editing the pinned Android baseline file. Report
 model identity accurately and keep desktop memory/latency separate from device measurements.
+
+## Validated scalar presentation and fallback limits
+
+The fact parser canonicalizes accepted ABV to a decimal percentage (for example,
+`27,50% Alc./Vol.` becomes `27.5%`) and accepted quantity to a decimal plus `mL`
+or `L`. Units are preserved rather than converted. This happens after evidence,
+ambiguity, and identity validation; evidence quotes and rejection rules are unchanged.
+Normalization cannot supply a missing scalar or turn an unverified claim into a fact.
+
+The deterministic fallback still requires a matching title followed exclusively by
+recognized colon-labeled rows. A combined `UPC … | size` row rejects the whole record,
+including other valid rows. Unknown labels such as `Alcohol Grade` or `Bottles available
+in` also make a record ineligible. This is a deliberate completeness limitation.
+A future extension should parse a complete, single-product record with explicit identity
+and size cells, reject additional products and multiple package choices, and keep
+nonnumeric alcohol descriptions unresolved. It must not scan arbitrary nearby numbers.
+Such an extension changes requested model fields and requires newly exported matching
+jobs; old model outputs cannot be claimed to match those changed prompts.
+
+Parser-only comparisons may reuse hash-matching original outputs, but must be labeled
+reused consumed-regression evidence. Keep original reports and reviewed labels intact.
