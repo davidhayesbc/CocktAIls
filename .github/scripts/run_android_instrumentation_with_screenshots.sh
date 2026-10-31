@@ -140,6 +140,10 @@ wait "$test_pid"
 test_result=$?
 collect_screenshots
 
+python3 .github/scripts/report_instrumentation_failures.py \
+  apps/androidApp/build/outputs/androidTest-results/connected \
+  || echo 'Could not summarize instrumentation XML; consult the diagnostic artifact.'
+
 for name in "${screenshot_names[@]}"; do
   if [[ -z "${collected[$name]+present}" ]]; then
     if [[ "$name" == onboarding-*.png ]]; then

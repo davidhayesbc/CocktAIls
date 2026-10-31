@@ -316,8 +316,11 @@ class OfflineRecipeSmokeTest {
         assertTrue(firstQueueText.contains("Bottle 1 · $bottleName"))
         val firstDraftId = firstQueueTag.removePrefix("queue-bottle-")
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag(firstQueueTag))
-        composeRule.onNodeWithTag(firstQueueTag).assertIsDisplayed().performClick()
-        composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Review your bottle")
+        // The card also contains a Reprocess button. Tap the primary photo area,
+        // not the card's center, which can land on that separate child action.
+        composeRule.onNodeWithTag("queue-label-photo-frame-$firstDraftId", useUnmergedTree = true)
+            .assertIsDisplayed().performClick()
+        composeRule.assertIntakeRoute("Review your bottle", "after opening the restored queue bottle")
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-name-0"))
         composeRule.onNodeWithTag("bottle-intake-draft-name-0").performTextClearance()
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-error-0"))
