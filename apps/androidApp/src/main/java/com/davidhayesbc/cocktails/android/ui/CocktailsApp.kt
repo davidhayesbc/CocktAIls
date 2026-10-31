@@ -3680,7 +3680,7 @@ private fun BottleIntakeFlowScreen(
             ) {
                 OutlinedTextField(name, { name = it; error = null }, label = { Text("Bottle or ingredient name") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("batch-manual-name"))
                 OutlinedTextField(category, { category = it }, label = { Text("Category") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(barcode, { barcode = it; error = null }, label = { Text("Barcode · optional") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(barcode, { barcode = it; error = null }, label = { Text("Barcode · optional") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth().testTag("batch-manual-barcode"))
                 OutlinedTextField(brand, { brand = it }, label = { Text("Brand · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(productName, { productName = it }, label = { Text("Product · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedButton(onClick = onCaptureLabel, modifier = Modifier.fillMaxWidth()) { Text(if (capturePhoto == null) "Capture label photo · optional" else "Retake label photo") }

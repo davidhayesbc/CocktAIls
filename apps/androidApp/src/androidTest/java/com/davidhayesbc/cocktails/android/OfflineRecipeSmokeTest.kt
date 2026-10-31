@@ -113,7 +113,16 @@ class OfflineRecipeSmokeTest {
                     val appContext = instrumentation.targetContext
                     instrumentation.uiAutomation.executeShellCommand(
                         "pm grant ${appContext.packageName} ${Manifest.permission.CAMERA}",
-                    ).close()
+                    ).use { descriptor ->
+                        // Closing the pipe immediately does not wait for PackageManager.
+                        FileInputStream(descriptor.fileDescriptor).bufferedReader().use { it.readText() }
+                    }
+                    val permissionDeadline = android.os.SystemClock.uptimeMillis() + 10_000
+                    while (appContext.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED &&
+                        android.os.SystemClock.uptimeMillis() < permissionDeadline
+                    ) {
+                        android.os.SystemClock.sleep(100)
+                    }
                     check(appContext.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
                         "Instrumentation did not grant CAMERA before the integrated label capture test."
                     }
@@ -306,7 +315,9 @@ class OfflineRecipeSmokeTest {
             .joinToString(separator = "") { it.text }
         assertTrue(firstQueueText.contains("Bottle 1 · $bottleName"))
         val firstDraftId = firstQueueTag.removePrefix("queue-bottle-")
-        composeRule.onNodeWithTag(firstQueueTag).performClick()
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag(firstQueueTag))
+        composeRule.onNodeWithTag(firstQueueTag).assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Review your bottle")
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-name-0"))
         composeRule.onNodeWithTag("bottle-intake-draft-name-0").performTextClearance()
         composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-error-0"))
