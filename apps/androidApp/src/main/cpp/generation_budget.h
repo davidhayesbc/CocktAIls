@@ -22,6 +22,17 @@ inline int bounded_prompt_token_count(
     return std::min(std::max(0, requested_tokens), available);
 }
 
+// A truncated prompt can disconnect evidence references from the text actually evaluated.
+inline bool complete_prompt_fits(
+    const int requested_tokens,
+    const int current_position,
+    const int context_size,
+    const int overflow_headroom
+) {
+    return requested_tokens >= 0 && requested_tokens == bounded_prompt_token_count(
+        requested_tokens, current_position, context_size, overflow_headroom);
+}
+
 class generation_budget {
 public:
     void begin_request(const int max_output_tokens) {

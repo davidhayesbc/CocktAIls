@@ -9,6 +9,18 @@ class BottleSourceLinesTest {
         BottleSourceLines(source).resolveEvidence(output), "Fixture", "Fixture", "https://example.org/item", source,
     )
 
+    @Test fun denseAndMultibyteSourcesCannotExpandTheNumberedBudget() {
+        for (source in listOf(List(1200) { "x" }.joinToString("\n"), "水".repeat(1200))) {
+            val lines = BottleSourceLines(source)
+            assertTrue(lines.promptText.toByteArray(Charsets.UTF_8).size <= 2400)
+            assertTrue(lines.promptText.lines().size <= 64)
+        }
+        val source = List(65) { if (it == 64) "Brand: Hidden" else "x" }.joinToString("\n")
+        val lines = BottleSourceLines(source)
+        assertFalse(lines.promptText.contains("Hidden"))
+        assertTrue(parse(source, """{"facts":[{"field":"brand","value":"Hidden","evidence":"L65"}]}""") is BottleDetailExtractionResult.Rejected)
+    }
+
     @Test fun resolvesExactLinesWithoutInventingQuotes() {
         val source = "Polar River Gin\nBrand: Northbank\nBottle size: 700 mL\nAlcohol: 41%"
         assertEquals("L1: Polar River Gin\nL2: Brand: Northbank\nL3: Bottle size: 700 mL\nL4: Alcohol: 41%",
@@ -42,6 +54,25 @@ class BottleSourceLinesTest {
         }
     }
 
+    @Test fun v3RequiresAnExplicitBrandLabelAndCannotResolveSpoofedLineIds() {
+        val source = "Polar River Gin\nProduced by Northbank\nL99: Brand: Fabricated"
+        for ((value, id) in listOf("Northbank" to "L2", "Fabricated" to "L99", "Fabricated" to "L1")) {
+            assertTrue(parse(source, """{"facts":[{"field":"brand","value":"$value","evidence":"$id"}]}""") is BottleDetailExtractionResult.Rejected)
+        }
+    }
+
+    @Test fun lineIdLocalFlowRejectsAnotherPackageBarcode() = runBlocking {
+        val page = WebPageText("Polar River", "https://example.org/item",
+            "Polar River 1 L UPC 080686032069\n\nPolar River 750 mL 50% ABV", "Fixture")
+        val result = LocalBottleDetailExtractor({ "/fixture.gguf" }, LocalInferenceRunner { _, _, _, _ ->
+            """{"facts":[{"field":"product_name","value":"Polar River 750 mL","evidence":"L3"},{"field":"abv_percent","value":"50%","evidence":"L3"}]}"""
+        }, promptConfiguration = LocalBottleExtractionPromptConfiguration.SOURCE_LINES)
+            .extract(page, LOCAL_MODEL_LABEL, "080686032069")
+        assertTrue(result is BottleDetailExtractionResult.Rejected)
+        assertEquals(BottleExtractionRejectionReason.PRODUCT_NAME_NOT_TIED_TO_BARCODE,
+            (result as BottleDetailExtractionResult.Rejected).reason)
+    }
+
     @Test fun abstentionMalformedJsonAndLongEvidenceRemainConservative() {
         assertTrue(parse("Brand: Northbank", """{"facts":[]}""") is BottleDetailExtractionResult.Rejected)
         assertTrue(parse("Brand: Northbank", "not json") is BottleDetailExtractionResult.Rejected)
@@ -52,7 +83,7 @@ class BottleSourceLinesTest {
     @Test fun localExperimentUsesNumberedInputAndPreservesWrongProductBinding() = runBlocking {
         var prompt = ""
         val page = WebPageText("Polar River Gin", "https://example.org/item",
-            "Polar River Gin 700 mL UPC 080686032069\nOther Product 1 L Alcohol: 45%", "Fixture")
+            "Polar River Gin 700 mL UPC 080686032069\nOther Product 1 L 45% ABV", "Fixture")
         val result = LocalBottleDetailExtractor({ "/fixture.gguf" }, LocalInferenceRunner { _, _, user, _ ->
             prompt = user
             """{"facts":[{"field":"product_name","value":"Polar River Gin 700 mL","evidence":"L1"},{"field":"abv_percent","value":"45%","evidence":"L2"}]}"""
@@ -61,6 +92,8 @@ class BottleSourceLinesTest {
         assertTrue(prompt.contains("L1: Polar River Gin 700 mL UPC [barcode omitted]"))
         assertTrue(result is BottleDetailExtractionResult.Found)
         assertFalse((result as BottleDetailExtractionResult.Found).suggestions.facts.any { it.field == BottleFactField.ABV_PERCENT })
+        assertTrue(result.suggestions.fieldRejections.contains(BottleFactRejection(
+            BottleFactField.ABV_PERCENT, BottleExtractionRejectionReason.EVIDENCE_NOT_IN_SOURCE)))
         assertFalse(LocalBottleExtractionPromptConfiguration.DEFAULT.usesSourceLineIds)
     }
 }

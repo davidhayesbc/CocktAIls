@@ -105,7 +105,7 @@ internal class LocalBottleDetailExtractor(
         val markdownProduct = requiredBarcode?.let { barcodeBoundMarkdownProduct(it, cleanPageText) }
         val promptSourceText = redactBarcodeIdentifiers(
             markdownProduct?.sourceSection ?: cleanPageText,
-        ).take(LOCAL_SOURCE_TEXT_CHARS)
+        ).let { if (promptConfiguration.usesSourceLineIds) it else it.take(LOCAL_SOURCE_TEXT_CHARS) }
         val structuredFallback = structuredIdentity?.let { identity ->
             structuredProductNameFallback(requiredBarcode.orEmpty(), page, identity)
         }

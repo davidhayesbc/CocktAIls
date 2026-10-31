@@ -18,6 +18,12 @@ int main() {
     assert(accepted_prompt_tokens == context_size - headroom - system_prompt_tokens - 1);
     assert(system_prompt_tokens + accepted_prompt_tokens < context_size - headroom);
 
+    assert(!complete_prompt_fits(long_prompt_tokens, system_prompt_tokens, context_size, headroom));
+    assert(complete_prompt_fits(accepted_prompt_tokens, system_prompt_tokens, context_size, headroom));
+    assert(!complete_prompt_fits(accepted_prompt_tokens + 1, system_prompt_tokens, context_size, headroom));
+    assert(!complete_prompt_fits(1, context_size, context_size, headroom));
+    assert(!complete_prompt_fits(-1, system_prompt_tokens, context_size, headroom));
+
     // Even with the largest prompt that fits, output stays independently bounded.
     budget.begin_request(requested_output_tokens);
     assert(budget.finish_reason() == generation_finish_reason::running);

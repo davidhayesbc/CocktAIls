@@ -275,14 +275,20 @@ excerpts, not fresh holdout results, retrieval coverage, phone performance or a 
 remains `bottle-facts-v2-dev-candidate`. The existing prompt contains a literal placeholder quote
 that appeared verbatim in rejected model outputs. The experiment instead numbers the bounded,
 barcode-redacted source lines and requests a line ID in the existing `evidence` string field.
-The app resolves that ID to the exact source line before applying the unchanged evidence/value,
+The rendered source is capped at 64 complete lines and 2,400 UTF-8 bytes, including prefixes.
+Omitted lines never enter the resolver. Native inference rejects user prompts that exceed the
+remaining token context rather than silently truncating them. The app resolves a valid ID to the
+exact delivered source line before applying the unchanged evidence/value,
 unit, conflict, product identity and brand checks. Unknown IDs, copied quote text and empty or
 oversized evidence fail validation. This prevents the model from inventing accepted evidence
 text; it does not prevent wrong line selection or invented values, which still require validation.
 The JSON grammar and inference budget are unchanged.
 
 Synthetic tests exercise reference validation, literal values/units, unrelated percentages,
-wrong-product passages, explicit brand labels and unsupported product/site-title fragments.
+wrong-product passages, mixed bottle sizes, explicit brand labels and unsupported product/site-title
+fragments. V3 enforces explicit Brand/Brand name labels; non-title prose such as an unlabelled
+producer mention is not sufficient in this experiment. A valid line ID establishes location only,
+not factuality or trustworthiness of source text, and does not establish prompt-injection immunity.
 Structured metadata currently retains barcode/name pairs only; it does not establish brand
 provenance. Site names and title suffixes remain insufficient brand evidence. Do not relax this
 rule or change reviewed gold to improve the experiment's score.

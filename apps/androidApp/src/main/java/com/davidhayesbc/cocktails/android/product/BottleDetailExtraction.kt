@@ -603,7 +603,7 @@ internal fun parseBottleFactCandidate(
     )
 }
 
-private fun hasExplicitBrandLabel(evidence: String, value: String): Boolean =
+internal fun hasExplicitBrandLabel(evidence: String, value: String): Boolean =
     Regex("""(?im)(?:^|\|)\s*brand(?:\s+name)?\s*(?::\s*\|?|\|)\s*${Regex.escape(value)}\s*(?:\||$)""")
         .containsMatchIn(evidence)
 

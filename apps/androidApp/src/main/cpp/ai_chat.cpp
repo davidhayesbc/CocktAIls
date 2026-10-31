@@ -475,17 +475,12 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_processUserPrompt(
     // Decode formatted user prompts
     auto user_tokens = common_tokenize(g_context, formatted_user_prompt, has_chat_template, has_chat_template);
 
-    // Ensure user prompt doesn't exceed the context size by truncating if necessary.
+    // Never silently remove source lines that Kotlin may later resolve as evidence.
     const int requested_prompt_size = static_cast<int>(user_tokens.size());
-    const int max_prompt_tokens = bounded_prompt_token_count(
-            requested_prompt_size,
-            current_position,
-            DEFAULT_CONTEXT_SIZE,
-            OVERFLOW_HEADROOM);
-    if (requested_prompt_size > max_prompt_tokens) {
-        const int skipped_tokens = requested_prompt_size - max_prompt_tokens;
-        user_tokens.resize(static_cast<size_t>(max_prompt_tokens));
-        LOGw("%s: User prompt too long! Skipped %d tokens!", __func__, skipped_tokens);
+    if (!complete_prompt_fits(requested_prompt_size, current_position,
+                             DEFAULT_CONTEXT_SIZE, OVERFLOW_HEADROOM)) {
+        LOGw("%s: User prompt exceeds context; refusing partial prompt evaluation", __func__);
+        return 2;
     }
 
     // Decode user tokens in batches
