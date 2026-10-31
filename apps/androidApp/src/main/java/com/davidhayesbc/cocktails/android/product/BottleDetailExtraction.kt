@@ -673,7 +673,7 @@ internal fun unresolvedBottleSourceFields(sourceText: String): Set<BottleFactFie
     // Keep out-of-range claims in the conflict set: filtering them could make a plausible
     // value appear unambiguous when the same source also contains an invalid ABV claim.
     val abvValues = Regex(
-        """(?i)(?:(?<![\d.,])(\d{1,3}(?:[.,]\d{1,2})?)\s*%\s*(?:ABV|ALC(?:OHOL)?(?:\s+BY\s+VOLUME)?|ALC\.?\s*/\s*VOL\.?|VOL(?:UME)?)\b|\b(?:ABV|ALC(?:OHOL)?(?:\s+BY\s+VOLUME)?|ALC\.?\s*/\s*VOL\.?|VOL(?:UME)?)\s*[:=]?\s*(\d{1,3}(?:[.,]\d{1,2})?)\s*%)""",
+        """(?i)(?:(?<![\d.,])(\d{1,3}(?:[.,]\d{1,2})?)\s*%\s*(?:ABV|ALC(?:OHOL)?(?:\s+BY\s+VOLUME)?|ALC\.?\s*/\s*VOL\.?|VOL(?:UME)?)\b|\b(?:ABV|ALC(?:OHOL)?(?:\s+BY\s+VOLUME)?|ALC\.?\s*/\s*VOL\.?|VOL(?:UME)?|ALCOHOL\s+GRADE)\s*[:=]?\s*(\d{1,3}(?:[.,]\d{1,2})?)\s*%)""",
     ).findAll(normalizedSourceText).mapNotNull { match ->
         (match.groups[1]?.value ?: match.groups[2]?.value)?.replace(',', '.')?.toDoubleOrNull()
     }.toSet()

@@ -28,6 +28,54 @@ class ExtendedBottleRecordTest {
             .suggestions.facts.single { it.field == BottleFactField.ABV_PERCENT }.value)
     }
 
+    @Test fun alcoholGradeDisagreementsRemainUnresolvedIncludingInvalidStrengths() {
+        for ((title, body) in listOf(
+            "Example Spirit 50% ABV" to "UPC 080686032069 | 700 mL\nAlcohol Grade: 40%",
+            "Example Spirit 140% ABV" to "UPC 080686032069 | 700 mL\nAlcohol Grade: 40%",
+            "Example Spirit 40% ABV" to "UPC 080686032069 | 700 mL\nAlcohol Grade: 140%",
+        )) {
+            val result = labeledBottleSpecifications(page(body, title))!!.suggestions
+            assertTrue(title, result.facts.none { it.field == BottleFactField.ABV_PERCENT })
+            assertTrue(BottleFactField.ABV_PERCENT in result.unresolvedFields)
+            assertTrue(result.fieldRejections.any { it.field == BottleFactField.ABV_PERCENT })
+        }
+        for (source in listOf(
+            "Example Spirit 50% ABV\nAlcohol Grade: 40%",
+            "The strength is 50% ABV.\nAlcohol Grade: 40%",
+            "The strength is 140% ABV.\nAlcohol Grade: 40%",
+            "Alcohol Grade: 140%\nThe strength is 40% ABV.",
+        )) assertTrue(source, BottleFactField.ABV_PERCENT in unresolvedBottleSourceFields(source))
+        assertFalse(BottleFactField.ABV_PERCENT in unresolvedBottleSourceFields("Example Spirit 40% ABV\nAlcohol Grade: 40.00%"))
+    }
+
+    @Test fun scannedBindingRequiresWholeIdentifierValueNotSkuSubstring() {
+        val code = "080686032069"
+        for (sku in listOf("X$code", "${code}X", "SKU-$code")) {
+            val page = page("Bottles available in: 700 mL\nProduct Code: $sku")
+            assertNull(sku, labeledBottleSpecifications(page, code))
+            // Manual page extraction may use the size, but must not claim scanned identity.
+            val manual = labeledBottleSpecifications(page)!!.suggestions
+            assertEquals("700 mL", manual.facts.single().value)
+            assertNull(manual.targetBarcode)
+        }
+        val numeric = labeledBottleSpecifications(page("Bottles available in: 700 mL\nProduct Code: $code"), code)!!.suggestions
+        assertEquals(code, numeric.targetBarcode)
+        assertEquals("700 mL", numeric.facts.single().value)
+        assertNull(labeledBottleSpecifications(page("Bottles available in: 700 mL\nProduct Code: SKU123", "Example UPC $code"), code))
+    }
+
+    @Test fun malformedCombinedRowsCannotDowngradeToColonRows() {
+        for (prefix in listOf("UPC ", "UPC: ", "EAN: ", "barcode: ")) {
+            for (tail in listOf("080686032069 | 700 mL | Other Spirit", "123 | 700 mL", "080686032069 |", "080686032069 | 700 mL |")) {
+                val page = page("$prefix$tail\nABV: 27.5%")
+                assertNull(prefix + tail, labeledBottleSpecifications(page))
+                assertNull(prefix + tail, labeledBottleSpecifications(page, "080686032069"))
+            }
+        }
+        assertEquals("700 mL", labeledBottleSpecifications(page("UPC: 080686032069 | 700 mL\nABV: 27.5%"))!!
+            .suggestions.facts.single { it.field == BottleFactField.QUANTITY }.value)
+    }
+
     @Test fun extendedRecordsRejectAmbiguousIdentityPackagesAndUnknownRows() {
         for (body in listOf(
             "UPC 080686032069 | 700 mL\nUPC: 080686032069\nABV: 27.5%",

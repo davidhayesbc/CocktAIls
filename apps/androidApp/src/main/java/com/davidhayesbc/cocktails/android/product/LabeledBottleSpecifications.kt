@@ -33,6 +33,9 @@ internal fun labeledBottleSpecifications(
             listOf(Triple(combined.groupValues[1].lowercase(Locale.ROOT), combined.groupValues[2], line),
                 Triple("size", combined.groupValues[3].trim(), line))
         } else {
+            // A combined-looking identifier row must satisfy the exact combined grammar.
+            // Do not reinterpret malformed/extra cells as the value of an ordinary colon row.
+            if ('|' in line && Regex("""(?i)^(?:UPC|EAN|GTIN|barcode)\b""").containsMatchIn(line)) return null
             val match = Regex("^([^:|]{1,40})\\s*:\\s*(.+)$").matchEntire(line) ?: return null
             val label = match.groupValues[1].trim().lowercase(Locale.ROOT)
             if (label in setOf("bottles available in", "alcohol grade")) extendedRecord = true
@@ -59,8 +62,13 @@ internal fun labeledBottleSpecifications(
         // A package suffix in the heading must agree too; do not retain ABV for an ambiguous package.
         if (BottleFactField.QUANTITY in unresolvedBottleSourceFields(text)) return null
     }
-    if (requiredBarcode != null && (rows.none { it.first in identityLabels } ||
-            scannedBarcodePageDecision(requiredBarcode, text) != ScannedBarcodePageDecision.VERIFIED)) return null
+    if (requiredBarcode != null) {
+        val expectedCode = normalizeGtinForLookup(requiredBarcode) ?: return null
+        val identifier = rows.singleOrNull { it.first in identityLabels } ?: return null
+        // A title, SKU suffix, or unrelated row cannot supply the scanned identifier.
+        if (normalizeGtinForLookup(identifier.second) != expectedCode ||
+            scannedBarcodePageDecision(requiredBarcode, text) != ScannedBarcodePageDecision.VERIFIED) return null
+    }
     val facts = mutableListOf<BottleFactEvidence>()
     val rejected = mutableListOf<BottleFactRejection>()
     fun collect(field: BottleFactField, labels: Set<String>, parse: (String) -> Pair<String, BigDecimal>?) {
