@@ -93,6 +93,7 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
     providers.gradleProperty("bottleEvalLlamaCppCommit").orNull?.let { systemProperty("bottle.eval.local.llama.commit", it) }
     providers.gradleProperty("bottleEvalExportJobs").orNull?.let { systemProperty("bottle.eval.export.jobs", it) }
     providers.gradleProperty("bottleEvalExportSplit").orNull?.let { systemProperty("bottle.eval.export.split", it) }
+    providers.gradleProperty("bottleEvalHostModelDescriptor").orNull?.let { systemProperty("bottle.eval.host.model.descriptor", it) }
     providers.gradleProperty("bottleEvalPromptVersion").orNull?.let { systemProperty("bottle.eval.prompt.version", it) }
     providers.gradleProperty("bottleEvalImportJobs").orNull?.let { systemProperty("bottle.eval.import.jobs", it) }
     providers.gradleProperty("bottleEvalImportResults").orNull?.let { systemProperty("bottle.eval.import.results", it) }

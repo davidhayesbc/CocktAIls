@@ -27,8 +27,8 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def read_config() -> dict:
-    config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+def read_config(path: Path = CONFIG_PATH) -> dict:
+    config = json.loads(path.read_text(encoding="utf-8"))
     if config.get("format") != "com.davidhayesbc.cocktails.bottle-evaluation-local-runtime" or config.get("schemaVersion") != 1:
         raise ValueError("Unsupported local runtime configuration")
     return config
@@ -238,6 +238,7 @@ def build_server_command(binary: Path, model: Path, port: int, config: dict) -> 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=CONFIG_PATH, help="Frozen exported runtime configuration for this model; default remains Android baseline")
     parser.add_argument("--jobs", type=Path, required=True, help="Prompt jobs exported by the Android JVM harness")
     parser.add_argument("--model", type=Path, required=True, help="Existing pinned Qwen GGUF; never downloaded here")
     parser.add_argument("--llama-server", type=Path, required=True, help="Existing pinned CUDA llama-server executable")
@@ -246,7 +247,7 @@ def main() -> int:
     args = parser.parse_args()
     process = None
     try:
-        config = read_config()
+        config = read_config(args.config.expanduser().resolve())
         if not 1024 <= args.port <= 65535:
             raise ValueError("Port must be between 1024 and 65535")
         jobs, job_sha = load_jobs(args.jobs.expanduser().resolve(), config)

@@ -39,6 +39,29 @@ import org.junit.Test
  */
 class BottleLookupEvaluationHarnessTest {
     @Test
+    fun hostModelOverrideCannotChangeRuntimeOrSamplingContract() {
+        val original = readLocalRuntimeConfig()
+        val model = original.getValue("model").jsonObject
+        val changed = JsonObject(model + mapOf(
+            "filename" to JsonPrimitive("Qwen3-1.7B-Q8_0.gguf"),
+            "repository" to JsonPrimitive("Qwen/Qwen3-1.7B-GGUF"),
+            "download" to JsonPrimitive("https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q8_0.gguf"),
+            "sha256" to JsonPrimitive("a".repeat(64)), "bytes" to JsonPrimitive(1234),
+        ))
+        val result = withHostEvaluationModel(original, changed)
+        assertEquals(original - setOf("model", "androidBaseline"), result - setOf("model", "androidBaseline"))
+        assertEquals(original.getValue("androidBaseline").jsonObject - "modelLabel",
+            result.getValue("androidBaseline").jsonObject - "modelLabel")
+        assertEquals("Qwen3-1.7B-Q8_0", result.getValue("androidBaseline").jsonObject.requiredString("modelLabel"))
+        assertThrows(IllegalArgumentException::class.java) {
+            withHostEvaluationModel(original, JsonObject(changed + ("temperature" to JsonPrimitive(0.9))))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            withHostEvaluationModel(original, JsonObject(changed + ("sha256" to JsonPrimitive("unverified"))))
+        }
+    }
+
+    @Test
     fun portableJobsContainProductionInputsButNoExpectedLabels() {
         val config = readLocalRuntimeConfig()
         val prompt = buildPortablePromptJobs("dataset-v1", "split-v1", config,
@@ -855,12 +878,33 @@ private fun readLocalRuntimeConfig(promptVersion: String? = null): JsonObject {
     ).jsonObject
     if (promptVersion == null) return config
     val baseline = config.getValue("androidBaseline").jsonObject + ("promptVersion" to JsonPrimitive(promptVersion))
-    return JsonObject(config + ("androidBaseline" to JsonObject(baseline)))
+    val versioned = JsonObject(config + ("androidBaseline" to JsonObject(baseline)))
+    val descriptorPath = System.getProperty("bottle.eval.host.model.descriptor")?.takeIf(String::isNotBlank)
+        ?: return versioned
+    val descriptorFile = File(descriptorPath)
+    require(descriptorFile.length() in 1..16_384) { "Invalid host model descriptor size" }
+    val descriptor = Json.parseToJsonElement(descriptorFile.readText(Charsets.UTF_8)).jsonObject
+    return withHostEvaluationModel(versioned, descriptor)
+}
+
+/** Evaluation-only model identity override; sampling/template/runtime settings cannot be overridden. */
+private fun withHostEvaluationModel(config: JsonObject, descriptor: JsonObject): JsonObject {
+    require(descriptor.keys == config.getValue("model").jsonObject.keys) { "Host model descriptor contains unexpected settings" }
+    require(descriptor.requiredString("sha256").matches(Regex("[a-f0-9]{64}")))
+    require((descriptor.long("bytes") ?: 0L) > 0L)
+    val filename = descriptor.requiredString("filename")
+    require(filename.matches(Regex("Qwen3-[0-9]+(?:\\.[0-9]+)?B-Q8_0\\.gguf")))
+    val repository = descriptor.requiredString("repository")
+    require(repository == "Qwen/" + filename.substringBefore("-Q8_0") + "-GGUF")
+    require(descriptor.requiredString("download") == "https://huggingface.co/$repository/resolve/main/$filename")
+    val baseline = config.getValue("androidBaseline").jsonObject + ("modelLabel" to JsonPrimitive(filename.removeSuffix(".gguf")))
+    return JsonObject(config + mapOf("model" to descriptor, "androidBaseline" to JsonObject(baseline)))
 }
 
 private fun promptConfigurationForVersion(version: String, maxOutputTokens: Int): LocalBottleExtractionPromptConfiguration {
     val systemPrompt = when (version) {
         DEFAULT_LOCAL_PROMPT_VERSION -> LocalBottleExtractionPromptConfiguration.DEFAULT.systemPrompt
+        LINE_ID_PROMPT_VERSION -> LocalBottleExtractionPromptConfiguration.SOURCE_LINES.systemPrompt
         "bottle-facts-v1" -> BottleLookupEvaluationHarnessTest::class.java
             .getResourceAsStream("/bottle-evaluation/v1/prompts/bottle-facts-v1.txt")
             ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
@@ -1258,8 +1302,8 @@ private suspend fun importHostInferenceResults(dataset: EvalDataset, jobsFile: F
     }
     return ImportedHostEvaluation(
         EvalVariant(
-            id = "qwen3-0.6b-q8_0-imported-host-result",
-            modelId = LOCAL_MODEL_LABEL,
+            id = baseline.requiredString("modelLabel").lowercase(Locale.ROOT) + "-imported-host-result",
+            modelId = baseline.requiredString("modelLabel"),
             quantization = "Q8_0",
             runtime = results.requiredString("runtimeVersion"),
             promptVersion = baseline.requiredString("promptVersion"),

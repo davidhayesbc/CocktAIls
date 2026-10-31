@@ -180,7 +180,8 @@ no longer needed.
 The versioned dataset has 18 reviewed product labels grouped by product family and a frozen
 development/holdout split. Seven cases now have a frozen, manually selected short product-detail
 excerpt from a successful public HTTP response: three development products and four holdout
-products. The excerpt is the complete model input fixture, not a full-page snapshot. These cases
+products. All seven real excerpts have now been consumed by development or evaluation; all future
+runs on them are regression evidence, regardless of the retained split name. The excerpt is the complete model input fixture, not a full-page snapshot. These cases
 measure extraction from that selected source text; they do not measure search, result ranking, or
 full-page source selection. Eleven other cases remain without a usable frozen source input and are
 not scored. Giffard's manufacturer page states a non-alcoholic grade but contains no numeric ABV and
@@ -266,3 +267,40 @@ The existing importer verified unchanged task/prompt/source/config hashes before
 inference ran for this parser repair. Exact desktop outputs are retained only in private local
 regression inputs, not committed. These are reused development observations on three selected
 excerpts, not fresh holdout results, retrieval coverage, phone performance or a release gate.
+
+
+### Opt-in source-line evidence experiment
+
+`bottle-facts-v3-line-id-experiment` is an opt-in local extraction contract; the application default
+remains `bottle-facts-v2-dev-candidate`. The existing prompt contains a literal placeholder quote
+that appeared verbatim in rejected model outputs. The experiment instead numbers the bounded,
+barcode-redacted source lines and requests a line ID in the existing `evidence` string field.
+The app resolves that ID to the exact source line before applying the unchanged evidence/value,
+unit, conflict, product identity and brand checks. Unknown IDs, copied quote text and empty or
+oversized evidence fail validation. This prevents the model from inventing accepted evidence
+text; it does not prevent wrong line selection or invented values, which still require validation.
+The JSON grammar and inference budget are unchanged.
+
+Synthetic tests exercise reference validation, literal values/units, unrelated percentages,
+wrong-product passages, explicit brand labels and unsupported product/site-title fragments.
+Structured metadata currently retains barcode/name pairs only; it does not establish brand
+provenance. Site names and title suffixes remain insufficient brand evidence. Do not relax this
+rule or change reviewed gold to improve the experiment's score.
+
+Export paired jobs with the default version and `-PbottleEvalPromptVersion=bottle-facts-v3-line-id-experiment`.
+Use the exported configuration for each variant. Every task/source/config hash must match any reused
+result; default-version responses cannot stand in for the new line-ID requests. No model-quality
+improvement is established by the synthetic parser tests. All seven real excerpts remain consumed
+regression data, and this experiment is not a release gate.
+
+
+For a controlled desktop model-size comparison, freeze the same line-ID tasks for both models.
+`-PbottleEvalHostModelDescriptor=/private/path/model.json` accepts only the verified model descriptor
+fields (`repository`, `filename`, `bytes`, `sha256`, `download`) and updates its reporting label.
+It cannot override the template, grammar, sampling, token budget, runtime or Android app default.
+Use this same descriptor for export and offline import. The descriptor supports official Qwen3
+Q8_0 GGUF artifacts; the runner verifies the actual file size and SHA before inference. Never invent
+artifact metadata. Different model configs/job-file hashes are expected, but every task and source
+hash must remain identical. The runner accepts `--config /private/path/exported-config.json` so each
+job can use its matching frozen config without editing the pinned Android baseline file. Report
+model identity accurately and keep desktop memory/latency separate from device measurements.
