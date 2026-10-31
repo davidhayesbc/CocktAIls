@@ -503,6 +503,9 @@ private fun structuredProductNameFallback(
         provider = "Structured product data",
         model = "Product metadata",
         sourceUrl = page.sourceUrl,
+        fieldRejections = unresolvedBottleSourceFields(page.markdown).map {
+            BottleFactRejection(it, BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES)
+        },
         facts = listOf(BottleFactEvidence(BottleFactField.PRODUCT_NAME, identity.productName, identity.evidence)),
         unresolvedFields = setOf(BottleFactField.BRAND, BottleFactField.QUANTITY, BottleFactField.ABV_PERCENT),
         targetBarcode = barcode,

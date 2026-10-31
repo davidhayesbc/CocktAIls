@@ -541,8 +541,12 @@ internal fun parseBottleFactCandidate(
             fieldRejections.toList(),
         )
     }
+    val sourceConflicts = unresolvedBottleSourceFields(sourceText)
+    fieldRejections += sourceConflicts.map {
+        BottleFactRejection(it, BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES)
+    }
     val rejectedFields = fieldRejections.map(BottleFactRejection::field).toSet()
-    val unresolvedFields = (unresolvedBottleSourceFields(sourceText) + rejectedFields).toMutableSet()
+    val unresolvedFields = rejectedFields.toMutableSet()
     var candidateFacts = acceptedUniqueFacts
     var identityEvidence: String? = null
     if (requiredBarcode != null) {

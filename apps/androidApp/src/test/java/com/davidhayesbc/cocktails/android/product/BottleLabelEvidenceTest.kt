@@ -107,6 +107,51 @@ class BottleLabelEvidenceTest {
             assertTrue(conflict in merged.fieldRejections)
         }
     }
+    @Test fun namedProductModelSourceConflictSurvivesPersistenceAndLabelMerge() = runBlocking {
+        val quote = "Acme Gin 750 mL 40% ABV"
+        val source = "Acme Gin\nUPC $code · $quote\nAcme Gin 45% ABV"
+        val modelJson = """{"facts":[{"field":"product_name","value":"Acme Gin","evidence":"Acme Gin"},{"field":"quantity","value":"750 mL","evidence":"$quote"},{"field":"abv_percent","value":"40%","evidence":"$quote"}]}"""
+        val result = LocalBottleDetailExtractor({ "fixture.gguf" }, LocalInferenceRunner { _, _, _, _ -> modelJson })
+            .extract(WebPageText("Acme Gin", "https://shop.example/item", source, "Fixture"), LOCAL_MODEL_LABEL, code)
+            as BottleDetailExtractionResult.Found
+        assertEquals("On-device Qwen3", result.suggestions.provider)
+        assertEquals(BottleExtractionMethod.MODEL, result.suggestions.extractionMethod)
+        assertEquals(setOf(BottleFactField.PRODUCT_NAME, BottleFactField.QUANTITY), result.suggestions.facts.map { it.field }.toSet())
+        val memory = object : PendingBottleEvidenceStorage {
+            var value: String? = null
+            override fun read(draftId: String) = value
+            override fun write(draftId: String, value: String): Boolean { this.value = value; return true }
+            override fun remove(draftId: String): Boolean { value = null; return true }
+        }
+        assertTrue(PendingBottleEvidenceStore(memory).save(draft.id, result.suggestions))
+        val restored = PendingBottleEvidenceStore(memory).read(draft.id)!!
+        val merged = mergeLabelAndWebEvidence(restored, label("750 mL\n40% ALC/VOL"), draft)!!
+        assertFalse(merged.facts.any { it.field == BottleFactField.ABV_PERCENT })
+        assertTrue(BottleFactField.ABV_PERCENT in merged.unresolvedFields)
+        val conflict = BottleFactRejection(BottleFactField.ABV_PERCENT, BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES)
+        assertTrue(conflict in result.suggestions.fieldRejections)
+        assertTrue(conflict in restored.fieldRejections)
+        assertTrue(conflict in merged.fieldRejections)
+    }
+    @Test fun structuredNameFallbackPreservesSourceConflictsWithoutModelParsing() = runBlocking {
+        val page = WebPageText("Acme Gin", "https://shop.example/item", "Acme Gin\n40% ABV\n45% ABV", "Fixture",
+            listOf(StructuredBottleIdentity(code, "Acme Gin", "UPC $code · Acme Gin")))
+        val result = LocalBottleDetailExtractor({ null }, LocalInferenceRunner { _, _, _, _ -> error("No model configured") })
+            .extract(page, LOCAL_MODEL_LABEL, code) as BottleDetailExtractionResult.Found
+        assertEquals("Structured product data", result.suggestions.provider)
+        val memory = object : PendingBottleEvidenceStorage {
+            var value: String? = null
+            override fun read(draftId: String) = value
+            override fun write(draftId: String, value: String): Boolean { this.value = value; return true }
+            override fun remove(draftId: String): Boolean { value = null; return true }
+        }
+        assertTrue(PendingBottleEvidenceStore(memory).save(draft.id, result.suggestions))
+        val restored = PendingBottleEvidenceStore(memory).read(draft.id)!!
+        val merged = mergeLabelAndWebEvidence(restored, label("750 mL\n40% ALC/VOL"), draft)!!
+        assertFalse(merged.facts.any { it.field == BottleFactField.ABV_PERCENT })
+        assertTrue(BottleFactField.ABV_PERCENT in merged.unresolvedFields)
+        assertTrue(BottleFactRejection(BottleFactField.ABV_PERCENT, BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES) in merged.fieldRejections)
+    }
     @Test fun independentFieldsDoNotInferBrandFromProductTitleAfterAnotherLine() = runBlocking {
         val result = LocalBottleDetailExtractor({ "fixture.gguf" }, LocalInferenceRunner { _, _, _, _ ->
             """{"facts":[{"field":"product_name","value":"Acme Gin","evidence":"Acme Gin"},{"field":"brand","value":"Acme","evidence":"Acme Gin"}]}"""
