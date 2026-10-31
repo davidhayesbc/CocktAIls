@@ -28,12 +28,13 @@ import java.nio.file.Files
 class LocalBottleDetailExtractorTest {
     @Test
     fun labeledFallbackNeverAttachesAnotherVariantScalarsToStructuredIdentity() = runBlocking {
-        for (matched in listOf(false, true)) {
+        for (matched in listOf(false, true)) for (combined in listOf(false, true)) {
             val name = "Polar River London Dry Gin"
             val title = if (matched) name else "Polar River London Sweet Gin"
             val barcode = "080686032069"
+            val record = if (combined) "UPC $barcode | 750 mL" else "UPC: $barcode\nSize: 750 mL"
             val page = WebPageText(title, "https://example.org/product",
-                "$title\nUPC: $barcode\nSize: 750 mL\nABV: 40%", "Fixture",
+                "$title\n$record\nABV: 40%", "Fixture",
                 structuredBottleIdentities = listOf(StructuredBottleIdentity(barcode, name, "UPC $barcode; $name")))
             assertTrue(resolveStructuredBottleIdentityForPage(barcode, page).identity != null)
             assertEquals(matched, structuredProductNamesAgree(title, name))

@@ -41,10 +41,24 @@ class BottleScalarNormalizationTest {
         assertTrue(BottleFactField.QUANTITY in conflicting.suggestions.unresolvedFields)
     }
 
+    @Test fun modelAndDeterministicQuantityRangesAgreeWithoutClamping() {
+        for (value in listOf("0 mL", "0.01 mL", "20.01 L", "9999 L")) {
+            assertTrue(value, parse("quantity", value, "Size: $value") is BottleDetailExtractionResult.Rejected)
+            val result = labeledBottleSpecifications(WebPageText("Example", "https://example.org/item", "Example\nSize: $value", "Test"))
+            assertTrue(result?.suggestions?.facts.orEmpty().isEmpty())
+        }
+        for (value in listOf("1 mL", "0.01 L", "20 L")) {
+            val model = (parse("quantity", value, "Size: $value") as BottleDetailExtractionResult.Found).suggestions.facts.single()
+            val deterministic = labeledBottleSpecifications(WebPageText("Example", "https://example.org/item", "Example\nSize: $value", "Test"))!!.suggestions.facts.single()
+            assertEquals(value, model.value)
+            assertEquals(model.value, deterministic.value)
+        }
+    }
+
     @Test fun fallbackRecordEligibilityRemainsConservative() {
         for (body in listOf(
-            "UPC 080686032069 | 700 mL\nAlcohol: 27.5%",
-            "Alcohol Grade: Non-Alcoholic\nBottles available in: 1 L\nProduct Code: A123",
+            "UPC 080686032069 | 700 mL | Other product\nAlcohol: 27.5%",
+            "Alcohol Grade: Non-Alcoholic\nBottles available in: 1 L\nUnknown: A123",
             "Bottles available in: 700 mL, 1 L",
             "Other bottle\nSize: 700 mL\nABV: 27.5%",
         )) assertNull(labeledBottleSpecifications(WebPageText("Example", "https://example.org/item", "Example\n$body", "Test")))

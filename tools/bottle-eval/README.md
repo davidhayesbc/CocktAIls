@@ -319,15 +319,23 @@ or `L`. Units are preserved rather than converted. This happens after evidence,
 ambiguity, and identity validation; evidence quotes and rejection rules are unchanged.
 Normalization cannot supply a missing scalar or turn an unverified claim into a fact.
 
-The deterministic fallback still requires a matching title followed exclusively by
-recognized colon-labeled rows. A combined `UPC … | size` row rejects the whole record,
-including other valid rows. Unknown labels such as `Alcohol Grade` or `Bottles available
-in` also make a record ineligible. This is a deliberate completeness limitation.
-A future extension should parse a complete, single-product record with explicit identity
-and size cells, reject additional products and multiple package choices, and keep
-nonnumeric alcohol descriptions unresolved. It must not scan arbitrary nearby numbers.
-Such an extension changes requested model fields and requires newly exported matching
-jobs; old model outputs cannot be claimed to match those changed prompts.
+The deterministic fallback requires an exact matching title and a complete record of
+recognized rows. In addition to colon-labeled rows, it accepts exactly two cells of
+`UPC/EAN/GTIN/barcode <checksum-valid code> | <single size>`. The original line remains
+the evidence. `Bottles available in` is a size label, not permission to select one
+of several sizes. `Alcohol Grade` is an alcohol label, but a nonnumeric description
+remains unresolved; it never implies zero alcohol. A SKU is not barcode identity.
+
+Extended records reject duplicate identifiers, malformed codes, unknown rows, extra
+cells, additional product headings, invalid/multiple sizes, and conflicting title
+package sizes. Explicit scanned-barcode verification and structured product identity
+checks remain required. The model and deterministic paths both reject quantities
+outside 1–20,000 mL; units are preserved and out-of-range values are never clamped.
+
+The extension changes requested model fields. Export new matching jobs and run only
+changed tasks; retain original output for unchanged tasks only after checking exact
+source/task/config/model hashes. Label the combined result as mixed reused/new
+consumed-regression evidence, never fresh holdout. Raw jobs/results stay private.
 
 Parser-only comparisons may reuse hash-matching original outputs, but must be labeled
 reused consumed-regression evidence. Keep original reports and reviewed labels intact.

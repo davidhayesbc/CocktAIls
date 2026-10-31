@@ -1,5 +1,6 @@
 package com.davidhayesbc.cocktails.android.product
 
+import com.davidhayesbc.cocktails.core.model.normalizeGtinForLookup
 import java.math.BigDecimal
 import java.util.Locale
 
@@ -20,17 +21,44 @@ internal fun labeledBottleSpecifications(
     val heading = lines.firstOrNull()?.removePrefix("# ")?.removePrefix("## ")?.removePrefix("### ") ?: return null
     if (!heading.equals(title, ignoreCase = true) || lines.size !in 2..30) return null
     if (Regex("(?i)\\b(?:related|similar|recommended|alternative|other products)\\b").containsMatchIn(heading)) return null
-    val rows = lines.drop(1).map { line ->
-        val match = Regex("^([^:|]{1,40})\\s*:\\s*(.+)$").matchEntire(line) ?: return null
-        Triple(match.groupValues[1].trim().lowercase(Locale.ROOT), match.groupValues[2].trim(), line)
+    var extendedRecord = false
+    val rows = lines.drop(1).flatMap { line ->
+        // Exactly two cells: a labeled, checksum-valid code and one explicit size.
+        // Preserve the original line as evidence for both cells.
+        val combined = Regex("""(?i)^(UPC|EAN|GTIN|barcode)\s*:?[ \t]*(\d{8,14})\s*\|\s*([^|]+)$""")
+            .matchEntire(line)
+        if (combined != null) {
+            if (normalizeGtinForLookup(combined.groupValues[2]) == null) return null
+            extendedRecord = true
+            listOf(Triple(combined.groupValues[1].lowercase(Locale.ROOT), combined.groupValues[2], line),
+                Triple("size", combined.groupValues[3].trim(), line))
+        } else {
+            val match = Regex("^([^:|]{1,40})\\s*:\\s*(.+)$").matchEntire(line) ?: return null
+            val label = match.groupValues[1].trim().lowercase(Locale.ROOT)
+            if (label in setOf("bottles available in", "alcohol grade")) extendedRecord = true
+            listOf(Triple(label, match.groupValues[2].trim(), line))
+        }
     }
-    val sizeLabels = setOf("size", "bottle size", "container size", "taille du contenant")
-    val abvLabels = setOf("abv", "alcohol", "alcohol content", "alcohol by volume", "teneur en alcool")
+    val sizeLabels = setOf("size", "bottle size", "container size", "taille du contenant", "bottles available in")
+    val abvLabels = setOf("abv", "alcohol", "alcohol content", "alcohol by volume", "teneur en alcool", "alcohol grade")
     val identityLabels = setOf("upc", "ean", "gtin", "barcode", "product code", "code de produit")
     val otherLabels = setOf("brand", "price", "deposit", "category", "availability")
     if (rows.any { it.first !in sizeLabels + abvLabels + identityLabels + otherLabels }) return null
     // Repeated product identifiers could denote variants even when the numerical facts agree.
     if (rows.count { it.first in identityLabels } > 1) return null
+    if (extendedRecord) {
+        // A SKU is a record identifier, never proof of a scanned barcode. Reject lists/prose.
+        if (rows.filter { it.first in identityLabels }.any { row ->
+                if (row.first in setOf("product code", "code de produit"))
+                    !Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,39}").matches(row.second)
+                else normalizeGtinForLookup(row.second) == null
+            }) return null
+        val sizes = rows.filter { it.first in sizeLabels }.map { parseLabeledBottleSize(it.second) }
+        if (sizes.any { it == null } || sizes.filterNotNull().map { it.second.stripTrailingZeros() }.distinct().size > 1)
+            return null
+        // A package suffix in the heading must agree too; do not retain ABV for an ambiguous package.
+        if (BottleFactField.QUANTITY in unresolvedBottleSourceFields(text)) return null
+    }
     if (requiredBarcode != null && (rows.none { it.first in identityLabels } ||
             scannedBarcodePageDecision(requiredBarcode, text) != ScannedBarcodePageDecision.VERIFIED)) return null
     val facts = mutableListOf<BottleFactEvidence>()
@@ -49,16 +77,7 @@ internal fun labeledBottleSpecifications(
         facts += BottleFactEvidence(field, parsed.first()!!.first, candidates.first().third,
             barcodeBoundProductCode = requiredBarcode, barcodeBoundProductName = heading)
     }
-    collect(BottleFactField.QUANTITY, sizeLabels) { value ->
-        val match = Regex("(?i)^(\\d{1,4}(?:[.,]\\d{1,2})?)\\s*(mL|L)$").matchEntire(value)
-        match?.let {
-            val amount = it.groupValues[1].replace(',', '.').toBigDecimal()
-            val unit = if (it.groupValues[2].equals("L", true)) "L" else "mL"
-            val ml = if (unit == "L") amount * BigDecimal(1000) else amount
-            if (ml < BigDecimal.ONE || ml > BigDecimal(20000)) null
-            else "${amount.stripTrailingZeros().toPlainString()} $unit" to ml
-        }
-    }
+    collect(BottleFactField.QUANTITY, sizeLabels, ::parseLabeledBottleSize)
     collect(BottleFactField.ABV_PERCENT, abvLabels) { value ->
         Regex("^(\\d{1,3}(?:[.,]\\d{1,2})?)\\s*%$").matchEntire(value)?.let {
             val amount = it.groupValues[1].replace(',', '.').toBigDecimal()
@@ -83,4 +102,13 @@ internal fun labeledBottleSpecifications(
         fieldRejections = rejected.distinct(),
         extractionMethod = BottleExtractionMethod.DETERMINISTIC_SOURCE_PARTIAL,
     ))
+}
+
+private fun parseLabeledBottleSize(value: String): Pair<String, BigDecimal>? {
+    val match = Regex("""(?i)^(\d{1,4}(?:[.,]\d{1,2})?)\s*(mL|L)$""").matchEntire(value) ?: return null
+    val amount = match.groupValues[1].replace(',', '.').toBigDecimal()
+    val unit = if (match.groupValues[2].equals("L", true)) "L" else "mL"
+    val ml = if (unit == "L") amount * BigDecimal(1000) else amount
+    if (ml < BigDecimal.ONE || ml > BigDecimal(20000)) return null
+    return "${amount.stripTrailingZeros().toPlainString()} $unit" to ml
 }

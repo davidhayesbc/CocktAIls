@@ -650,6 +650,8 @@ private fun isSupportedQuantityCandidate(value: String, quote: String): Boolean 
     val candidate = quantityPattern.matchEntire(normalizeFactSpacing(value)) ?: return false
     val candidateAmount = candidate.groupValues[1].replace(',', '.').toBigDecimalOrNull() ?: return false
     val candidateUnit = candidate.groupValues[2].lowercase(Locale.ROOT)
+    val milliliters = if (candidateUnit == "l") candidateAmount * java.math.BigDecimal(1000) else candidateAmount
+    if (milliliters < java.math.BigDecimal.ONE || milliliters > java.math.BigDecimal(20000)) return false
     return quantityPattern.findAll(quote).any { match ->
         val amount = match.groupValues[1].replace(',', '.').toBigDecimalOrNull() ?: return@any false
         amount.compareTo(candidateAmount) == 0 && match.groupValues[2].lowercase(Locale.ROOT) == candidateUnit
