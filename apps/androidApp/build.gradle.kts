@@ -70,6 +70,8 @@ dependencies {
     implementation(libs.zxing.core)
     implementation(libs.androidx.work.runtime)
     implementation("org.opencv:opencv:4.10.0")
+    // Bundled Latin OCR: usable offline on the first launch, without a model download.
+    implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation(compose.runtime)
     implementation(compose.foundation)
     implementation(compose.material3)

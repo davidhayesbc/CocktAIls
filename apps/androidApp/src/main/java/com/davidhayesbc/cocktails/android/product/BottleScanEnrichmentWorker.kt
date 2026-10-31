@@ -256,6 +256,9 @@ internal class BottleScanEnrichmentWorker(
                 report.setWorkerElapsedMillis(SystemClock.elapsedRealtime() - workerStartedElapsed)
                 return@withContext Result.success()
             }
+            repositories.repository.openBottleIntakeSession()?.drafts?.firstOrNull { it.id == draftId }?.let { latest ->
+                BottleLabelOcrScheduler.enqueue(applicationContext, latest, attemptToken)
+            }
             detailedCapture?.finish(if (finalStatus == BottleEnrichmentStatus.READY_FOR_REVIEW) "COMPLETE" else "FAILED")
             Result.success()
         } finally {

@@ -33,6 +33,7 @@ internal data class BottleFactEvidence(
     val barcodeBoundProductName: String? = null,
     /** Retain explicit packaging for identity/conflict checks after display-name normalization. */
     val originalProductName: String? = null,
+    val fromLabelPhoto: Boolean = false,
 )
 
 internal enum class BottleExtractionMethod {

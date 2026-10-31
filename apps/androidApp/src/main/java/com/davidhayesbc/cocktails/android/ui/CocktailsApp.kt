@@ -1,5 +1,11 @@
 package com.davidhayesbc.cocktails.android.ui
 
+import com.davidhayesbc.cocktails.android.product.BottleExtractionRejectionReason
+import com.davidhayesbc.cocktails.android.product.BottleLabelEvidence
+import com.davidhayesbc.cocktails.android.product.BottleLabelEvidenceStore
+import com.davidhayesbc.cocktails.android.product.BottleLabelOcrScheduler
+import com.davidhayesbc.cocktails.android.product.belongsTo
+import com.davidhayesbc.cocktails.android.product.mergeLabelAndWebEvidence
 import android.Manifest
 import android.content.pm.PackageManager
 import android.content.pm.ApplicationInfo
@@ -83,6 +89,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
@@ -360,6 +368,7 @@ internal data class BottleWebSearchState(
     val userEditedFields: Set<BottleDraftField> = emptySet(),
     val automaticStage: String? = null,
     val barcodeVerifiedInPage: Boolean = false,
+    val labelEvidenceVerified: Boolean = false,
     val barcodeVerifiedByStructuredProduct: Boolean = false,
     val message: String? = null,
 )
@@ -451,6 +460,8 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
     val pendingBottleEvidenceStore = remember(context) {
         PendingBottleEvidenceStore(SharedPreferencesPendingBottleEvidenceStorage(context))
     }
+    val labelEvidenceStore = remember(context) { BottleLabelEvidenceStore.forContext(context) }
+    var labelEvidence by remember { mutableStateOf<Map<String, BottleLabelEvidence>>(emptyMap()) }
     val detailedLookupCaptureStore = remember(context) {
         DetailedBottleLookupDebugSessionStore(context.noBackupFilesDir, shareCacheDirectory = context.cacheDir)
     }
@@ -534,6 +545,9 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
 
     fun refreshPendingBottleEnrichmentJobs() {
         pendingBottleEnrichmentJobs = bottleEnrichmentQueue.jobs().associateBy { it.draftId }
+        labelEvidence = repository.openBottleIntakeSession()?.drafts.orEmpty().mapNotNull { draft ->
+            labelEvidenceStore.read(draft)?.let { draft.id to it }
+        }.toMap()
     }
 
     LaunchedEffect(bottleEnrichmentQueue, context) {
@@ -630,32 +644,38 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
     var bottleIntakeRoute by remember(repository) {
         mutableStateOf(if (repository.openBottleIntakeSession() == null) BottleIntakeRoute.SETUP else BottleIntakeRoute.SCANNING)
     }
-    LaunchedEffect(showBottleIntake, bottleIntakeSession?.id, bottleIntakeSession?.drafts?.size, pendingBottleEnrichmentJobs) {
+    LaunchedEffect(showBottleIntake, bottleIntakeSession?.id, bottleIntakeSession?.drafts, pendingBottleEnrichmentJobs, labelEvidence) {
         val session = bottleIntakeSession
         if (showBottleIntake && session != null) {
             val restored = bottleWebSearchStates.toMutableMap()
             session.drafts.forEach { draft ->
-                val draftBarcode = draft.barcode ?: return@forEach
+                val draftBarcode = draft.barcode
                 val prior = restored[draft.id]
                 val job = pendingBottleEnrichmentJobs[draft.id]
                 val savedSuggestions = pendingBottleEvidenceStore.read(draft.id)?.takeIf { saved ->
                     (job == null || job.status == BottleEnrichmentStatus.READY_FOR_REVIEW || job.status == BottleEnrichmentStatus.REVIEWED) &&
-                    saved.targetBarcode?.let { normalizeGtinForLookup(it) } == normalizeGtinForLookup(draftBarcode) &&
-                        saved.identityEvidence?.let { sourceMentionsScannedBarcode(draftBarcode, it) } == true
+                    saved.targetBarcode?.let { normalizeGtinForLookup(it) } == draftBarcode?.let(::normalizeGtinForLookup) &&
+                        draftBarcode != null && saved.identityEvidence?.let { sourceMentionsScannedBarcode(draftBarcode, it) } == true
                 }
-                if (job != null || savedSuggestions != null || prior?.automatedScan == true) {
+                val label = labelEvidence[draft.id]?.takeIf { it.belongsTo(draft) }
+                val web = savedSuggestions ?: prior?.extractedSuggestions?.takeIf { previous -> previous.facts.none { it.fromLabelPhoto } }
+                val combined = mergeLabelAndWebEvidence(web, label, draft)
+                if (job != null || combined != null || prior?.automatedScan == true) {
                     restored[draft.id] = (prior ?: BottleWebSearchState()).copy(
                         automatedScan = true,
                         userEditedFields = preserveEditedBottleFields(
                             prior?.userEditedFields.orEmpty(),
                             pendingBottleEvidenceStore.editedFields(draft.id),
                         ),
-                        localMatch = repository.localProductForBarcode(draftBarcode) != null,
+                        localMatch = draftBarcode?.let { repository.localProductForBarcode(it) } != null,
+                        labelEvidenceVerified = label != null,
                         barcodeVerifiedInPage = savedSuggestions?.targetBarcode != null || prior?.barcodeVerifiedInPage == true,
                         barcodeVerifiedByStructuredProduct = savedSuggestions?.identityEvidence?.startsWith("Structured product fields:") == true || prior?.barcodeVerifiedByStructuredProduct == true,
                         page = savedSuggestions?.let { WebPageText("Verified source", it.sourceUrl, "", it.provider) } ?: prior?.page,
-                        extractedSuggestions = savedSuggestions ?: prior?.extractedSuggestions,
+                        extractedSuggestions = combined,
                         message = when {
+                            label != null && label.facts.isEmpty() -> "No supported fields were read from this label. Check the photo and enter details manually, or reprocess a clearer photo."
+                            label != null -> "Label text was read on this device. Check each suggestion against the photo; conflicting fields need manual review."
                             savedSuggestions != null -> "Restored the verified source and suggestions for this unaccepted bottle. Review them; no provider request restarted."
                             job?.labelCaptureRequired == true -> "Capture this bottle's label or skip the photo. Lookup runs separately while you do that."
                             job?.status == BottleEnrichmentStatus.CAPTURE_REQUIRED -> "Capture this bottle's label or skip the photo before lookup is queued."
@@ -674,6 +694,12 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
     }
 
     LaunchedEffect(showBottleIntake, bottleIntakeSession?.id) {
+        if (showBottleIntake) bottleIntakeSession?.drafts.orEmpty().forEach { draft ->
+            val job = bottleEnrichmentQueue.status(draft.id)
+            if (labelEvidenceStore.read(draft) == null && job?.status !in setOf(
+                    BottleEnrichmentStatus.PAUSED, BottleEnrichmentStatus.CANCELLED, BottleEnrichmentStatus.REVIEWED,
+                )) BottleLabelOcrScheduler.enqueue(context, draft, job?.attemptToken)
+        }
         while (showBottleIntake && bottleIntakeSession != null) {
             delay(750)
             refreshPendingBottleEnrichmentJobs()
@@ -1281,6 +1307,7 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
             return
         }
         LocalDiagnostics.clearBottleLookupForDraft(draft.id)
+        BottleLabelOcrScheduler.enqueue(context, draft, queued.attemptToken)
         val previous = bottleWebSearchStates[draft.id] ?: BottleWebSearchState(automatedScan = true)
         val resetState = if (reprocess) BottleWebSearchState(userEditedFields = previous.userEditedFields) else previous
         val scheduled = BottleEnrichmentWorkScheduler.enqueue(
@@ -1351,6 +1378,9 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
         }
         bottleIntakeSession = repository.openBottleIntakeSession()
         refreshPendingBottleEnrichmentJobs()
+        bottleIntakeSession?.drafts?.firstOrNull { it.id == draftId }?.let { saved ->
+            if (photoWasSaved) BottleLabelOcrScheduler.enqueue(context, saved, bottleEnrichmentQueue.status(draftId)?.attemptToken)
+        }
         val lookupState = bottleEnrichmentQueue.status(draftId)?.status
         val lookupMessage = when (lookupState) {
             BottleEnrichmentStatus.RUNNING -> "Lookup is continuing while you scan."
@@ -2145,6 +2175,9 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                             File(File(context.cacheDir, "intake-labels"), "intake-label-capture.jpg").delete()
                             bottleLabelCaptureMessage = null
                             bottleIntakeSession = repository.openBottleIntakeSession()
+                            bottleIntakeSession?.drafts?.firstOrNull { it.id == draft.id }?.let { saved ->
+                                BottleLabelOcrScheduler.enqueue(context, saved, bottleEnrichmentQueue.status(saved.id)?.attemptToken)
+                            }
                         } else {
                             bottleLabelCaptureMessage = "The label photo could not be attached. It is still available here; try again or discard it."
                         }
@@ -2185,6 +2218,7 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                         when (val result = repository.acceptBottleIntakeDraft(draft.sessionId, draftId, System.currentTimeMillis(), sources)) {
                             is BottleIntakeCommitResult.Accepted, is BottleIntakeCommitResult.AlreadyAccepted -> {
                                 bottleEnrichmentQueue.finish(draftId, BottleEnrichmentStatus.REVIEWED, "USER_ACCEPTED", System.currentTimeMillis())
+                                labelEvidenceStore.remove(draftId)
                                 pendingBottleEvidenceStore.remove(draftId)
                                 bottleWebSearchStates = bottleWebSearchStates - draftId
                                 refreshPantry()
@@ -2228,12 +2262,16 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                         productName = productName,
                         photoJpeg = photo,
                     )
-                    if (created != null) bottleIntakeSession = repository.openBottleIntakeSession()
+                    if (created != null) {
+                        bottleIntakeSession = repository.openBottleIntakeSession()
+                        BottleLabelOcrScheduler.enqueue(context, created, null)
+                    }
                     created != null
                 },
                 onRemove = { draft ->
                     cancelBottleSourceSearch(draft.id)
                     bottleEnrichmentQueue.removeDraft(draft.id)
+                    labelEvidenceStore.remove(draft.id)
                     pendingBottleEvidenceStore.remove(draft.id)
                     bottleWebSearchStates = bottleWebSearchStates - draft.id
                     repository.removeBottleIntakeDraft(draft.sessionId, draft.id)
@@ -2289,6 +2327,7 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                             draft.correctedForBarcode(cleaned, edited),
                         )
                         if (saved) {
+                            labelEvidenceStore.remove(draftId)
                             pendingBottleEvidenceStore.remove(draftId)
                             edited.forEach { pendingBottleEvidenceStore.markEdited(draftId, it) }
                             LocalDiagnostics.clearBottleLookupForDraft(draftId)
@@ -2335,7 +2374,7 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                         when (result) {
                             is BottleIntakeCommitResult.Confirmed, is BottleIntakeCommitResult.AlreadyConfirmed -> {
                                 cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = false)
-                                bottleIntakeSession?.drafts?.forEach { pendingBottleEvidenceStore.remove(it.id) }
+                                bottleIntakeSession?.drafts?.forEach { labelEvidenceStore.remove(it.id); pendingBottleEvidenceStore.remove(it.id) }
                                 bottleWebSearchStates = emptyMap()
                                 refreshPantry()
                                 bottleIntakeSession = null
@@ -2355,7 +2394,7 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                 },
                 onCancel = {
                     cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = false)
-                    bottleIntakeSession?.drafts?.forEach { pendingBottleEvidenceStore.remove(it.id) }
+                    bottleIntakeSession?.drafts?.forEach { labelEvidenceStore.remove(it.id); pendingBottleEvidenceStore.remove(it.id) }
                     bottleWebSearchStates = emptyMap()
                     repository.cancelBottleIntakeSession(bottleIntakeSession!!.id)
                     clearPendingBottleCapture()
@@ -3949,10 +3988,11 @@ private fun BottleReviewCard(
         webSearchState.extractedSuggestions,
         webSearchState.automatedScan,
         webSearchState.barcodeVerifiedInPage,
+        webSearchState.labelEvidenceVerified,
         webSearchState.userEditedFields,
     ) {
         val suggestions = webSearchState.extractedSuggestions
-        if (webSearchState.automatedScan && webSearchState.barcodeVerifiedInPage && suggestions != null) {
+        if (webSearchState.automatedScan && (webSearchState.barcodeVerifiedInPage || webSearchState.labelEvidenceVerified) && suggestions != null) {
             val merged = mergeBottleSuggestionFields(
                 current = BottleDraftSuggestionFields(name, productName, brand, quantity, abvPercent),
                 suggestedName = suggestions.facts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }?.value?.trim().orEmpty(),
@@ -3989,6 +4029,10 @@ private fun BottleReviewCard(
 
     val labelPhoto = remember(draft.photoData) {
         draft.photoData?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
+    }
+    var inspectLabelPhoto by remember(draft.id, draft.photoSha256) { mutableStateOf(false) }
+    if (inspectLabelPhoto && labelPhoto != null) {
+        BottlePhotoPreview(labelPhoto, "${draft.ingredientName} label photo", onDismiss = { inspectLabelPhoto = false })
     }
     val nameField: @Composable () -> Unit = {
         OutlinedTextField(
@@ -4073,7 +4117,8 @@ private fun BottleReviewCard(
                             bitmap = labelPhoto,
                             contentDescription = "${draft.ingredientName} label photo",
                             contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize().testTag("review-label-photo-${draft.id}"),
+                            modifier = Modifier.fillMaxSize().testTag("review-label-photo-${draft.id}")
+                                .clickable(role = Role.Button, onClickLabel = "Enlarge label photo") { inspectLabelPhoto = true },
                         )
                     } else {
                         Text("Label photo\nnot captured", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -4086,6 +4131,13 @@ private fun BottleReviewCard(
             }
             nameValidationMessage?.let {
                 Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("bottle-intake-draft-error-${draft.position}"))
+            }
+            val conflictingFields = webSearchState.extractedSuggestions?.fieldRejections.orEmpty()
+                .filter { it.reason == BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES }.map { it.field }.distinct()
+            if (conflictingFields.isNotEmpty()) {
+                Text("Conflicting evidence: ${conflictingFields.joinToString { it.label }}. Existing entries were preserved; check the photo and source before accepting.",
+                    color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.testTag("bottle-evidence-conflict"))
             }
             if (draft.barcode != null || webSearchState.automatedScan) {
                 OutlinedTextField(
@@ -4274,13 +4326,13 @@ private fun BottleReviewCard(
                         }
                         webSearchState.extractedSuggestions?.let { suggestions ->
                             Text("Suggestions · ${suggestions.provider} · ${suggestions.model}", style = MaterialTheme.typography.titleSmall)
-                            Text(suggestions.sourceUrl, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                            if (suggestions.sourceUrl.isNotBlank()) Text(suggestions.sourceUrl, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                             suggestions.unresolvedFields.forEach { field ->
                                 Text("${field.label} is unclear in this source. No value was selected; check it manually.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                             }
                             suggestions.facts.forEach { fact ->
                                 Text("${fact.field.label}: ${fact.value}", style = MaterialTheme.typography.bodyMedium)
-                                Text("Evidence: “${fact.quote}”", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("${if (fact.fromLabelPhoto) "Label photo · on device" else "Web evidence"}: “${fact.quote}”", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 if (!webSearchState.automatedScan && canApplyManualSuggestions) {
                                     TextButton(
                                         onClick = {
@@ -4379,7 +4431,7 @@ private fun BottleDraftCard(
     var levelMenu by remember(draft.id) { mutableStateOf(false) }
     LaunchedEffect(draft.id, activeReview, webSearchState.extractedSuggestions, webSearchState.automatedScan, webSearchState.barcodeVerifiedInPage, webSearchState.userEditedFields) {
         val suggestions = webSearchState.extractedSuggestions
-        if (activeReview && webSearchState.automatedScan && webSearchState.barcodeVerifiedInPage && suggestions != null) {
+        if (activeReview && webSearchState.automatedScan && (webSearchState.barcodeVerifiedInPage || webSearchState.labelEvidenceVerified) && suggestions != null) {
             val suggestedName = suggestions.facts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }?.value?.trim().orEmpty()
             val suggestedBrand = suggestions.facts.firstOrNull { it.field == BottleFactField.BRAND }?.value?.trim().orEmpty()
             val merged = mergeBottleSuggestionFields(
@@ -4649,7 +4701,7 @@ private fun BottleDraftCard(
                     }
                     suggestions.facts.forEach { fact ->
                         Text("${fact.field.label}: ${fact.value}", style = MaterialTheme.typography.bodyMedium)
-                        Text("Evidence: “${fact.quote}”", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${if (fact.fromLabelPhoto) "Label photo · on device" else "Web evidence"}: “${fact.quote}”", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         when (fact.field) {
                             BottleFactField.PRODUCT_NAME -> if (!webSearchState.automatedScan) OutlinedButton(onClick = {
                                 val acceptedName = fact.value.trim()
@@ -4728,7 +4780,7 @@ private fun MyBarScreen(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(onClick = onAddBottles, modifier = Modifier.weight(1f).testTag("start-bottle-intake")) { Text("＋ Add bottles") }
-            OutlinedButton(onClick = onReviewQueue, enabled = draftCount > 0, modifier = Modifier.weight(1f).testTag("my-bar-review-queue")) { Text("Review queue · $draftCount") }
+            OutlinedButton(onClick = onReviewQueue, enabled = draftCount > 0, modifier = Modifier.weight(1f).testTag("my-bar-review-queue")) { Text("Review · $draftCount") }
         }
         if (pantry.isEmpty()) {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
@@ -5627,7 +5679,7 @@ private fun HouseholdScreen(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Text("Model weights: Qwen3-0.6B-GGUF · Apache-2.0. Native runtime: llama.cpp · MIT. This is text extraction only; no image recognition.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Model weights: Qwen3-0.6B-GGUF · Apache-2.0. Native runtime: llama.cpp · MIT. Qwen extracts text. Bundled ML Kit reads label photos on this device.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("When enabled, an exact-barcode-matched page is automatically processed by this phone's local model. Page text stays on-device. Output is not constrained JSON and is rejected unless exact source evidence passes validation.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Column(Modifier.weight(1f)) {

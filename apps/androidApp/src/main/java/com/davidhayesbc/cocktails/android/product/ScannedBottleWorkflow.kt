@@ -526,6 +526,8 @@ internal fun acceptedProductSourcesForBottle(
     ) return emptyList()
 
     return suggestions.facts.mapNotNull { fact ->
+        // Label quotes are private local photo evidence, never attributed to a web URL/exported.
+        if (fact.fromLabelPhoto) return@mapNotNull null
         val valueWasAccepted = when (fact.field) {
             BottleFactField.PRODUCT_NAME -> fact.value == draft.productName || fact.value == draft.ingredientName
             BottleFactField.BRAND -> fact.value == draft.brand

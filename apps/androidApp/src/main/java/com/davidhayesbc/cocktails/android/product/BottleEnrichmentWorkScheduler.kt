@@ -51,6 +51,7 @@ internal object BottleEnrichmentWorkScheduler {
 
     fun cancelDraft(context: Context, draftId: String) {
         if (draftId.matches(Regex("[A-Za-z0-9-]{1,100}"))) {
+            BottleLabelOcrScheduler.cancel(context, draftId)
             runCatching { WorkManager.getInstance(context.applicationContext).cancelUniqueWork(workName(draftId)) }
         }
     }
