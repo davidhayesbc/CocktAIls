@@ -216,6 +216,21 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
         nowMillis = nowMillis,
     )
 
+    /** Explicit fresh lookup: a repeated tap must never replace an in-flight attempt. */
+    fun reprocessIfIdle(
+        sessionId: String,
+        draftId: String,
+        nowMillis: Long,
+        enqueuedElapsedRealtimeMillis: Long? = null,
+        enqueuedBootCount: Int? = null,
+    ): BottleEnrichmentJob? = synchronized(PROCESS_QUEUE_LOCK) {
+        val current = status(draftId)
+        if (current != null && (current.sessionId != sessionId ||
+                current.status in setOf(BottleEnrichmentStatus.QUEUED, BottleEnrichmentStatus.RUNNING,
+                    BottleEnrichmentStatus.CAPTURE_REQUIRED))) return@synchronized null
+        enqueue(sessionId, draftId, nowMillis, enqueuedElapsedRealtimeMillis, enqueuedBootCount)
+    }
+
     /** Completes the independent photo step without resetting an already-running lookup. */
     fun completeLabelCapture(draftId: String, nowMillis: Long): Boolean = synchronized(PROCESS_QUEUE_LOCK) {
         val current = jobs()

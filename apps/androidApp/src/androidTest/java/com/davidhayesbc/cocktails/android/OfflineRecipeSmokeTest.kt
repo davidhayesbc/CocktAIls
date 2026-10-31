@@ -1056,6 +1056,10 @@ class OfflineRecipeSmokeTest {
                         webSearchEnabled = false, webSearchStates = webStates, pendingEnrichmentJobs = jobs,
                         activeReviewDraftId = activeReviewId, ollamaCloudEnabled = false, localAiEnabled = false,
                         onSearchDraft = {}, onFetchDraftSource = { _, _ -> }, onExtractDraftDetails = {},
+                        onReprocessDraft = { draft ->
+                            queue.reprocessIfIdle(draft.sessionId, draft.id, sequence++)
+                            updateJobs()
+                        },
                         onExtractDraftDetailsOnDevice = {}, onResumeEnrichment = { _, _ -> }, onCancelDraftSearch = {},
                         onCaptureLabel = { capturedLabel = testLabelPhoto },
                         onUsePendingLabel = { draftId ->
@@ -1166,6 +1170,16 @@ class OfflineRecipeSmokeTest {
                 .assertTextEquals("Web · Complete · no results")
             composeRule.onNodeWithTag("queue-ai-outcome-${first.id}", useUnmergedTree = true)
                 .assertTextEquals("AI · Not run · no verified source")
+            val beforeRetry = repository.openBottleIntakeSession()!!.drafts.first { it.id == first.id }
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("reprocess-queue-bottle-${first.id}"))
+            composeRule.onNodeWithTag("reprocess-queue-bottle-${first.id}").assertIsEnabled().performClick()
+            composeRule.onNodeWithTag("reprocess-queue-bottle-${first.id}").assertIsNotEnabled()
+            assertEquals(BottleEnrichmentStatus.QUEUED, jobs.getValue(first.id).status)
+            val afterRetry = repository.openBottleIntakeSession()!!.drafts.first { it.id == first.id }
+            assertEquals(beforeRetry.ingredientName, afterRetry.ingredientName)
+            assertEquals(beforeRetry.barcode, afterRetry.barcode)
+            assertTrue(beforeRetry.photoData!!.contentEquals(afterRetry.photoData!!))
+            assertEquals(2, repository.openBottleIntakeSession()!!.drafts.size)
             composeRule.onNodeWithTag("bottle-intake-scroll")
                 .performScrollToNode(hasTestTag("queue-bottle-${second.id}"))
             composeRule.onNodeWithTag("queue-label-photo-frame-${second.id}", useUnmergedTree = true).assertIsDisplayed()

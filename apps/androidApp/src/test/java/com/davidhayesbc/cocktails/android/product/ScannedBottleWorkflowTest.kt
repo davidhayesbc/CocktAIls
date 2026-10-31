@@ -12,6 +12,29 @@ import com.davidhayesbc.cocktails.core.model.InventoryLevel
 
 class ScannedBottleWorkflowTest {
     @Test
+    fun retryUsesNewlyConfiguredProviderPlanAndCanRetryAFailedLookup() = runBlocking {
+        var searches = 0
+        val coordinator = ScannedBottleEnrichmentCoordinator(
+            lookup = { error("Disabled provider must not run") },
+            search = {
+                searches++
+                if (searches == 1) BottleProviderCall(WebSearchResult.AuthenticationRequired, 401)
+                else BottleProviderCall(WebSearchResult.Found(emptyList()), 200)
+            },
+            fetch = { error("Failed search must not fetch") },
+            extract = { _, _, _ -> error("Failed search must not extract") },
+        )
+        coordinator.processScannedBarcode("5011333150725", ScannedBottlePlan(false, false, null, firecrawlRequested = true))
+        assertEquals(0, searches)
+        val configured = ScannedBottlePlan(false, true, null, firecrawlRequested = true)
+        val failed = coordinator.processScannedBarcode("5011333150725", configured)
+        assertTrue(failed.search is WebSearchResult.AuthenticationRequired)
+        val retried = coordinator.processScannedBarcode("5011333150725", configured)
+        assertTrue(retried.search is WebSearchResult.Found)
+        assertEquals(2, searches)
+    }
+
+    @Test
     fun correctingBarcodeKeepsEveryExplicitlyEditedManualFieldAndPhoto() {
         val photo = byteArrayOf(1, 2, 3)
         val draft = BottleIntakeDraft(

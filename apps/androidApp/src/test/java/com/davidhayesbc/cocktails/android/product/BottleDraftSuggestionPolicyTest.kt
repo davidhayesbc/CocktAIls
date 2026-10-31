@@ -5,6 +5,16 @@ import org.junit.Test
 
 class BottleDraftSuggestionPolicyTest {
     @Test
+    fun reprocessPreservesAllExistingManualValuesAndExplicitlyClearedScalars() {
+        val manual = BottleDraftSuggestionFields("My bottle", "My product", "My brand", "700 mL", "41")
+        assertEquals(manual, mergeBottleSuggestionFields(manual, "Provider product", "Provider brand",
+            emptySet(), "1 L", "50"))
+        val cleared = manual.copy(quantity = "", abvPercent = "")
+        assertEquals(cleared, mergeBottleSuggestionFields(cleared, "Provider product", "Provider brand",
+            setOf(BottleDraftField.QUANTITY, BottleDraftField.ABV_PERCENT), "1 L", "50"))
+    }
+
+    @Test
     fun explicitlyClearedBrandAndProductStayEmptyWhenRetryReturnsLateSuggestions() {
         val edited = preserveEditedBottleFields(
             current = emptySet(),

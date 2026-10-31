@@ -639,6 +639,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 val prior = restored[draft.id]
                 val job = pendingBottleEnrichmentJobs[draft.id]
                 val savedSuggestions = pendingBottleEvidenceStore.read(draft.id)?.takeIf { saved ->
+                    (job == null || job.status == BottleEnrichmentStatus.READY_FOR_REVIEW || job.status == BottleEnrichmentStatus.REVIEWED) &&
                     saved.targetBarcode?.let { normalizeGtinForLookup(it) } == normalizeGtinForLookup(draftBarcode) &&
                         saved.identityEvidence?.let { sourceMentionsScannedBarcode(draftBarcode, it) } == true
                 }
@@ -1250,19 +1251,28 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         }
     }
 
-    fun startScannedBottleEnrichment(draft: BottleIntakeDraft, localMatch: Boolean) {
+    fun startScannedBottleEnrichment(draft: BottleIntakeDraft, localMatch: Boolean, reprocess: Boolean = false) {
+        if (normalizeGtinForLookup(draft.barcode.orEmpty()) == null) return
         val existingJob = bottleEnrichmentQueue.status(draft.id)
-        if (existingJob?.status in setOf(BottleEnrichmentStatus.READY_FOR_REVIEW, BottleEnrichmentStatus.REVIEWED, BottleEnrichmentStatus.RUNNING)) return
+        if (existingJob?.status == BottleEnrichmentStatus.RUNNING ||
+            (reprocess && existingJob?.status in setOf(BottleEnrichmentStatus.QUEUED, BottleEnrichmentStatus.CAPTURE_REQUIRED))) return
+        if (!reprocess && existingJob?.status in setOf(BottleEnrichmentStatus.READY_FOR_REVIEW, BottleEnrichmentStatus.REVIEWED)) return
         val runtime = BottleScanEnrichmentRuntime(context)
         val plan = runtime.plan()
-        val queued = bottleEnrichmentQueue.enqueue(
-            sessionId = draft.sessionId,
-            draftId = draft.id,
-            nowMillis = System.currentTimeMillis(),
-            enqueuedElapsedRealtimeMillis = SystemClock.elapsedRealtime(),
-            enqueuedBootCount = runCatching { Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT) }.getOrNull(),
+        val enqueue = if (reprocess) bottleEnrichmentQueue::reprocessIfIdle else bottleEnrichmentQueue::enqueue
+        val queued = enqueue(
+            draft.sessionId,
+            draft.id,
+            System.currentTimeMillis(),
+            SystemClock.elapsedRealtime(),
+            runCatching { Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT) }.getOrNull(),
         )
         if (queued == null) {
+            if (reprocess && bottleEnrichmentQueue.status(draft.id)?.status in setOf(
+                    BottleEnrichmentStatus.QUEUED, BottleEnrichmentStatus.RUNNING, BottleEnrichmentStatus.CAPTURE_REQUIRED)) {
+                refreshPendingBottleEnrichmentJobs()
+                return
+            }
             bottleWebSearchStates = bottleWebSearchStates + (draft.id to (bottleWebSearchStates[draft.id] ?: BottleWebSearchState(automatedScan = true)).copy(
                 automatedScan = true,
                 message = "The local enrichment queue could not be saved. The bottle draft is safe; retry lookup when ready.",
@@ -1272,6 +1282,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         }
         LocalDiagnostics.clearBottleLookupForDraft(draft.id)
         val previous = bottleWebSearchStates[draft.id] ?: BottleWebSearchState(automatedScan = true)
+        val resetState = if (reprocess) BottleWebSearchState(userEditedFields = previous.userEditedFields) else previous
         val scheduled = BottleEnrichmentWorkScheduler.enqueue(
             context = context,
             sessionId = draft.sessionId,
@@ -1280,7 +1291,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             requiresNetwork = plan.openFoodFactsEnabled || plan.firecrawlEnabled,
             replaceExisting = existingJob != null,
         )
-        bottleWebSearchStates = bottleWebSearchStates + (draft.id to previous.copy(
+        bottleWebSearchStates = bottleWebSearchStates + (draft.id to resetState.copy(
             automatedScan = true,
             localMatch = localMatch,
             searching = false,
@@ -2047,6 +2058,12 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 onFetchDraftSource = ::fetchBottleSource,
                 onExtractDraftDetails = ::extractBottleDetails,
                 onExtractDraftDetailsOnDevice = ::extractBottleDetailsOnDevice,
+                onReprocessDraft = { draft ->
+                    val current = repository.openBottleIntakeSession()?.drafts?.firstOrNull { it.id == draft.id }
+                    if (current != null) startScannedBottleEnrichment(current,
+                        localMatch = repository.localProductForBarcode(current.barcode.orEmpty()) != null,
+                        reprocess = true)
+                },
                 onResumeEnrichment = ::resumeBottleEnrichment,
                 onCancelDraftSearch = ::cancelBottleSourceSearch,
                 onCaptureLabel = {
@@ -3118,6 +3135,7 @@ internal fun BottleIntakeScreen(
     onFetchDraftSource: (BottleIntakeDraft, WebSearchHit) -> Unit,
     onExtractDraftDetails: (String) -> Unit,
     onExtractDraftDetailsOnDevice: (String) -> Unit,
+    onReprocessDraft: (BottleIntakeDraft) -> Unit = {},
     onResumeEnrichment: (BottleIntakeDraft, BottleEnrichmentJob) -> Unit,
     onCancelDraftSearch: (String) -> Unit,
     onCaptureLabel: () -> Unit,
@@ -3173,6 +3191,7 @@ internal fun BottleIntakeScreen(
         onFetchDraftSource = onFetchDraftSource,
         onExtractDraftDetails = onExtractDraftDetails,
         onExtractDraftDetailsOnDevice = onExtractDraftDetailsOnDevice,
+        onReprocessDraft = onReprocessDraft,
         onResumeEnrichment = onResumeEnrichment,
         onCancelDraftSearch = onCancelDraftSearch,
         onCaptureLabel = onCaptureLabel,
@@ -3233,6 +3252,7 @@ private fun BottleIntakeFlowScreen(
     onFetchDraftSource: (BottleIntakeDraft, WebSearchHit) -> Unit,
     onExtractDraftDetails: (String) -> Unit,
     onExtractDraftDetailsOnDevice: (String) -> Unit,
+    onReprocessDraft: (BottleIntakeDraft) -> Unit = {},
     onResumeEnrichment: (BottleIntakeDraft, BottleEnrichmentJob) -> Unit,
     onCancelDraftSearch: (String) -> Unit,
     onCaptureLabel: () -> Unit,
@@ -3556,6 +3576,7 @@ private fun BottleIntakeFlowScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text("${reviewedCount} reviewed · ${drafts.size} draft bottles", style = MaterialTheme.typography.bodyLarge)
+                Text("Reprocess uses your saved barcode and current provider settings. Photos and your edits stay unchanged; review new suggestions before saving.", style = MaterialTheme.typography.bodySmall)
                 drafts.forEach { draft ->
                     val job = pendingEnrichmentJobs[draft.id]
                     val status = when (job?.status) {
@@ -3616,6 +3637,18 @@ private fun BottleIntakeFlowScreen(
                                     style = MaterialTheme.typography.bodySmall,
                                     modifier = Modifier.testTag("queue-ai-outcome-${draft.id}"),
                                 )
+                                val lookupActive = job?.status in setOf(BottleEnrichmentStatus.QUEUED, BottleEnrichmentStatus.RUNNING, BottleEnrichmentStatus.CAPTURE_REQUIRED)
+                                OutlinedButton(
+                                    onClick = { onReprocessDraft(draft) },
+                                    enabled = !lookupActive && normalizeGtinForLookup(draft.barcode.orEmpty()) != null,
+                                    modifier = Modifier.testTag("reprocess-queue-bottle-${draft.id}"),
+                                ) { Text(if (lookupActive) "Processing…" else "Reprocess") }
+                                webSearchStates[draft.id]?.message?.takeIf {
+                                    it.contains("could not be saved") || it.contains("could not be scheduled")
+                                }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+                                if (normalizeGtinForLookup(draft.barcode.orEmpty()) == null) {
+                                    Text("Add a valid barcode in review to reprocess.", style = MaterialTheme.typography.bodySmall)
+                                }
                                 if (labelImage == null) {
                                     TextButton(
                                         onClick = { onCaptureBottleLabel(draft.id) },

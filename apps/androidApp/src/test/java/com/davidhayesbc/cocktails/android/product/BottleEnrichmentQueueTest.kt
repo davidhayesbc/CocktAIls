@@ -17,6 +17,63 @@ import java.util.concurrent.atomic.AtomicReference
 
 class BottleEnrichmentQueueTest {
     @Test
+    fun concurrentReprocessTapsCreateOnlyOneNewAttemptAndFenceOldResults() {
+        val storage = MemoryStorage()
+        val queue = BottleEnrichmentQueue(storage)
+        val old = queue.enqueue("session", "draft", 1)!!
+        queue.finish("draft", BottleEnrichmentStatus.NEEDS_ATTENTION, "PROVIDERS_DISABLED", 2)
+        val accepted = AtomicInteger(0)
+        val start = CountDownLatch(1)
+        val threads = (1..12).map {
+            Thread {
+                start.await()
+                if (BottleEnrichmentQueue(storage).reprocessIfIdle("session", "draft", 3) != null) accepted.incrementAndGet()
+            }.also { it.start() }
+        }
+        start.countDown()
+        threads.forEach { it.join(2_000); assertFalse(it.isAlive) }
+        assertEquals(1, accepted.get())
+        val pending = queue.status("draft")!!
+        assertEquals(1, queue.jobs().size)
+        assertTrue(old.attemptToken != pending.attemptToken)
+        assertNull(queue.reprocessIfIdle("session", "draft", 4))
+        val running = queue.beginQueued("session", "draft", BottleEnrichmentOperation.FIRECRAWL_SEARCH, pending.attemptToken!!, 5)!!
+        assertNull(queue.reprocessIfIdle("session", "draft", 6))
+        assertFalse(queue.completeIfRunning("draft", old.attemptToken!!, 7) {
+            BottleEnrichmentStatus.READY_FOR_REVIEW to "STALE"
+        })
+        assertTrue(queue.finishAttempt("draft", running.attemptToken!!, BottleEnrichmentStatus.NEEDS_ATTENTION, "PROVIDER_AUTH_REQUIRED", 8))
+        val retry = queue.reprocessIfIdle("session", "draft", 9)!!
+        assertEquals(BottleEnrichmentOperation.FIRECRAWL_SEARCH, retry.operation)
+        assertNull(retry.sourceUrl)
+        assertNull(retry.resultCode)
+        assertTrue(retry.attemptToken != running.attemptToken)
+    }
+
+    @Test
+    fun reprocessStorageFailureRetainsPreviousJobAndDoesNotScheduleAnAttempt() {
+        var failWrites = false
+        var raw: String? = null
+        val queue = BottleEnrichmentQueue(object : BottleEnrichmentQueueStorage {
+            override fun read() = raw
+            override fun write(value: String): Boolean {
+                if (failWrites) return false
+                raw = value
+                return true
+            }
+        })
+        queue.enqueue("session", "draft", 1)
+        queue.finish("draft", BottleEnrichmentStatus.READY_FOR_REVIEW, "CANDIDATES_READY", 2)
+        val before = queue.status("draft")
+        failWrites = true
+        assertNull(queue.reprocessIfIdle("session", "draft", 3))
+        assertEquals(before, queue.status("draft"))
+        failWrites = false
+        assertNull(queue.reprocessIfIdle("different-session", "draft", 4))
+        assertTrue(queue.reprocessIfIdle("session", "draft", 5) != null)
+    }
+
+    @Test
     fun legacyRunningProviderStatusIsRenderedAsPausedOrCancelledAfterInterruption() {
         assertEquals(
             BottleProviderOutcome.PAUSED,
