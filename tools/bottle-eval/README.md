@@ -320,7 +320,14 @@ ambiguity, and identity validation; evidence quotes and rejection rules are unch
 Normalization cannot supply a missing scalar or turn an unverified claim into a fact.
 
 The deterministic fallback requires an exact matching title and a complete record of
-recognized rows. In addition to colon-labeled rows, it accepts exactly two cells of
+recognized rows. Pipe-separated headings are ineligible: a page heading may include a
+site attribution, product variant, package size, or another product. The fallback does
+not strip a suffix or promote that heading to independently verified identity. Those
+pages continue through the existing evidence-validated model/structured-table paths;
+a model name must retain its exact source evidence and site names are not inferred brands.
+This deliberately gives up deterministic coverage on ambiguous headings.
+
+In addition to colon-labeled rows, the fallback accepts exactly two cells of
 `UPC/EAN/GTIN/barcode <checksum-valid code> | <single size>`. The original line remains
 the evidence. `Bottles available in` is a size label, not permission to select one
 of several sizes. `Alcohol Grade` is an alcohol label, but a nonnumeric description

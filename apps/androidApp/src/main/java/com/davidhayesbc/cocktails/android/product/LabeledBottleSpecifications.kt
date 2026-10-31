@@ -20,6 +20,11 @@ internal fun labeledBottleSpecifications(
     val title = page.title?.trim()?.takeIf { it.length in 1..120 } ?: return null
     val heading = lines.firstOrNull()?.removePrefix("# ")?.removePrefix("## ")?.removePrefix("### ") ?: return null
     if (!heading.equals(title, ignoreCase = true) || lines.size !in 2..30) return null
+    // A compound page heading is not independently verified product identity. A pipe may
+    // separate a site attribution, a variant, a package, or another product. Do not guess
+    // which segment is the product or attach deterministic facts to a shortened model name.
+    // Leave these pages to the existing evidence-validated model/structured-table paths.
+    if ('|' in heading) return null
     if (Regex("(?i)\\b(?:related|similar|recommended|alternative|other products)\\b").containsMatchIn(heading)) return null
     var extendedRecord = false
     val rows = lines.drop(1).flatMap { line ->

@@ -114,6 +114,6 @@ class LabeledBottleSpecificationsTest {
                 counts[split] = counts.getOrDefault(split, 0) + scalars.size
             }
         }
-        assertEquals(mapOf("development" to 6, "holdout" to 3), counts)
+        assertEquals(mapOf("development" to 6, "holdout" to 2), counts)
     }
 }
