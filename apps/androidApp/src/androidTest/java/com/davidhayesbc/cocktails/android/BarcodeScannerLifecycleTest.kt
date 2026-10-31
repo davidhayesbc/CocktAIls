@@ -41,88 +41,59 @@ class BarcodeScannerLifecycleTest {
     fun denialKeepsManualEntryAvailableThenGrantOpensScannerAcrossLifecycle() {
         assertEquals(PackageManager.PERMISSION_DENIED, composeRule.activity.checkSelfPermission(Manifest.permission.CAMERA))
         composeRule.onNodeWithText("My Bar").performClick()
-        composeRule.onNodeWithTag("inventory-add-ingredient").performClick()
-        composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Scan barcode"))
-        composeRule.onNodeWithText("Scan barcode").assertIsDisplayed()
-        composeRule.onNodeWithText("Scan barcode").performClick()
+        composeRule.onAllNodesWithTag("inventory-add-ingredient").assertCountEquals(0)
+        composeRule.onNodeWithTag("start-bottle-intake").performClick()
+        composeRule.onNodeWithTag("intake-close").assertIsDisplayed()
+        saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "onboarding-integrated-setup.png")
+        composeRule.onNodeWithTag("intake-allow-camera").performClick()
         clickPermissionPrompt("Don't allow", "Do not allow", "Deny")
-        composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Camera access wasn't granted. Enter the barcode manually instead."))
-        composeRule.onNodeWithText("Camera access wasn't granted. Enter the barcode manually instead.").assertIsDisplayed()
-        composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasTestTag("ingredient-barcode"))
-        composeRule.onNodeWithTag("ingredient-barcode").assertIsDisplayed()
-        composeRule.onAllNodesWithText("Scan a bottle").assertCountEquals(0)
-
-        composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Ingredient name"))
-        composeRule.onNodeWithTag("ingredient-name").performTextInput("CI Manual Barcode Gin")
-        composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("UPC / EAN barcode"))
-        composeRule.onNodeWithTag("ingredient-barcode").performTextInput("036000291452")
-        composeRule.onNodeWithText("Save").performClick()
-        composeRule.onNodeWithText("CI Manual Barcode Gin").assertIsDisplayed()
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-manual-entry"))
+        composeRule.onNodeWithTag("batch-manual-entry").performClick()
+        composeRule.onNodeWithTag("batch-manual-name").performTextInput("CI Manual Barcode Gin")
+        composeRule.onNodeWithTag("batch-manual-barcode").performTextInput("036000291452")
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-add-manual-bottle"))
+        composeRule.onNodeWithTag("batch-add-manual-bottle").performClick()
         assertEquals(PackageManager.PERMISSION_DENIED, composeRule.activity.checkSelfPermission(Manifest.permission.CAMERA))
-
-        composeRule.onNodeWithTag("inventory-add-ingredient").performClick()
-        composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Scan barcode"))
-        composeRule.onNodeWithText("Scan barcode").assertIsDisplayed()
-        composeRule.onNodeWithText("Scan barcode").performClick()
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-scan-bottles"))
+        composeRule.onNodeWithTag("batch-scan-bottles").performClick()
         clickPermissionPrompt("While using the app", "Allow only while using the app", "Only this time", "Allow")
         awaitCameraPermissionGranted()
-        awaitScannerDialog()
-        composeRule.onNodeWithTag("barcode-camera-preview").assertIsDisplayed()
-        composeRule.waitUntil(timeoutMillis = 30_000) {
-            composeRule.onAllNodesWithText("Camera is live and barcode frames are being analyzed.")
-                .fetchSemanticsNodes().isNotEmpty()
-        }
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-        composeRule.waitForIdle()
-        composeRule.onAllNodesWithText("Scan a bottle").assertCountEquals(0)
-
-        composeRule.onNodeWithText("Scan barcode").performClick()
-        awaitScannerDialog()
-        composeRule.onNodeWithText("Enter manually").performClick()
-        composeRule.onNodeWithText("Scan barcode").performClick()
-        awaitScannerDialog()
-        composeRule.activityRule.scenario.recreate()
-        composeRule.waitForIdle()
-        composeRule.onAllNodesWithText("Scan a bottle").assertCountEquals(0)
-
-        // Capture the actual bottle-intake path: My Bar → setup → permission already
-        // granted → the full-screen intake barcode scanner (not the legacy ingredient form).
-        composeRule.onNodeWithText("My Bar").performClick()
-        composeRule.onNodeWithTag("start-bottle-intake").performClick()
-        composeRule.onNodeWithText("Build your shelf").assertIsDisplayed()
-        composeRule.onNodeWithText("CocktAIls").assertIsDisplayed()
-        composeRule.onNodeWithTag("intake-setup-card-capture").assertIsDisplayed()
-        composeRule.onNodeWithTag("intake-setup-card-background-work").assertIsDisplayed()
-        composeRule.onNodeWithTag("intake-close").assertIsDisplayed()
-        composeRule.onNodeWithTag("intake-allow-camera").assertIsDisplayed()
-        saveTestScreenshot(
-            InstrumentationRegistry.getInstrumentation(),
-            "onboarding-integrated-setup.png",
-        )
-        composeRule.onNodeWithTag("intake-allow-camera").performClick()
         awaitIntakeScanner()
-        composeRule.onNodeWithTag("barcode-intake-scanner").assertIsDisplayed()
         composeRule.onNodeWithTag("barcode-intake-scanner-title").assertTextEquals("Scan the next bottle").assertIsDisplayed()
         composeRule.onNodeWithTag("scanner-queue-summary").assertIsDisplayed()
-        composeRule.onNodeWithTag("scanner-ready-count").assertTextEquals("0 ready").assertIsDisplayed()
-        composeRule.onNodeWithTag("scanner-running-count").assertTextEquals("0 running").assertIsDisplayed()
-        composeRule.onNodeWithTag("scanner-pending-count").assertTextEquals("0 pending").assertIsDisplayed()
-        awaitCameraPermissionGranted()
-        composeRule.onNodeWithTag("barcode-camera-preview").assertIsDisplayed()
-        val scannerTitleBounds = composeRule.onNodeWithTag("barcode-intake-scanner-title").fetchSemanticsNode().boundsInRoot
-        val cameraFrameBounds = composeRule.onNodeWithTag("barcode-camera-frame").fetchSemanticsNode().boundsInRoot
-        assertTrue(
-            "Camera preview must start below the complete scanner heading: title=$scannerTitleBounds frame=$cameraFrameBounds",
-            cameraFrameBounds.top >= scannerTitleBounds.bottom,
-        )
+        composeRule.onNodeWithTag("scanner-ready-count").assertTextEquals("0 ready")
+        composeRule.onNodeWithTag("scanner-exit").assertIsDisplayed()
+        val title = composeRule.onNodeWithTag("barcode-intake-scanner-title").fetchSemanticsNode().boundsInRoot
+        val frame = composeRule.onNodeWithTag("barcode-camera-frame").fetchSemanticsNode().boundsInRoot
+        assertTrue("Camera must not cover navigation", frame.top >= title.bottom)
         composeRule.waitUntil(timeoutMillis = 30_000) {
-            composeRule.onAllNodesWithText("Camera is live and barcode frames are being analyzed.")
-                .fetchSemanticsNodes().isNotEmpty()
+            composeRule.onAllNodesWithText("Camera is live and barcode frames are being analyzed.").fetchSemanticsNodes().isNotEmpty()
         }
-        saveTestScreenshot(
-            InstrumentationRegistry.getInstrumentation(),
-            "onboarding-barcode-scanner.png",
-        )
+        saveTestScreenshot(InstrumentationRegistry.getInstrumentation(), "onboarding-barcode-scanner.png")
+        // Queue access is available even when no results are ready.
+        composeRule.onNodeWithTag("scanner-review-queue").performClick()
+        composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Your bottle queue")
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("CI Manual Barcode Gin", substring = true))
+        composeRule.onAllNodesWithText("CI Manual Barcode Gin", substring = true).assertCountEquals(1)
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("Resume scanner"))
+        composeRule.onNodeWithText("Resume scanner").performClick()
+        awaitIntakeScanner()
+        composeRule.onNodeWithTag("scanner-exit").performClick()
+        composeRule.onNodeWithTag("my-bar-review-queue").assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("Resume scanner"))
+        composeRule.onNodeWithText("Resume scanner").performClick()
+        awaitIntakeScanner()
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        composeRule.onNodeWithTag("my-bar-review-queue").assertIsDisplayed()
+        composeRule.activityRule.scenario.recreate()
+        composeRule.onNodeWithText("My Bar").performClick()
+        composeRule.onNodeWithTag("my-bar-review-queue").performClick()
+        composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("CI Manual Barcode Gin", substring = true))
+        composeRule.onAllNodesWithText("CI Manual Barcode Gin", substring = true).assertCountEquals(1)
+        composeRule.onNodeWithTag("intake-exit").performClick()
+        composeRule.onNodeWithTag("my-bar-exit").performClick()
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+        assertEquals(androidx.lifecycle.Lifecycle.State.DESTROYED, composeRule.activityRule.scenario.state)
     }
 
     private fun clickPermissionPrompt(vararg acceptedLabels: String) {

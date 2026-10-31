@@ -30,7 +30,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
                 ) {
-                    CocktailsApp(repository)
+                    CocktailsApp(repository, onExitApp = ::finish)
                 }
             }
         }

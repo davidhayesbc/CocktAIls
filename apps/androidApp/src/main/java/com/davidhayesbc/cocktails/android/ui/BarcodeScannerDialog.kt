@@ -148,8 +148,7 @@ internal fun BarcodeScannerDialog(
     readyCount: Int = 0,
     runningCount: Int = 0,
     pendingCount: Int = 0,
-    onReviewReady: () -> Unit = {},
-    onPause: () -> Unit = {},
+    onReviewQueue: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
@@ -313,11 +312,14 @@ internal fun BarcodeScannerDialog(
                         .padding(horizontal = 24.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Text(
-                        if (continuous) "Add bottles" else "Scan the next bottle",
-                        style = MaterialTheme.typography.headlineMedium,
-                        modifier = Modifier.testTag("barcode-intake-scanner-title"),
-                    )
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            if (continuous) "Add bottles" else "Scan the next bottle",
+                            style = MaterialTheme.typography.headlineMedium,
+                            modifier = Modifier.weight(1f).testTag("barcode-intake-scanner-title"),
+                        )
+                        TextButton(onClick = onDismiss, modifier = Modifier.testTag("scanner-exit")) { Text("Exit") }
+                    }
                     Text(scannerMessage, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(12.dp))
                     Box(Modifier.weight(1f).fillMaxWidth().clipToBounds().testTag("barcode-camera-frame")) {
@@ -352,14 +354,7 @@ internal fun BarcodeScannerDialog(
                                 Text("$pendingCount pending", style = MaterialTheme.typography.labelLarge, modifier = Modifier.testTag("scanner-pending-count"))
                             }
                             Text("${batchBottleCount ?: acceptedCount} bottles in this batch", style = MaterialTheme.typography.bodySmall)
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                if (readyCount > 0) {
-                                    TextButton(onClick = onReviewReady, modifier = Modifier.weight(1f).testTag("scanner-review-ready")) { Text("Review ready") }
-                                } else {
-                                    TextButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("Enter manually") }
-                                }
-                                TextButton(onClick = onPause, modifier = Modifier.weight(1f).testTag("scanner-pause")) { Text("Pause") }
-                            }
+                            TextButton(onClick = onReviewQueue, modifier = Modifier.fillMaxWidth().testTag("scanner-review-queue")) { Text("Review queue") }
                         }
                     }
                     if (continuous && lastAccepted != null) {
@@ -367,7 +362,7 @@ internal fun BarcodeScannerDialog(
                             Text("Add another bottle with this barcode")
                         }
                     }
-                    TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Close scanner") }
+
                 }
             }
         }

@@ -718,6 +718,63 @@ class OfflineRecipeSmokeTest {
     }
 
     @Test
+    fun pendingLabelSurvivesCropBackExitQueueResumeAndRecreation() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val driver = AndroidSqliteDriver(CocktailsDatabase.Schema, context, "cocktails.db")
+        val repository = LocalCocktailRepository(CocktailsDatabase(driver)).also { it.initialize(1) }
+        val priorSession = repository.openBottleIntakeSession()
+        val session = priorSession ?: repository.startBottleIntakeSession(repository.locations().first().id, InventoryLevel.FULL, 2)
+        val draft = repository.addBottleIntakeDraft(session.id, "Pending label fixture", "Spirit",
+            session.locationId, InventoryLevel.FULL, 3, barcode = "5011333150725")!!
+        val queue = BottleEnrichmentQueue(com.davidhayesbc.cocktails.android.product.SharedPreferencesBottleEnrichmentQueueStorage(context))
+        val job = queue.requireLabel(session.id, draft.id, 4)!!
+        queue.pause(job.id, 5)
+        val preferences = context.getSharedPreferences("cocktails_pending_label_capture", 0)
+        preferences.edit().putString("draft_id", draft.id).commit()
+        context.getSharedPreferences("cocktails_local_scan_review", 0).edit().remove("active_draft_id").commit()
+        val directory = File(context.cacheDir, "intake-labels").also { it.mkdirs() }
+        val preview = File(directory, "pending-${draft.id}.jpg")
+        val original = File(directory, "original-${draft.id}.jpg")
+        val photo = syntheticLabelReferencePhoto()
+        preview.writeBytes(photo)
+        original.writeBytes(photo)
+        try {
+            composeRule.activityRule.scenario.recreate()
+            openBottleIntake()
+            composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("label-photo-preview-${draft.id}").fetchSemanticsNodes().isNotEmpty() }
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("adjust-bottle-label-crop"))
+            composeRule.onNodeWithTag("adjust-bottle-label-crop").performClick()
+            composeRule.onNodeWithTag("bottle-label-crop-dialog").assertIsDisplayed()
+            InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+            composeRule.onAllNodesWithTag("bottle-label-crop-dialog").assertCountEquals(0)
+            composeRule.onNodeWithTag("intake-exit").performClick()
+            assertTrue(preview.readBytes().contentEquals(photo))
+            assertTrue(original.readBytes().contentEquals(photo))
+            assertEquals(BottleEnrichmentStatus.PAUSED, queue.status(draft.id)!!.status)
+            composeRule.onNodeWithTag("my-bar-review-queue").performClick()
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("Resume scanner"))
+            composeRule.onNodeWithText("Resume scanner").performClick()
+            composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Now capture the label")
+            composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("label-photo-preview-${draft.id}").fetchSemanticsNodes().isNotEmpty() }
+            composeRule.onNodeWithTag("intake-exit").performClick()
+            composeRule.activityRule.scenario.recreate()
+            openBottleIntake()
+            composeRule.waitUntil(10_000) { composeRule.onAllNodesWithTag("label-photo-preview-${draft.id}").fetchSemanticsNodes().isNotEmpty() }
+            assertEquals(1, repository.openBottleIntakeSession()!!.drafts.count { it.id == draft.id })
+            assertTrue(preview.readBytes().contentEquals(photo))
+            composeRule.onNodeWithTag("intake-exit").performClick()
+        } finally {
+            queue.removeDraft(draft.id)
+            preferences.edit().remove("draft_id").commit()
+            preview.delete()
+            original.delete()
+            if (priorSession == null) repository.cancelBottleIntakeSession(session.id)
+            else repository.removeBottleIntakeDraft(session.id, draft.id)
+            driver.close()
+        }
+    }
+
+    @Test
     fun liveLabelCameraShowsEdgeGuideAndWaitsForExplicitShutter() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val output = File(context.cacheDir, "label-camera-ui-test.jpg")
@@ -1259,8 +1316,7 @@ class OfflineRecipeSmokeTest {
     }
 
     private fun keepBottleIntakeForLater() {
-        composeRule.onNodeWithTag("intake-pause").performClick()
-        composeRule.onNodeWithText("Keep drafts & exit").performClick()
+        composeRule.onNodeWithTag("intake-exit").performClick()
     }
 
     private fun captureOnboardingScreenshot(fileName: String): String {
@@ -1372,7 +1428,7 @@ class OfflineRecipeSmokeTest {
     }
 
     @Test
-    fun providerLookupIsExplicitAndCachedSuggestionsStaySeparateFromManualFields() {
+    fun sharedIntakeQueueExitAndBackPreserveManualDraftWithoutImportingCachedSuggestions() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val preferences = context.getSharedPreferences("open_food_facts_local_cache", android.content.Context.MODE_PRIVATE)
         preferences.edit().clear().commit()
@@ -1398,33 +1454,31 @@ class OfflineRecipeSmokeTest {
             val lookupToggle = composeRule.onNodeWithTag("online-product-lookup-toggle")
             if (lookupToggle.fetchSemanticsNode().config[SemanticsProperties.ToggleableState] != ToggleableState.On) lookupToggle.performClick()
             composeRule.onNodeWithText("My Bar").performClick()
-            composeRule.onNodeWithText("＋ Add one").performClick()
-            composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Ingredient name"))
-            composeRule.onNodeWithTag("ingredient-name").performTextInput("My Manual Gin")
-            composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasTestTag("ingredient-barcode"))
-            composeRule.onNodeWithTag("ingredient-barcode").performTextInput("036000291452")
-            composeRule.onAllNodesWithText("Open Food Facts suggestion").assertCountEquals(0)
-            composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasTestTag("open-food-facts-lookup"))
-            composeRule.onNodeWithTag("open-food-facts-lookup").assertIsDisplayed().performClick()
-            composeRule.waitUntil(timeoutMillis = 5_000) {
-                composeRule.onAllNodesWithText("Product: Provider Gin").fetchSemanticsNodes().isNotEmpty()
+            composeRule.onAllNodesWithText("＋ Add one").assertCountEquals(0)
+            composeRule.onNodeWithTag("my-bar-exit").assertIsDisplayed()
+            composeRule.onNodeWithTag("start-bottle-intake").performClick()
+            composeRule.waitForIdle()
+            if (composeRule.onAllNodesWithTag("intake-manual-start").fetchSemanticsNodes().isNotEmpty()) {
+                composeRule.onNodeWithTag("intake-manual-start").performClick()
+            } else {
+                composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-manual-entry"))
+                composeRule.onNodeWithTag("batch-manual-entry").performClick()
             }
-            composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Product: Provider Gin"))
-            composeRule.onNodeWithText("Product: Provider Gin").assertIsDisplayed()
-            composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Showing a result saved on this phone."))
-            composeRule.onNodeWithText("Showing a result saved on this phone.").assertIsDisplayed()
-            composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasText("Ingredient name"))
-            composeRule.onNodeWithTag("ingredient-name").assert(
-                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("My Manual Gin")),
-            )
-            composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasTestTag("ingredient-brand"))
-            composeRule.onNodeWithTag("ingredient-brand").assert(
-                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")),
-            )
-            composeRule.onNodeWithTag("ingredient-form-scroll").performScrollToNode(hasTestTag("ingredient-product-name"))
-            composeRule.onNodeWithTag("ingredient-product-name").assert(
-                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")),
-            )
+            composeRule.onNodeWithTag("batch-manual-name").performTextInput("My Manual Gin")
+            composeRule.onNodeWithTag("batch-manual-barcode").performTextInput("036000291452")
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("batch-add-manual-bottle"))
+            composeRule.onNodeWithTag("batch-add-manual-bottle").performClick()
+            composeRule.onNodeWithTag("intake-exit").performClick()
+            composeRule.onNodeWithTag("my-bar-review-queue").assertIsEnabled().performClick()
+            composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Your bottle queue")
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("My Manual Gin", substring = true))
+            composeRule.onNodeWithText("My Manual Gin", substring = true).assertIsDisplayed()
+            composeRule.onAllNodesWithText("Provider Gin", substring = true).assertCountEquals(0)
+            composeRule.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+            composeRule.onNodeWithTag("my-bar-review-queue").assertIsEnabled().performClick()
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("My Manual Gin", substring = true))
+            composeRule.onAllNodesWithText("My Manual Gin", substring = true).assertCountEquals(1)
+            composeRule.onNodeWithTag("intake-exit").performClick()
 
             val databaseName = "off-lookup-export-${System.currentTimeMillis()}.db"
             val driver = AndroidSqliteDriver(CocktailsDatabase.Schema, context, databaseName)

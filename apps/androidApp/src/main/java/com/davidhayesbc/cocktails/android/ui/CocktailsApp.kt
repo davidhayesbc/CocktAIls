@@ -431,7 +431,7 @@ private sealed interface LocationAction {
 }
 
 @Composable
-fun CocktailsApp(repository: LocalCocktailRepository) {
+fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}) {
     val context = LocalContext.current
     val openFoodFactsClient = remember(context) {
         OpenFoodFactsLookupClient(OpenFoodFactsLocalCache(SharedPreferencesLookupStorage(context)))
@@ -1999,6 +1999,36 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    fun openBottleIntake(reviewQueue: Boolean = false) {
+        val session = repository.openBottleIntakeSession()
+            ?: repository.startBottleIntakeSession(selectedLocationId, InventoryLevel.FULL, System.currentTimeMillis())
+        bottleIntakeSession = session
+        selectedPage = Page.MY_BAR
+        bottleIntakeRoute = when {
+            reviewQueue -> BottleIntakeRoute.QUEUE
+            pendingBottleLabelDraftId != null -> BottleIntakeRoute.CAPTURE_LABEL
+            session.drafts.isEmpty() -> BottleIntakeRoute.SETUP
+            else -> BottleIntakeRoute.SCANNING
+        }
+        showBottleIntake = true
+    }
+
+    fun exitBottleIntake() {
+        showBottleScanner = false
+        invalidateBottleCaptureOperation()
+        // Only foreground requests are paused; durable WorkManager lookups keep running.
+        cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = true)
+        bottleWebSearchStates = emptyMap()
+        showBottleIntake = false
+        selectedPage = Page.MY_BAR
+        bottleIntakeSession = repository.openBottleIntakeSession()
+        // Persisted pending/original previews and their draft owner are retained for resume.
+        pendingBottleLabelPhoto = null
+        pendingBottleLabelOriginalPhoto = null
+        pendingBottleLabelCropSuggestion = null
+        bottleLabelCaptureMessage = null
+    }
+
     Scaffold(
         bottomBar = {
             if (!showBottleIntake) {
@@ -2339,17 +2369,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     bottleLabelCaptureMessage = null
                     showBottleIntake = false
                 },
-                onDismiss = {
-                    invalidateBottleCaptureOperation()
-                    cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = true)
-                    bottleWebSearchStates = emptyMap()
-                    showBottleIntake = false
-                    bottleIntakeSession = repository.openBottleIntakeSession()
-                    pendingBottleLabelPhoto = null
-                    pendingBottleLabelOriginalPhoto = null
-                    pendingBottleLabelCropSuggestion = null
-                    bottleLabelCaptureMessage = null
-                },
+                onDismiss = ::exitBottleIntake,
                 )
             }
         } else {
@@ -2368,12 +2388,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 onLocationSelected = ::selectHome,
                 locationMessage = locationMessage,
                 pantry = pantry,
-                onAddIngredients = {
-                    selectedPage = Page.MY_BAR
-                    showAddIngredient = true
-                    setBarcodeInput("")
-                    barcodePermissionMessage = null
-                },
+                onAddIngredients = { openBottleIntake() },
                 onOpenShop = ::openShop,
                 recipes = recipes,
                 onBrowseRecipes = { selectedPage = Page.RECIPES },
@@ -2384,17 +2399,10 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                 selectedLocationId = selectedLocationId,
                 pantry = pantry,
                 onLocationSelected = ::selectHome,
-                onAddIngredient = {
-                    showAddIngredient = true
-                    setBarcodeInput("")
-                    barcodePermissionMessage = null
-                },
-                onAddBottles = {
-                    val session = repository.startBottleIntakeSession(selectedLocationId, InventoryLevel.FULL, System.currentTimeMillis())
-                    bottleIntakeSession = repository.openBottleIntakeSession() ?: session
-                    bottleIntakeRoute = if (session.drafts.isEmpty()) BottleIntakeRoute.SETUP else BottleIntakeRoute.SCANNING
-                    showBottleIntake = true
-                },
+                onAddBottles = { openBottleIntake() },
+                onReviewQueue = { openBottleIntake(reviewQueue = true) },
+                draftCount = bottleIntakeSession?.drafts?.size ?: 0,
+                onExit = onExitApp,
                 onAddLocation = { showAddLocation = true },
                 onLevelSelected = { entry, level ->
                     repository.updateBottleLevel(
@@ -2794,25 +2802,13 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
             },
             runningCount = bottleIntakeSession!!.drafts.count { draft -> pendingBottleEnrichmentJobs[draft.id]?.status == BottleEnrichmentStatus.RUNNING },
             pendingCount = bottleIntakeSession!!.drafts.count { draft -> pendingBottleEnrichmentJobs[draft.id]?.status in setOf(BottleEnrichmentStatus.QUEUED, BottleEnrichmentStatus.CAPTURE_REQUIRED) },
-            onReviewReady = {
-                val readyDraft = bottleIntakeSession!!.drafts.firstOrNull { draft ->
-                    pendingBottleEnrichmentJobs[draft.id]?.status in setOf(BottleEnrichmentStatus.READY_FOR_REVIEW, BottleEnrichmentStatus.NEEDS_ATTENTION)
-                }
-                if (readyDraft != null) {
-                    showBottleScanner = false
-                    activeScannedDraftId = readyDraft.id
-                    bottleIntakeRoute = BottleIntakeRoute.REVIEW
-                    context.getSharedPreferences("cocktails_local_scan_review", Context.MODE_PRIVATE).edit().putString("active_draft_id", readyDraft.id).apply()
-                }
-            },
-            onPause = {
+            onReviewQueue = {
                 showBottleScanner = false
-                cancelAllBottleEnrichmentRequests(bottleIntakeSession?.id, keepPaused = true)
-                refreshPendingBottleEnrichmentJobs()
-                bottleIntakeRoute = BottleIntakeRoute.PAUSE
+                bottleIntakeSession = repository.openBottleIntakeSession()
+                bottleIntakeRoute = BottleIntakeRoute.QUEUE
             },
             onDetected = { scanned ->
-                if (normalizeGtinForLookup(scanned) != null) {
+                if (showBottleScanner && showBottleIntake && normalizeGtinForLookup(scanned) != null) {
                     val local = repository.localProductForBarcode(scanned)
                     val draft = repository.addBottleIntakeDraft(
                         sessionId = bottleIntakeSession!!.id,
@@ -2864,7 +2860,7 @@ fun CocktailsApp(repository: LocalCocktailRepository) {
                     }
                 }
             },
-            onDismiss = { showBottleScanner = false; bottleIntakeSession = repository.openBottleIntakeSession() },
+            onDismiss = ::exitBottleIntake,
         )
     }
 
@@ -3315,7 +3311,7 @@ private fun BottleIntakeFlowScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("CocktAIls", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-                TextButton(onClick = onDismiss, modifier = Modifier.testTag("intake-close")) { Text("Close") }
+                TextButton(onClick = onDismiss, modifier = Modifier.testTag("intake-close")) { Text("Exit") }
             }
         } else {
             Row(
@@ -3339,9 +3335,7 @@ private fun BottleIntakeFlowScreen(
                     style = MaterialTheme.typography.headlineMedium,
                     modifier = Modifier.weight(1f).testTag("bottle-intake-route-title"),
                 )
-                if (route !in setOf(BottleIntakeRoute.SETUP, BottleIntakeRoute.MANUAL_ENTRY)) {
-                    TextButton(onClick = onPauseQueue, modifier = Modifier.testTag("intake-pause")) { Text("Pause") }
-                }
+                TextButton(onClick = onDismiss, modifier = Modifier.testTag("intake-exit")) { Text("Exit") }
             }
         }
 
@@ -4697,8 +4691,10 @@ private fun MyBarScreen(
     selectedLocationId: String,
     pantry: List<PantryEntry>,
     onLocationSelected: (String) -> Unit,
-    onAddIngredient: () -> Unit,
     onAddBottles: () -> Unit,
+    onReviewQueue: () -> Unit,
+    draftCount: Int,
+    onExit: () -> Unit,
     onAddLocation: () -> Unit,
     onLevelSelected: (PantryEntry, InventoryLevel) -> Unit,
     onOpenShop: () -> Unit,
@@ -4711,6 +4707,7 @@ private fun MyBarScreen(
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             Text("My Bar", style = MaterialTheme.typography.headlineMedium)
             TextButton(onClick = onAddLocation) { Text("＋ Home") }
+            TextButton(onClick = onExit, modifier = Modifier.testTag("my-bar-exit")) { Text("Exit") }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedButton(onClick = { locationMenuExpanded = true }) {
@@ -4730,8 +4727,8 @@ private fun MyBarScreen(
             OutlinedButton(onClick = onOpenShop) { Text("At the shop") }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            OutlinedButton(onClick = onAddIngredient, modifier = Modifier.weight(1f).testTag("inventory-add-ingredient")) { Text("＋ Add one") }
             Button(onClick = onAddBottles, modifier = Modifier.weight(1f).testTag("start-bottle-intake")) { Text("＋ Add bottles") }
+            OutlinedButton(onClick = onReviewQueue, enabled = draftCount > 0, modifier = Modifier.weight(1f).testTag("my-bar-review-queue")) { Text("Review queue · $draftCount") }
         }
         if (pantry.isEmpty()) {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {

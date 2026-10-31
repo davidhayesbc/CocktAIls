@@ -44,7 +44,7 @@ internal class SharedPreferencesPendingBottleEvidenceStorage(context: Context) :
 }
 
 internal class PendingBottleEvidenceStore(private val storage: PendingBottleEvidenceStorage) {
-    fun save(draftId: String, suggestions: BottleDetailSuggestions): Boolean {
+    fun save(draftId: String, suggestions: BottleDetailSuggestions): Boolean = synchronized(PROCESS_EVIDENCE_LOCK) {
         if (!draftId.matches(Regex("[A-Za-z0-9-]{1,80}"))) return false
         val sourceUrl = normalizePublicHttpsUrl(suggestions.sourceUrl) ?: return false
         val json = buildJsonObject {
@@ -74,7 +74,7 @@ internal class PendingBottleEvidenceStore(private val storage: PendingBottleEvid
         return json.length <= MAX_PENDING_EVIDENCE_CHARS && storage.write(draftId, json)
     }
 
-    fun markEdited(draftId: String, field: BottleDraftField): Boolean {
+    fun markEdited(draftId: String, field: BottleDraftField): Boolean = synchronized(PROCESS_EVIDENCE_LOCK) {
         if (!draftId.matches(Regex("[A-Za-z0-9-]{1,80}"))) return false
         val existing = storage.read(draftId)?.let { runCatching { Json.parseToJsonElement(it).jsonObject }.getOrNull() }
         val edited = editedFields(draftId) + field
@@ -124,9 +124,12 @@ internal class PendingBottleEvidenceStore(private val storage: PendingBottleEvid
         )
     }.getOrNull()
 
-    fun remove(draftId: String): Boolean = storage.remove(draftId)
+    fun remove(draftId: String): Boolean = synchronized(PROCESS_EVIDENCE_LOCK) { storage.remove(draftId) }
 
     private companion object {
+        // Worker and UI create separate stores over the same preferences. Serialize their
+        // read/modify/write operations so a result cannot erase a newly recorded manual edit.
+        val PROCESS_EVIDENCE_LOCK = Any()
         const val MAX_PENDING_EVIDENCE_CHARS = 16_384
         const val MAX_FACTS = 4
         const val MAX_FACT_VALUE_CHARS = 120
