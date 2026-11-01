@@ -5282,7 +5282,7 @@ private fun RecipeDetailScreen(
     var sourceTargetId by remember(recipe.id) { mutableStateOf(recipe.id.value) }
     var sourceMenuExpanded by remember { mutableStateOf(false) }
     var sourceAssociationMessage by remember(recipe.id) { mutableStateOf<String?>(null) }
-    var targetServings by remember(recipe.id) { mutableStateOf(recipe.servings.coerceAtLeast(0.5)) }
+    var targetServings by remember(recipe.id, recipe.servings, recipe.requiresUnscaledQuantities) { mutableStateOf(recipe.servings.coerceAtLeast(0.5)) }
     LazyColumn(modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { TextButton(onClick = onBack) { Text("‹  Recipes") } }
         item { Text(recipe.title, style = MaterialTheme.typography.headlineMedium) }
@@ -5296,8 +5296,8 @@ private fun RecipeDetailScreen(
             }
         }
         item {
-            if (recipe.sourceKind == "CATALOG" && recipe.sources.any { it.rawQuantities }) {
-                Text("Source formulation · original quantities, not automatically scaled", style = MaterialTheme.typography.bodySmall)
+            if (recipe.requiresUnscaledQuantities) {
+                Text("Unscaled quantities · amounts are shown as entered", style = MaterialTheme.typography.bodySmall)
             } else Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Servings", style = MaterialTheme.typography.titleMedium)
                 TextButton(onClick = { targetServings = (targetServings - 0.5).coerceAtLeast(0.5) }) { Text("−") }
@@ -5307,7 +5307,7 @@ private fun RecipeDetailScreen(
         }
         item { Text("INGREDIENTS", style = MaterialTheme.typography.labelLarge) }
         items(recipe.ingredients) { line ->
-            val scaledAmount = scaleRecipeAmount(line.amount, recipe.servings, targetServings)
+            val scaledAmount = if (recipe.requiresUnscaledQuantities) line.amount else scaleRecipeAmount(line.amount, recipe.servings, targetServings)
             val amountText = scaledAmount?.let(::formatRecipeQuantity)
             val parts = listOfNotNull(amountText, line.unit, line.name)
             Text("• ${parts.joinToString(" ")}${if (line.optional) " (optional)" else ""}", style = MaterialTheme.typography.bodyLarge)

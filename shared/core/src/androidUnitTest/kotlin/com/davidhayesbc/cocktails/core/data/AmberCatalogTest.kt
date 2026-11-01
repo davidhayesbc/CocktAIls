@@ -92,4 +92,48 @@ class AmberCatalogTest {
             } finally { driver.close(); targetDriver.close() }
         }
     }
+    @Test fun copiedRawMeasuresRemainUnscaledAcrossReloadExportAndPartialEdits() {
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        val restoredDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            CocktailsDatabase.Schema.create(driver)
+            val repo = LocalCocktailRepository(CocktailsDatabase(driver))
+            repo.initialize(1)
+            assertIs<CatalogInstallResult.Installed>(repo.installCatalogPack(amber, 1000))
+            val original = repo.recipes().single { it.title == "Shirley Temple" }
+            val copyId = assertNotNull(repo.duplicateRecipeVariant(original.id, 20000))
+            val copied = repo.recipes().single { it.id == copyId }
+            assertEquals("HOUSEHOLD", copied.sourceKind)
+            assertEquals(original.ingredients, copied.ingredients)
+            assertTrue(copied.requiresUnscaledQuantities)
+            assertEquals(original.sources.single().licenseNotice, copied.sources.single().licenseNotice)
+            assertTrue(repo.editRecipeVariant(copyId, "My Shirley", copied.ingredients.mapIndexed { index, line ->
+                RecipeIngredientDraft(line.name, if (index == 0) 180.0 else line.amount,
+                    if (index == 0) "ml" else line.unit, line.preparation, line.optional)
+            }, "My serving method", 1.0, copied.style, 21000))
+            val reloaded = LocalCocktailRepository(CocktailsDatabase(driver)).recipes().single { it.id == copyId }
+            assertTrue(reloaded.requiresUnscaledQuantities) // A partially normalized copy must not partially scale.
+            assertEquals("My serving method", reloaded.instructions)
+            assertEquals(180.0, reloaded.ingredients.first().amount)
+            assertEquals("1/2 oz", reloaded.ingredients.last().unit)
+            val bundle = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(repo.exportHouseholdBundle(22000))).bundle
+            CocktailsDatabase.Schema.create(restoredDriver)
+            val restoredRepo = LocalCocktailRepository(CocktailsDatabase(restoredDriver))
+            restoredRepo.initialize(23000)
+            val preview = assertIs<ImportPreviewResult.Valid>(restoredRepo.previewHouseholdBundle(bundle)).preview
+            assertIs<ImportApplyResult.Applied>(restoredRepo.applyHouseholdBundle(bundle, preview, emptyMap(), 24000))
+            val restored = restoredRepo.recipes().single { it.id == copyId }
+            assertEquals(reloaded, restored)
+            assertTrue(restored.requiresUnscaledQuantities)
+            assertEquals(asset("amber-book/LICENSE").readText(), restored.sources.single().licenseNotice)
+            assertTrue(restoredRepo.editRecipeVariant(copyId, restored.title, restored.ingredients.mapIndexed { index, line ->
+                RecipeIngredientDraft(line.name, if (index == 0) 180.0 else 15.0, "ml", line.preparation, line.optional)
+            }, restored.instructions, 1.0, restored.style, 25000))
+            val normalized = restoredRepo.recipes().single { it.id == copyId }
+            assertFalse(normalized.requiresUnscaledQuantities)
+            assertTrue(normalized.sources.single().rawQuantities) // Provenance is retained even after explicit normalization.
+            assertEquals("My serving method", normalized.instructions)
+        } finally { driver.close(); restoredDriver.close() }
+    }
+
 }

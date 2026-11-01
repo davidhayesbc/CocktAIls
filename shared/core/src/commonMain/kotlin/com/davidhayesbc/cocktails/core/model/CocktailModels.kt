@@ -169,7 +169,11 @@ data class RecipeDetail(
     val ingredients: List<RecipeLine>,
     val sources: List<RecipeSourceInfo> = emptyList(),
     val sourceKind: String = "HOUSEHOLD",
-)
+) {
+    // Copies retain source metadata. Do not scale a partially normalized formulation.
+    val requiresUnscaledQuantities: Boolean
+        get() = sources.any { it.rawQuantities } && ingredients.any { it.amount == null }
+}
 
 data class RecipeSourceInfo(
     val id: String,

@@ -27,6 +27,7 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
@@ -1622,7 +1623,19 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithText("Search recipes or ingredients").performTextInput("Shirley Temple")
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Open recipe"))
         composeRule.onNodeWithText("Open recipe").performClick()
-        composeRule.onNodeWithText("Source formulation · original quantities, not automatically scaled").assertExists()
+        composeRule.onNodeWithText("Unscaled quantities · amounts are shown as entered").assertExists()
+        composeRule.onNodeWithText("Duplicate").performScrollTo().performClick()
+        composeRule.onNodeWithText("Shirley Temple (copy)").assertExists()
+        composeRule.onNodeWithText("Unscaled quantities · amounts are shown as entered").assertExists()
+        composeRule.onNodeWithText("Servings").assertDoesNotExist()
+        composeRule.activityRule.scenario.recreate()
+        composeRule.onNodeWithText("Recipes").performClick()
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Search recipes or ingredients"))
+        composeRule.onNodeWithText("Search recipes or ingredients").performTextInput("Shirley Temple (copy)")
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Open recipe"))
+        composeRule.onNodeWithText("Open recipe").performClick()
+        composeRule.onNodeWithText("Unscaled quantities · amounts are shown as entered").assertExists()
+        composeRule.onNodeWithText("Servings").assertDoesNotExist()
     }
 
     @Test
