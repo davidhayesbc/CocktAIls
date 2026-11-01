@@ -1033,9 +1033,8 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             id, sessionId, position, cleanedBarcode, null, name, category.trim().ifEmpty { "Other" },
             brand?.trim()?.takeIf(String::isNotEmpty), productName?.trim()?.takeIf(String::isNotEmpty),
             photoJpeg, photoJpeg?.let(::photoSha256), normalizeBottleQuantity(quantity), normalizeBottleAbv(abvPercent),
-            if (quantityEdited) 1L else 0L, if (abvPercentEdited) 1L else 0L, locationId, level.name, nowMillis,
+            if (quantityEdited) 1L else 0L, if (abvPercentEdited) 1L else 0L, locationId, level.name, nowMillis, drinkCategory.trim(),
         )
-        queries.updateDraftDrinkCategory(drinkCategory.trim(), id, sessionId)
         return queries.selectBottleIntakeDraft(id, sessionId).executeAsOne().let { mapBottleIntakeDraft(it.id, it.session_id, it.position, it.barcode, it.product_id, it.ingredient_name, it.category, it.brand, it.product_name, it.photo_data, it.photo_sha256, it.bottle_quantity, it.abv_percent, it.bottle_quantity_edited != 0L, it.abv_percent_edited != 0L, it.location_id, it.level, it.created_at, it.drink_category) }
     }
 

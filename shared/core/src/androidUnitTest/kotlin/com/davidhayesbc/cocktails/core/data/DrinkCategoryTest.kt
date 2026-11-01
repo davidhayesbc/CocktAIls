@@ -70,6 +70,23 @@ class DrinkCategoryTest {
     }
 
     @Test
+    fun draftCategoryIsPresentInTheInsertBeforeAnyUpdateCanRun() {
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            CocktailsDatabase.Schema.create(driver)
+            val repo = LocalCocktailRepository(CocktailsDatabase(driver))
+            repo.initialize(10)
+            val home = repo.locations().single().id
+            val session = repo.startBottleIntakeSession(home, InventoryLevel.FULL, 20)
+            // An AFTER INSERT observer must see the complete requested draft, not a later repair.
+            driver.execute(null, "CREATE TRIGGER require_initial_category AFTER INSERT ON bottle_intake_draft WHEN NEW.drink_category != 'White Rum' BEGIN SELECT RAISE(ABORT, 'category missing from insert'); END", 0)
+            val draft = repo.addBottleIntakeDraft(session.id, "Rum", "Spirit", home, InventoryLevel.FULL, 30, drinkCategory = " White Rum ")!!
+            assertEquals("White Rum", draft.drinkCategory)
+            assertEquals("White Rum", repo.openBottleIntakeSession()!!.drafts.single().drinkCategory)
+        } finally { driver.close() }
+    }
+
+    @Test
     fun manualCreationStoresCategoryAndClearWithoutChangingIngredientGroup() {
         val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
         try {

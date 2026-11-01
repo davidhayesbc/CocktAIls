@@ -342,8 +342,8 @@ SELECT COALESCE(MAX(position) + 1, 0) AS next_position FROM bottle_intake_draft 
 insertBottleIntakeDraft:
 INSERT INTO bottle_intake_draft(
     id, session_id, position, barcode, product_id, ingredient_name, category, brand, product_name,
-    photo_data, photo_sha256, bottle_quantity, abv_percent, bottle_quantity_edited, abv_percent_edited, location_id, level, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    photo_data, photo_sha256, bottle_quantity, abv_percent, bottle_quantity_edited, abv_percent_edited, location_id, level, created_at, drink_category
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 deleteBottleIntakeSession:
 DELETE FROM bottle_intake_session WHERE id = ? AND status = 'OPEN';
