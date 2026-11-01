@@ -1579,9 +1579,14 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithText("Recipes").performClick()
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Add 8 starter recipes"))
         composeRule.onNodeWithText("Add 8 starter recipes").assertIsDisplayed().performClick()
+        // Lazy recipe rows need not be composed while collection cards occupy the viewport.
+        // Installation removes its button only after the repository and recipe list are refreshed.
         composeRule.waitUntil(timeoutMillis = 10_000) {
-            composeRule.onAllNodesWithText("Daiquiri").fetchSemanticsNodes().isNotEmpty()
+            composeRule.onAllNodesWithText("Add 8 starter recipes").fetchSemanticsNodes().isEmpty()
         }
+        composeRule.onNodeWithTag("recipe-browser-scroll")
+            .performScrollToNode(hasText("Added 8 recipes; 0 were already in your collection."))
+        composeRule.onNodeWithText("Added 8 recipes; 0 were already in your collection.").assertIsDisplayed()
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Daiquiri"))
         composeRule.onNodeWithText("Daiquiri").assertIsDisplayed()
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Search recipes or ingredients"))
