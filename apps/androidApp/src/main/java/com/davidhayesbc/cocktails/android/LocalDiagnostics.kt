@@ -134,7 +134,8 @@ internal class DiagnosticStore(
         val reportsDeleted = reportFiles.all { !it.exists() || runCatching { deleteFile(it) }.getOrDefault(false) } &&
             reportFiles.none(File::exists)
         val directoryDeleted = !reports.exists() || runCatching { deleteFile(reports) }.getOrDefault(false)
-        dataDeleted && tempDeleted && reportsDeleted && directoryDeleted && !file.exists() && !temp.exists() && !reports.exists()
+        val ocrDeleted = com.davidhayesbc.cocktails.android.product.BottleOcrJournal.forDirectory(file.parentFile!!).clear()
+        dataDeleted && tempDeleted && reportsDeleted && directoryDeleted && ocrDeleted && !file.exists() && !temp.exists() && !reports.exists()
     }
 
     private fun writeBottleLookupForDraft(draftId: String, json: String) {

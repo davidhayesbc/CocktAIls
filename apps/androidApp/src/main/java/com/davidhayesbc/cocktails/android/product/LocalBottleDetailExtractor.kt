@@ -43,11 +43,21 @@ internal class LocalBottleDetailExtractor(
     override val providerLabel: String = "On-device Qwen3"
 
     /** OCR never enters cloud providers, detailed captures, or diagnostic logs. */
-    suspend fun extractLabelText(text: String, webContext: List<BottleFactEvidence>): IndependentBottleFacts {
+    suspend fun extractLabelText(
+        text: String, webContext: List<BottleFactEvidence>,
+        onLabelAi: (OcrState, OcrReason, Long?) -> Unit = { _, _, _ -> },
+    ): IndependentBottleFacts {
+        fun report(state: OcrState, reason: OcrReason, duration: Long? = null) {
+            runCatching { onLabelAi(state, reason, duration) }
+        }
         val source = text.take(8_000)
         val candidates = explicitLabelCandidates(source).toMutableList()
         val path = modelPath()
         if (path != null && source.isNotBlank()) {
+            val started = System.nanoTime()
+            fun elapsed() = (System.nanoTime() - started).coerceAtLeast(0) / 1_000_000
+            report(OcrState.RUNNING, OcrReason.NONE)
+            var generated = false
             try {
                 val output = runner.generate(path, LocalBottleExtractionPromptConfiguration.DEFAULT.systemPrompt,
                     "/no_think\nExtract each supported field independently from LABEL OCR. Missing product name must not prevent ABV or bottle size. " +
@@ -55,12 +65,14 @@ internal class LocalBottleDetailExtractor(
                         "VERIFIED WEB CONTEXT (separate source, context only):\n" + webContext.joinToString("\n") { "${it.field.wireValue}: ${it.value}" } +
                         "\nLABEL OCR (may contain recognition errors; omit uncertain fields):\n$source",
                     DEFAULT_LOCAL_MAX_OUTPUT_TOKENS)
+                generated = true
                 val root = Json.parseToJsonElement(output).jsonObject
                 candidates += root["facts"]?.jsonArray.orEmpty().mapNotNull { it as? JsonObject }.take(16)
-            } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { /* Explicit label facts survive model abstention/failure. */ }
-            catch (_: LinkageError) { /* OCR remains useful without a native model runtime. */ }
-        }
+                report(OcrState.COMPLETED, OcrReason.NONE, elapsed())
+            } catch (cancelled: CancellationException) { report(OcrState.CANCELLED, OcrReason.WORK_STOPPED, elapsed()); throw cancelled }
+            catch (_: Exception) { report(OcrState.FAILED, if (generated) OcrReason.MODEL_RESPONSE_INVALID else OcrReason.MODEL_RUNTIME_FAILED, elapsed()) }
+            catch (_: LinkageError) { report(OcrState.FAILED, OcrReason.MODEL_RUNTIME_FAILED, elapsed()) }
+        } else report(OcrState.SKIPPED, if (source.isBlank()) OcrReason.NO_TEXT else OcrReason.MODEL_MISSING)
         return independentBottleFacts(source, candidates)
     }
 

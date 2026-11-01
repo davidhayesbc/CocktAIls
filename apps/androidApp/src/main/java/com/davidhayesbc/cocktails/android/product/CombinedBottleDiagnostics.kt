@@ -30,3 +30,9 @@ internal fun combineBottleDiagnostics(standardReport: String, detailedReports: L
         },
     )
 }
+
+/** OCR timings are a separate pipeline, never added to or substituted for the web lookup report. */
+internal fun attachBottleOcrDiagnostics(standardReport: String, ocr: JsonObject): String {
+    val standard = runCatching { Json.parseToJsonElement(standardReport).jsonObject }.getOrDefault(JsonObject(emptyMap()))
+    return Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), JsonObject(standard.toMutableMap().apply { put("labelOcr", ocr) }))
+}

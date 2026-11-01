@@ -58,6 +58,7 @@ internal object BottleEnrichmentWorkScheduler {
 
     fun cancelSession(context: Context, sessionId: String) {
         if (sessionId.matches(Regex("[A-Za-z0-9-]{1,100}"))) {
+            runCatching { BottleOcrJournal.forContext(context).cancelSession(sessionId) }
             runCatching { WorkManager.getInstance(context.applicationContext).cancelAllWorkByTag(SESSION_TAG_PREFIX + sessionId) }
         }
     }

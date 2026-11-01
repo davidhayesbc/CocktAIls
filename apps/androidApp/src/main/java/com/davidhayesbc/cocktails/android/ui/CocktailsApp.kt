@@ -341,12 +341,22 @@ private data class DiagnosticsDialogSnapshot(
 )
 
 private suspend fun loadDiagnosticsDialogSnapshot(
+    context: Context,
     draftId: String?,
     detailedStore: DetailedBottleLookupDebugSessionStore,
 ): DiagnosticsDialogSnapshot = withContext(Dispatchers.IO) {
     val detailedReports = detailedStore.reportContents(draftId)
+    val currentOcr = runCatching { com.davidhayesbc.cocktails.android.product.BottleScanEnrichmentRuntime(context).openRepository().use { repositories ->
+        val queue = com.davidhayesbc.cocktails.android.product.BottleEnrichmentQueue(com.davidhayesbc.cocktails.android.product.SharedPreferencesBottleEnrichmentQueueStorage(context))
+        repositories.repository.openBottleIntakeSession()?.drafts.orEmpty().map { draft ->
+            com.davidhayesbc.cocktails.android.product.OcrCorrelation.of(draft, queue.status(draft.id)?.attemptToken)
+        }
+    }
+    }.getOrNull()
+    val ocr = com.davidhayesbc.cocktails.android.product.BottleOcrJournal.forContext(context).snapshot(currentOcr, draftId)
     DiagnosticsDialogSnapshot(
-        standard = if (draftId == null) LocalDiagnostics.export() else LocalDiagnostics.exportForDraft(draftId),
+        standard = com.davidhayesbc.cocktails.android.product.attachBottleOcrDiagnostics(
+            if (draftId == null) LocalDiagnostics.export() else LocalDiagnostics.exportForDraft(draftId), ocr),
         lookupPreview = if (draftId == null) LocalDiagnostics.latestBottleLookupPreview() else LocalDiagnostics.latestBottleLookupPreviewForDraft(draftId),
         detailedCaptureCount = detailedReports.size,
         detailedStatus = draftId?.let { detailedStore.statusForDraft(it) },
@@ -526,7 +536,7 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
     LaunchedEffect(showDiagnostics, showDiagnosticsForDraftId) {
         while (showDiagnostics) {
             val draftId = showDiagnosticsForDraftId
-            val snapshot = loadDiagnosticsDialogSnapshot(draftId, detailedLookupCaptureStore)
+            val snapshot = loadDiagnosticsDialogSnapshot(context, draftId, detailedLookupCaptureStore)
             diagnosticsPreview = snapshot.standard
             diagnosticsLookupPreview = snapshot.lookupPreview
             diagnosticsDetailedCaptureCount = snapshot.detailedCaptureCount
@@ -2741,7 +2751,7 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                     diagnosticsActionBusy = true
                     coroutineScope.launch {
                         try {
-                            val snapshot = loadDiagnosticsDialogSnapshot(scope.draftId, detailedLookupCaptureStore)
+                            val snapshot = loadDiagnosticsDialogSnapshot(context, scope.draftId, detailedLookupCaptureStore)
                             if (diagnosticsActionGate.isCurrent(scope)) {
                                 diagnosticsPreview = snapshot.standard
                                 diagnosticsLookupPreview = snapshot.lookupPreview
@@ -2770,7 +2780,7 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                     diagnosticsActionBusy = true
                     coroutineScope.launch {
                         try {
-                            val snapshot = loadDiagnosticsDialogSnapshot(scope.draftId, detailedLookupCaptureStore)
+                            val snapshot = loadDiagnosticsDialogSnapshot(context, scope.draftId, detailedLookupCaptureStore)
                             if (!diagnosticsActionGate.isCurrent(scope)) {
                                 diagnosticsActionGate.cancelExport(scope)
                             } else {
