@@ -134,6 +134,9 @@ class OfflineRecipeSmokeTest {
     }
 
     @get:Rule(order = 1)
+    val catalogDatabaseFixture: TestRule = CatalogDatabaseFixture()
+
+    @get:Rule(order = 2)
     val composeRule = createAndroidComposeRule<MainActivity>()
 
     @Test
