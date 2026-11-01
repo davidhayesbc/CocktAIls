@@ -1592,9 +1592,10 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithText("Daiquiri").assertIsDisplayed()
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Search recipes or ingredients"))
         composeRule.onNodeWithText("Search recipes or ingredients").performTextInput("Whiskey Sour")
-        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Whiskey Sour"))
-        composeRule.onNode(hasTestTag("recipe-family-title") and hasText("Whiskey Sour", substring = false))
-            .assertIsDisplayed().assertTextEquals("Whiskey Sour")
+        // The search field also contains this text; scroll to the result title, not the query.
+        val whiskeySourTitle = hasTestTag("recipe-family-title") and hasText("Whiskey Sour", substring = false)
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(whiskeySourTitle)
+        composeRule.onNode(whiskeySourTitle).assertIsDisplayed().assertTextEquals("Whiskey Sour")
         composeRule.activityRule.scenario.recreate()
         composeRule.onNodeWithText("Recipes").performClick()
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Daiquiri"))
