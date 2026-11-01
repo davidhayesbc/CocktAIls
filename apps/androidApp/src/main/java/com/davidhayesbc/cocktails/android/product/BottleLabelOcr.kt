@@ -162,15 +162,11 @@ internal class BottleLabelOcrWorker(context: Context, parameters: WorkerParamete
         val started = System.nanoTime()
         fun elapsed() = (System.nanoTime() - started).coerceAtLeast(0) / 1_000_000
         fun update(change: (OcrDiagnosticRecord) -> OcrDiagnosticRecord) { correlation?.let { c -> runCatching { journal.update(c, request, change) } } }
-        fun finish(state: OcrState, reason: OcrReason) = update { it.copy(state = state, reason = reason, workerElapsedMs = elapsed(),
-            recognitionState = if (it.recognitionState == OcrState.RUNNING) state else it.recognitionState,
-            recognitionReason = if (it.recognitionState == OcrState.RUNNING) reason else it.recognitionReason,
-            labelAiState = if (it.labelAiState == OcrState.RUNNING) state else it.labelAiState,
-            labelAiReason = if (it.labelAiState == OcrState.RUNNING) reason else it.labelAiReason) }
+        fun finish(state: OcrState, reason: OcrReason) = update { it.stopped(state, reason).copy(workerElapsedMs = elapsed()) }
         try {
             runtime.openRepository().use { repositories ->
                 fun currentDraft(): BottleIntakeDraft? {
-                    if (isStopped) { finish(OcrState.CANCELLED, OcrReason.WORK_STOPPED); return null }
+                    if (isStopped) { finish(OcrState.INTERRUPTED, OcrReason.WORK_STOPPED); return null }
                     if (!store.current(id, request)) { finish(OcrState.STALE, OcrReason.SUPERSEDED_REQUEST); return null }
                     val job = queue.status(id)
                     if (job?.attemptToken != attempt) { finish(OcrState.STALE, OcrReason.STALE_ATTEMPT); return null }
@@ -231,7 +227,7 @@ internal class BottleLabelOcrWorker(context: Context, parameters: WorkerParamete
                     unresolvedFields = extracted.unresolved.map { field -> field.wireValue }.toSet(), conflictingFields = extracted.conflicts.map { field -> field.wireValue }.toSet()) }
             }
             Result.success()
-        } catch (cancelled: CancellationException) { finish(OcrState.CANCELLED, OcrReason.WORK_STOPPED); throw cancelled }
+        } catch (cancelled: CancellationException) { finish(OcrState.INTERRUPTED, OcrReason.WORK_STOPPED); throw cancelled }
         catch (_: Exception) { finish(OcrState.FAILED, OcrReason.WORKER_FAILED); Result.failure() }
         catch (_: LinkageError) { finish(OcrState.FAILED, OcrReason.WORKER_FAILED); Result.failure() }
     }

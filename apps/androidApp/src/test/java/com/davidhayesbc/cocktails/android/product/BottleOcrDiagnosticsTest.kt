@@ -78,6 +78,56 @@ class BottleOcrDiagnosticsTest {
         assertFalse(record.containsKey("recognitionMs"))
         assertEquals(1, record["retryCount"]!!.jsonPrimitive.int)
     }
+    @Test fun systemStoppedRequestCanRestartButCancellationAndSupersessionCannot() {
+        for (sameProcess in listOf(true, false)) {
+            val memory = Memory(); val first = BottleOcrJournal(memory, "first")
+            first.begin(c, "one"); first.start(c, "one", 0)
+            first.update(c, "one") { it.stopped(OcrState.INTERRUPTED, OcrReason.WORK_STOPPED) }
+            assertEquals("INTERRUPTED", records(first).single()["recognitionState"]!!.jsonPrimitive.content)
+            assertEquals("WORK_STOPPED", records(first).single()["recognitionReason"]!!.jsonPrimitive.content)
+            assertFalse(first.update(c, "one") { it.copy(state = OcrState.COMPLETED) })
+            val retry = if (sameProcess) first else BottleOcrJournal(memory, "second")
+            assertTrue(retry.start(c, "one", 1))
+            assertTrue(retry.update(c, "one") { it.copy(state = OcrState.COMPLETED, recognitionState = OcrState.COMPLETED) })
+            assertEquals("COMPLETED", records(retry).single()["state"]!!.jsonPrimitive.content)
+            assertFalse(retry.start(c, "one", 2))
+        }
+        for (cancelSession in listOf(true, false)) {
+            val journal = BottleOcrJournal(Memory(), "process")
+            journal.begin(c, "one"); journal.start(c, "one", 0)
+            journal.update(c, "one") { it.stopped(OcrState.INTERRUPTED, OcrReason.WORK_STOPPED) }
+            if (cancelSession) journal.cancelSession(draft.sessionId) else journal.cancelDraft(draft.id)
+            assertFalse(journal.start(c, "one", 1))
+            assertEquals("USER_CANCELLED", records(journal).single()["reason"]!!.jsonPrimitive.content)
+            journal.begin(c, "two")
+            assertFalse(journal.start(c, "one", 1))
+        }
+    }
+    @Test fun terminalStatesFinishActiveChildrenAndPreserveCompletedStages() {
+        for (action in listOf("supersede", "stale", "cancel", "restart")) {
+            val memory = Memory(); val journal = BottleOcrJournal(memory, "first")
+            journal.begin(c, "one"); journal.start(c, "one", 0)
+            journal.update(c, "one") { it.copy(recognitionState = OcrState.COMPLETED, recognitionReason = OcrReason.NONE,
+                recognitionMs = 42, labelAiState = OcrState.RUNNING, labelAiReason = OcrReason.NONE) }
+            val expected = when (action) {
+                "supersede" -> { journal.begin(c, "two"); "STALE" to "SUPERSEDED_REQUEST" }
+                "cancel" -> { journal.cancelDraft(draft.id); "CANCELLED" to "USER_CANCELLED" }
+                "restart" -> "INTERRUPTED" to "PROCESS_RESTARTED"
+                else -> "STALE" to "STALE_PHOTO_OR_DRAFT"
+            }
+            val result = when (action) {
+                "restart" -> records(BottleOcrJournal(memory, "second")).first()
+                "stale" -> records(journal, emptyList()).first()
+                else -> records(journal).first()
+            }
+            assertEquals(expected.first, result["state"]!!.jsonPrimitive.content)
+            assertEquals(expected.first, result["labelAiState"]!!.jsonPrimitive.content)
+            assertEquals(expected.second, result["labelAiReason"]!!.jsonPrimitive.content)
+            assertEquals("COMPLETED", result["recognitionState"]!!.jsonPrimitive.content)
+            assertEquals("NONE", result["recognitionReason"]!!.jsonPrimitive.content)
+            assertEquals(42, result["recognitionMs"]!!.jsonPrimitive.int)
+        }
+    }
     @Test fun missingPhotoSkippedReportsAreBoundedAndDraftScopedAndClearable() {
         val journal = BottleOcrJournal(Memory(), "process")
         val missing = OcrCorrelation.of(draft.copy(photoData = null, photoSha256 = null), null)

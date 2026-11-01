@@ -50,25 +50,34 @@ internal data class OcrDiagnosticRecord(
     val recognitionState: OcrState? = null,
     val recognitionReason: OcrReason? = null,
 )
+/** Finish only active child stages; completed recognition remains useful when later AI stops. */
+internal fun OcrDiagnosticRecord.stopped(state: OcrState, reason: OcrReason) = copy(
+    state = state, reason = reason,
+    recognitionState = if (recognitionState == OcrState.RUNNING) state else recognitionState,
+    recognitionReason = if (recognitionState == OcrState.RUNNING) reason else recognitionReason,
+    labelAiState = if (labelAiState == OcrState.RUNNING) state else labelAiState,
+    labelAiReason = if (labelAiState == OcrState.RUNNING) reason else labelAiReason,
+)
 internal interface OcrDiagnosticStorage { fun read(): String?; fun write(value: String): Boolean; fun clear(): Boolean }
 
 /** Separate bounded journal: no photo, path, barcode, values, quotes, prompts or throwable messages. */
 internal class BottleOcrJournal(private val storage: OcrDiagnosticStorage, private val process: String = PROCESS, private val now: () -> Long = System::currentTimeMillis) {
     fun begin(correlation: OcrCorrelation, request: String, state: OcrState = OcrState.QUEUED, reason: OcrReason = OcrReason.NONE): Boolean = synchronized(LOCK) {
         val records = read().map { old ->
-            if (old.correlation.draftRef == correlation.draftRef && old.state in ACTIVE)
-                old.copy(state = OcrState.STALE, reason = OcrReason.SUPERSEDED_REQUEST, updatedAt = now()) else old
+            if (old.correlation.draftRef == correlation.draftRef && old.state in PENDING)
+                old.stopped(OcrState.STALE, OcrReason.SUPERSEDED_REQUEST).copy(updatedAt = now()) else old
         }
         save(records + OcrDiagnosticRecord(correlation, opaque("request", request), state, reason = reason, queuedAt = now(), updatedAt = now()))
     }
-    fun update(correlation: OcrCorrelation, request: String, transform: (OcrDiagnosticRecord) -> OcrDiagnosticRecord): Boolean = synchronized(LOCK) {
+    fun update(correlation: OcrCorrelation, request: String, transform: (OcrDiagnosticRecord) -> OcrDiagnosticRecord): Boolean = mutate(correlation, request, false, transform)
+    private fun mutate(correlation: OcrCorrelation, request: String, restart: Boolean, transform: (OcrDiagnosticRecord) -> OcrDiagnosticRecord): Boolean = synchronized(LOCK) {
         val records = read()
         val latest = records.lastOrNull { it.correlation.draftRef == correlation.draftRef } ?: return false
-        if (latest.correlation != correlation || latest.requestRef != opaque("request", request) || latest.state !in ACTIVE) return false
+        if (latest.correlation != correlation || latest.requestRef != opaque("request", request) || (latest.state !in ACTIVE && !(restart && latest.state == OcrState.INTERRUPTED && latest.reason == OcrReason.WORK_STOPPED))) return false
         val changed = transform(latest).copy(correlation = latest.correlation, requestRef = latest.requestRef, queuedAt = latest.queuedAt, updatedAt = now())
         save(records.map { if (it.requestRef == latest.requestRef) changed else it })
     }
-    fun start(c: OcrCorrelation, request: String, retry: Int) = update(c, request) {
+    fun start(c: OcrCorrelation, request: String, retry: Int) = mutate(c, request, true) {
         it.copy(state = OcrState.RUNNING, phase = OcrPhase.RECOGNITION, reason = OcrReason.NONE, startedAt = now(), owner = process,
             recognitionMs = null, workerElapsedMs = null, textFound = null, labelAiState = null, labelAiReason = null, labelAiMs = null,
             supportedFields = emptySet(), unresolvedFields = emptySet(), conflictingFields = emptySet(), retryCount = retry.coerceIn(0, 100),
@@ -76,11 +85,11 @@ internal class BottleOcrJournal(private val storage: OcrDiagnosticStorage, priva
     }
     fun cancelDraft(draftId: String) = synchronized(LOCK) {
         val ref = opaque("draft", draftId)
-        save(read().map { if (it.correlation.draftRef == ref && it.state in ACTIVE) it.copy(state = OcrState.CANCELLED, reason = OcrReason.USER_CANCELLED, updatedAt = now(), recognitionState = if (it.recognitionState == OcrState.RUNNING) OcrState.CANCELLED else it.recognitionState, labelAiState = if (it.labelAiState == OcrState.RUNNING) OcrState.CANCELLED else it.labelAiState) else it })
+        save(read().map { if (it.correlation.draftRef == ref && it.state in PENDING) it.stopped(OcrState.CANCELLED, OcrReason.USER_CANCELLED).copy(updatedAt = now()) else it })
     }
     fun cancelSession(sessionId: String) = synchronized(LOCK) {
         val ref = opaque("session", sessionId)
-        save(read().map { if (it.correlation.sessionRef == ref && it.state in ACTIVE) it.copy(state = OcrState.CANCELLED, reason = OcrReason.USER_CANCELLED, updatedAt = now(), recognitionState = if (it.recognitionState == OcrState.RUNNING) OcrState.CANCELLED else it.recognitionState, labelAiState = if (it.labelAiState == OcrState.RUNNING) OcrState.CANCELLED else it.labelAiState) else it })
+        save(read().map { if (it.correlation.sessionRef == ref && it.state in PENDING) it.stopped(OcrState.CANCELLED, OcrReason.USER_CANCELLED).copy(updatedAt = now()) else it })
     }
     fun clear() = synchronized(LOCK) { storage.clear() }
     fun snapshot(current: List<OcrCorrelation>?, draftId: String? = null): JsonObject = synchronized(LOCK) {
@@ -98,8 +107,8 @@ internal class BottleOcrJournal(private val storage: OcrDiagnosticStorage, priva
             put("attempts", buildJsonArray { records.forEach { original ->
                 val isCurrent = current?.contains(original.correlation) == true && latest[original.correlation.draftRef] == original.requestRef
                 val record = when {
-                    current != null && !isCurrent && original.state in ACTIVE -> original.copy(state = OcrState.STALE, reason = OcrReason.STALE_PHOTO_OR_DRAFT)
-                    original.state == OcrState.RUNNING && original.owner != process -> original.copy(state = OcrState.INTERRUPTED, reason = OcrReason.PROCESS_RESTARTED, recognitionState = if (original.recognitionState == OcrState.RUNNING) OcrState.INTERRUPTED else original.recognitionState, labelAiState = if (original.labelAiState == OcrState.RUNNING) OcrState.INTERRUPTED else original.labelAiState)
+                    current != null && !isCurrent && original.state in PENDING -> original.stopped(OcrState.STALE, OcrReason.STALE_PHOTO_OR_DRAFT)
+                    original.state == OcrState.RUNNING && original.owner != process -> original.stopped(OcrState.INTERRUPTED, OcrReason.PROCESS_RESTARTED)
                     else -> original
                 }
                 val json = record.toJson().toMutableMap()
@@ -132,6 +141,7 @@ internal class BottleOcrJournal(private val storage: OcrDiagnosticStorage, priva
         private val LOCK = Any()
         private val PROCESS = UUID.randomUUID().toString()
         private val ACTIVE = setOf(OcrState.QUEUED, OcrState.RUNNING)
+        private val PENDING = ACTIVE + OcrState.INTERRUPTED
         fun forContext(context: Context) = forDirectory(context.applicationContext.filesDir)
         fun forDirectory(directory: File) = BottleOcrJournal(object : OcrDiagnosticStorage {
             private val file = File(directory, "bottle-ocr-diagnostics.json")
