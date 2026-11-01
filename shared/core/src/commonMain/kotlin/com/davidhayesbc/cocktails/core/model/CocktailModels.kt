@@ -60,6 +60,7 @@ data class PantryEntry(
     val photoData: ByteArray? = null,
     val bottleSize: String? = null,
     val abvPercent: String? = null,
+    val drinkCategory: String = "",
 )
 
 data class LocalProductBarcodeMatch(
@@ -95,6 +96,7 @@ data class BottleIntakeDraft(
     val locationId: String,
     val level: InventoryLevel,
     val createdAt: Long,
+    val drinkCategory: String = "",
 )
 
 data class BottleIntakeSession(

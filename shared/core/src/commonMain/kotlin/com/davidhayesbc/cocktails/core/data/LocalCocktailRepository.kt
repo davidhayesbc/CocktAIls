@@ -949,6 +949,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                 ingredientId = IngredientId(it.ingredient_id),
                 name = it.canonical_name,
                 category = it.category,
+                drinkCategory = it.drink_category,
                 level = InventoryLevel.valueOf(it.level),
                 productId = it.product_id,
                 productName = it.product_name,
@@ -1017,6 +1018,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         abvPercent: String? = null,
         quantityEdited: Boolean = false,
         abvPercentEdited: Boolean = false,
+        drinkCategory: String = "",
     ): BottleIntakeDraft? {
         val session = queries.selectBottleIntakeSession(sessionId).executeAsOneOrNull() ?: return null
         if (session.status != "OPEN") return null
@@ -1033,7 +1035,15 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             photoJpeg, photoJpeg?.let(::photoSha256), normalizeBottleQuantity(quantity), normalizeBottleAbv(abvPercent),
             if (quantityEdited) 1L else 0L, if (abvPercentEdited) 1L else 0L, locationId, level.name, nowMillis,
         )
-        return queries.selectBottleIntakeDraft(id, sessionId).executeAsOne().let { mapBottleIntakeDraft(it.id, it.session_id, it.position, it.barcode, it.product_id, it.ingredient_name, it.category, it.brand, it.product_name, it.photo_data, it.photo_sha256, it.bottle_quantity, it.abv_percent, it.bottle_quantity_edited != 0L, it.abv_percent_edited != 0L, it.location_id, it.level, it.created_at) }
+        queries.updateDraftDrinkCategory(drinkCategory.trim(), id, sessionId)
+        return queries.selectBottleIntakeDraft(id, sessionId).executeAsOne().let { mapBottleIntakeDraft(it.id, it.session_id, it.position, it.barcode, it.product_id, it.ingredient_name, it.category, it.brand, it.product_name, it.photo_data, it.photo_sha256, it.bottle_quantity, it.abv_percent, it.bottle_quantity_edited != 0L, it.abv_percent_edited != 0L, it.location_id, it.level, it.created_at, it.drink_category) }
+    }
+
+    /** Only an explicit category edit writes this field; stale OCR/web snapshots cannot reset it. */
+    fun updateBottleIntakeDrinkCategory(sessionId: String, draftId: String, value: String): Boolean {
+        if (queries.selectBottleIntakeSession(sessionId).executeAsOneOrNull()?.status != "OPEN") return false
+        queries.updateDraftDrinkCategory(value, draftId, sessionId)
+        return queries.selectBottleIntakeDraft(draftId, sessionId).executeAsOneOrNull() != null
     }
 
     fun updateBottleIntakeDraft(draft: BottleIntakeDraft): Boolean {
@@ -1198,16 +1208,16 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         id = id, status = BottleIntakeSessionStatus.valueOf(status), locationId = locationId,
         defaultLevel = InventoryLevel.valueOf(defaultLevel), createdAt = createdAt, updatedAt = updatedAt,
         confirmedCount = confirmedCount.toInt(), drafts = queries.selectBottleIntakeDrafts(id).executeAsList().map {
-            mapBottleIntakeDraft(it.id, it.session_id, it.position, it.barcode, it.product_id, it.ingredient_name, it.category, it.brand, it.product_name, it.photo_data, it.photo_sha256, it.bottle_quantity, it.abv_percent, it.bottle_quantity_edited != 0L, it.abv_percent_edited != 0L, it.location_id, it.level, it.created_at)
+            mapBottleIntakeDraft(it.id, it.session_id, it.position, it.barcode, it.product_id, it.ingredient_name, it.category, it.brand, it.product_name, it.photo_data, it.photo_sha256, it.bottle_quantity, it.abv_percent, it.bottle_quantity_edited != 0L, it.abv_percent_edited != 0L, it.location_id, it.level, it.created_at, it.drink_category)
         },
     )
 
-    private fun mapBottleIntakeDraft(id: String, sessionId: String, position: Long, barcode: String?, productId: String?, ingredientName: String, category: String, brand: String?, productName: String?, photoData: ByteArray?, photoSha256: String?, quantity: String?, abvPercent: String?, quantityEdited: Boolean, abvPercentEdited: Boolean, locationId: String, level: String, createdAt: Long): BottleIntakeDraft = BottleIntakeDraft(
+    private fun mapBottleIntakeDraft(id: String, sessionId: String, position: Long, barcode: String?, productId: String?, ingredientName: String, category: String, brand: String?, productName: String?, photoData: ByteArray?, photoSha256: String?, quantity: String?, abvPercent: String?, quantityEdited: Boolean, abvPercentEdited: Boolean, locationId: String, level: String, createdAt: Long, drinkCategory: String): BottleIntakeDraft = BottleIntakeDraft(
         id = id, sessionId = sessionId, position = position, barcode = barcode, productId = productId,
         ingredientName = ingredientName, category = category, brand = brand, productName = productName,
         photoData = photoData, photoSha256 = photoSha256, quantity = quantity, abvPercent = abvPercent,
         quantityEdited = quantityEdited, abvPercentEdited = abvPercentEdited, locationId = locationId,
-        level = InventoryLevel.valueOf(level), createdAt = createdAt,
+        level = InventoryLevel.valueOf(level), createdAt = createdAt, drinkCategory = drinkCategory,
     )
 
     private fun validateBottleIntakeDraft(
@@ -1310,7 +1320,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             )
             writeRevision(productId, "PRODUCT", memberId, nowMillis, payload)
         }
-        return writeInventory(draft.location_id, ingredientId, InventoryLevel.valueOf(draft.level), memberId, nowMillis, productId)
+        return writeInventory(draft.location_id, ingredientId, InventoryLevel.valueOf(draft.level), memberId, nowMillis, productId, draft.drink_category.trim())
     }
 
     fun productFactSources(productId: String): List<ProductFactSource> = queries.selectProductSourcesForProduct(productId).executeAsList().map { row ->
@@ -1368,6 +1378,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         brand: String? = null,
         productName: String? = null,
         productPhotoJpeg: ByteArray? = null,
+        drinkCategory: String = "",
     ): Boolean {
         val cleanedName = name.trim()
         val cleanedCategory = category.trim().ifEmpty { "Other" }
@@ -1431,7 +1442,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                 )
                 writeRevision(productId, "PRODUCT", memberId, nowMillis, productPayload)
             }
-            writeInventory(locationId, ingredientId, level, memberId, nowMillis, linkedProductId)
+            writeInventory(locationId, ingredientId, level, memberId, nowMillis, linkedProductId, drinkCategory.trim())
             true
         }
     }
@@ -1456,7 +1467,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                         "INVENTORY_ITEM",
                         memberId,
                         nowMillis,
-                        inventoryPayload(locationId, ingredientId.value, bottle.product_id, level),
+                        inventoryPayload(locationId, ingredientId.value, bottle.product_id, level, bottle.drink_category),
                     )
                 }
             }
@@ -1468,7 +1479,19 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         val householdId = queries.selectFirstHousehold().executeAsOne().id
         val memberId = preferredMemberId() ?: queries.selectFirstMember(householdId).executeAsOne().id
         queries.updateInventoryById(bottle.product_id, level.name, nowMillis, memberId, inventoryId)
-        writeRevision(inventoryId, "INVENTORY_ITEM", memberId, nowMillis, inventoryPayload(bottle.location_id, bottle.ingredient_id, bottle.product_id, level))
+        writeRevision(inventoryId, "INVENTORY_ITEM", memberId, nowMillis, inventoryPayload(bottle.location_id, bottle.ingredient_id, bottle.product_id, level, bottle.drink_category))
+        true
+    }
+
+    /** Edits one physical bottle, without changing shared ingredient matching. Empty means cleared. */
+    fun updateBottleDrinkCategory(inventoryId: String, category: String, nowMillis: Long): Boolean = database.transactionWithResult {
+        val bottle = queries.selectInventoryById(inventoryId).executeAsOneOrNull() ?: return@transactionWithResult false
+        val householdId = queries.selectFirstHousehold().executeAsOne().id
+        val memberId = preferredMemberId() ?: queries.selectFirstMember(householdId).executeAsOne().id
+        val value = category.trim()
+        queries.updateBottleDrinkCategory(value, nowMillis, memberId, inventoryId)
+        writeRevision(inventoryId, "INVENTORY_ITEM", memberId, nowMillis,
+            inventoryPayload(bottle.location_id, bottle.ingredient_id, bottle.product_id, InventoryLevel.valueOf(bottle.level), value))
         true
     }
 
@@ -1479,25 +1502,28 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         memberId: String,
         nowMillis: Long,
         productId: String?,
+        drinkCategory: String = "",
     ): String {
         val inventoryId = newUuidV7(nowMillis)
         queries.insertInventory(inventoryId, locationId, ingredientId, productId, level.name, nowMillis, memberId)
+        queries.updateBottleDrinkCategory(drinkCategory, nowMillis, memberId, inventoryId)
         writeRevision(
             inventoryId,
             "INVENTORY_ITEM",
             memberId,
             nowMillis,
-            inventoryPayload(locationId, ingredientId, productId, level),
+            inventoryPayload(locationId, ingredientId, productId, level, drinkCategory),
         )
         return inventoryId
     }
 
-    private fun inventoryPayload(locationId: String, ingredientId: String, productId: String?, level: InventoryLevel): String =
+    private fun inventoryPayload(locationId: String, ingredientId: String, productId: String?, level: InventoryLevel, drinkCategory: String): String =
         jsonObject(
             "locationId" to jsonString(locationId),
             "ingredientId" to jsonString(ingredientId),
             "productId" to (productId?.let(::jsonString) ?: "null"),
             "level" to jsonString(level.name),
+            "drinkCategory" to jsonString(drinkCategory),
         )
 
     private fun writeRevision(

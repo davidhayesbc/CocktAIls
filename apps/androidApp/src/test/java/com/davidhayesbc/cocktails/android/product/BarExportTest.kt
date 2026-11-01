@@ -109,6 +109,7 @@ class BarExportTest {
             ingredientId = IngredientId("ingredient-1"),
             name = "Spirit",
             category = "Other",
+            drinkCategory = "Crème de pêche",
             level = InventoryLevel.LOW,
             productId = null,
             productName = "Crème \"Étoile\" \\\n Reserve",
@@ -119,6 +120,7 @@ class BarExportTest {
         val bottle = root.getValue("bottles").jsonArray.single().jsonObject
 
         assertEquals("Crème \"Étoile\" \\\n Reserve", bottle.getValue("name").jsonPrimitive.content)
+        assertEquals("Crème de pêche", bottle.getValue("drinkCategory").jsonPrimitive.content)
         assertEquals("null", bottle.getValue("barcode").toString())
         assertEquals("null", bottle.getValue("normalizedBarcode").toString())
         assertEquals("null", bottle.getValue("abvPercent").toString())

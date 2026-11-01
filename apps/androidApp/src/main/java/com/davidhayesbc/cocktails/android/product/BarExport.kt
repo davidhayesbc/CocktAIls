@@ -71,6 +71,7 @@ internal fun buildBarExportJson(entries: List<PantryEntry>, exportedAtMillis: Lo
                     put("productName", entry.productName?.let(::JsonPrimitive) ?: JsonNull)
                     put("brand", entry.brand?.let(::JsonPrimitive) ?: JsonNull)
                     put("category", entry.category)
+                    put("drinkCategory", entry.drinkCategory)
                     put("barcode", entry.barcode?.let(::JsonPrimitive) ?: JsonNull)
                     put("normalizedBarcode", entry.barcode?.let(::normalizeGtinForLookup)?.let(::JsonPrimitive) ?: JsonNull)
                     put("abvPercent", entry.abvPercent?.let(::JsonPrimitive) ?: JsonNull)

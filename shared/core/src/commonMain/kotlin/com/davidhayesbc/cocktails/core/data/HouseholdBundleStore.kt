@@ -346,7 +346,7 @@ class HouseholdBundleStore internal constructor(
             )
         }
         queries.selectAllInventoryForBundle().executeAsList().forEach {
-            records += BundleRecord("INVENTORY_ITEM", it.id, obj("id" to str(it.id), "locationId" to str(it.location_id), "ingredientId" to str(it.ingredient_id), "productId" to nullableString(it.product_id), "level" to str(it.level), "updatedAt" to num(it.updated_at), "updatedByMemberId" to str(it.updated_by_member_id)))
+            records += BundleRecord("INVENTORY_ITEM", it.id, obj("id" to str(it.id), "locationId" to str(it.location_id), "ingredientId" to str(it.ingredient_id), "productId" to nullableString(it.product_id), "level" to str(it.level), "drinkCategory" to str(it.drink_category), "updatedAt" to num(it.updated_at), "updatedByMemberId" to str(it.updated_by_member_id)))
         }
         queries.selectAllFamiliesForBundle().executeAsList().forEach { row ->
             records += BundleRecord("COCKTAIL_FAMILY", row.id, obj(
@@ -587,6 +587,8 @@ class HouseholdBundleStore internal constructor(
         val productId = data.optionalNullableString("productId")
         queries.insertInventoryBundleIgnore(record.id, locationId, ingredientId, productId, level, updatedAt, memberId)
         queries.updateInventoryBundleById(locationId, ingredientId, productId, level, updatedAt, memberId, record.id)
+        // Older backups omit this field: retain any current manual category.
+        if ("drinkCategory" in data) queries.updateBottleDrinkCategory(data.string("drinkCategory"), updatedAt, memberId, record.id)
     }
 
     private fun writeFamily(record: BundleRecord) {

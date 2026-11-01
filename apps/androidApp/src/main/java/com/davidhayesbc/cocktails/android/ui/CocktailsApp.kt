@@ -2249,11 +2249,12 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                         }
                     }
                 },
-                onAddManual = { name, category, barcode, brand, productName, level, photo ->
+                onAddManual = { name, category, barcode, brand, productName, level, photo, drinkCategory ->
                     val created = repository.addBottleIntakeDraft(
                         sessionId = bottleIntakeSession!!.id,
                         ingredientName = name,
                         category = category,
+                        drinkCategory = drinkCategory,
                         locationId = bottleIntakeSession!!.locationId,
                         level = level,
                         nowMillis = System.currentTimeMillis(),
@@ -2288,6 +2289,11 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                         context.getSharedPreferences("cocktails_local_scan_review", Context.MODE_PRIVATE).edit().remove("active_draft_id").apply()
                     }
                     bottleIntakeSession = repository.openBottleIntakeSession()
+                },
+                onUpdateDrinkCategory = { draft, value ->
+                    repository.updateBottleIntakeDrinkCategory(draft.sessionId, draft.id, value).also {
+                        if (it) bottleIntakeSession = repository.openBottleIntakeSession()
+                    }
                 },
                 onUpdate = { draft ->
                     val prior = bottleIntakeSession?.drafts?.firstOrNull { it.id == draft.id }
@@ -2450,6 +2456,9 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                         nowMillis = System.currentTimeMillis(),
                     )
                     refreshPantry()
+                },
+                onCategorySaved = { entry, value ->
+                    repository.updateBottleDrinkCategory(entry.inventoryId, value, System.currentTimeMillis()).also { if (it) refreshPantry() }
                 },
                 onOpenShop = ::openShop,
             )
@@ -2797,10 +2806,11 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
             onPickPhoto = { productPhotoLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
             onRemovePhoto = { selectedProductPhoto = null; productPhotoMessage = null },
             onDismiss = { showAddIngredient = false; setBarcodeInput(""); barcodePermissionMessage = null; selectedProductPhoto = null; productPhotoMessage = null },
-            onSave = { name, category, level, barcode, brand, productName, productPhoto ->
+            onSave = { name, category, level, barcode, brand, productName, productPhoto, drinkCategory ->
                 val saved = repository.addIngredient(
                     name = name,
                     category = category,
+                    drinkCategory = drinkCategory,
                     level = level,
                     locationId = selectedLocationId,
                     nowMillis = System.currentTimeMillis(),
@@ -3184,9 +3194,10 @@ internal fun BottleIntakeScreen(
     onAttachCapturedLabel: (BottleIntakeDraft) -> Unit,
     onScan: () -> Unit,
     onAcceptAndScanNext: (String) -> BottleIntakeCommitResult,
-    onAddManual: (String, String, String?, String?, String?, InventoryLevel, ByteArray?) -> Boolean,
+    onAddManual: (String, String, String?, String?, String?, InventoryLevel, ByteArray?, String) -> Boolean,
     onRemove: (BottleIntakeDraft) -> Unit,
     onUpdate: (BottleIntakeDraft) -> Boolean,
+    onUpdateDrinkCategory: (BottleIntakeDraft, String) -> Boolean = { _, _ -> false },
     onUpdateBarcode: (String, String) -> Boolean = { _, _ -> false },
     onFieldEdited: (String, BottleDraftField) -> Unit,
     onHomeChanged: (String) -> Unit,
@@ -3244,6 +3255,7 @@ internal fun BottleIntakeScreen(
         onAddManual = onAddManual,
         onRemove = onRemove,
         onUpdate = onUpdate,
+        onUpdateDrinkCategory = onUpdateDrinkCategory,
         onUpdateBarcode = onUpdateBarcode,
         onFieldEdited = onFieldEdited,
         onHomeChanged = onHomeChanged,
@@ -3302,9 +3314,10 @@ private fun BottleIntakeFlowScreen(
     onScan: () -> Unit,
     onReviewBottle: (String) -> Unit,
     onAcceptAndScanNext: (String) -> BottleIntakeCommitResult,
-    onAddManual: (String, String, String?, String?, String?, InventoryLevel, ByteArray?) -> Boolean,
+    onAddManual: (String, String, String?, String?, String?, InventoryLevel, ByteArray?, String) -> Boolean,
     onRemove: (BottleIntakeDraft) -> Unit,
     onUpdate: (BottleIntakeDraft) -> Boolean,
+    onUpdateDrinkCategory: (BottleIntakeDraft, String) -> Boolean = { _, _ -> false },
     onUpdateBarcode: (String, String) -> Boolean,
     onFieldEdited: (String, BottleDraftField) -> Unit,
     onHomeChanged: (String) -> Unit,
@@ -3334,6 +3347,7 @@ private fun BottleIntakeFlowScreen(
     var cropEditorOpen by remember(session.id, pendingLabelDraftId) { mutableStateOf(false) }
     var name by remember(session.id) { mutableStateOf("") }
     var category by remember(session.id) { mutableStateOf("Spirit") }
+    var drinkCategory by remember(session.id) { mutableStateOf("") }
     var barcode by remember(session.id) { mutableStateOf("") }
     var brand by remember(session.id) { mutableStateOf("") }
     var productName by remember(session.id) { mutableStateOf("") }
@@ -3558,6 +3572,7 @@ private fun BottleIntakeFlowScreen(
                                 draft = draft,
                                 homes = homes,
                                 onUpdate = onUpdate,
+                                onUpdateDrinkCategory = onUpdateDrinkCategory,
                                 onUpdateBarcode = onUpdateBarcode,
                                 onFieldEdited = onFieldEdited,
                                 onValidityChanged = { _, _ -> },
@@ -3718,7 +3733,8 @@ private fun BottleIntakeFlowScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 OutlinedTextField(name, { name = it; error = null }, label = { Text("Bottle or ingredient name") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("batch-manual-name"))
-                OutlinedTextField(category, { category = it }, label = { Text("Category") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(category, { category = it }, label = { Text("Ingredient group") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                DrinkCategoryField(drinkCategory, { drinkCategory = it }, modifier = Modifier.testTag("manual-drink-category"))
                 OutlinedTextField(barcode, { barcode = it; error = null }, label = { Text("Barcode · optional") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth().testTag("batch-manual-barcode"))
                 OutlinedTextField(brand, { brand = it }, label = { Text("Brand · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(productName, { productName = it }, label = { Text("Product · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -3734,8 +3750,8 @@ private fun BottleIntakeFlowScreen(
                     when {
                         name.isBlank() -> error = "Enter a bottle name."
                         cleaned != null && normalizeGtinForLookup(cleaned) == null -> error = "That barcode is invalid. Correct it or clear it; your details are still here."
-                        !onAddManual(name, category, cleaned, brand.trim().ifEmpty { null }, productName.trim().ifEmpty { null }, session.defaultLevel, capturePhoto) -> error = "This bottle could not be saved. Your fields and photo are still here."
-                        else -> { name = ""; barcode = ""; brand = ""; productName = ""; error = null; onRouteChange(BottleIntakeRoute.SCANNING) }
+                        !onAddManual(name, category, cleaned, brand.trim().ifEmpty { null }, productName.trim().ifEmpty { null }, session.defaultLevel, capturePhoto, drinkCategory) -> error = "This bottle could not be saved. Your fields and photo are still here."
+                        else -> { name = ""; barcode = ""; brand = ""; productName = ""; drinkCategory = ""; error = null; onRouteChange(BottleIntakeRoute.SCANNING) }
                     }
                 }, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("batch-add-manual-bottle")) { Text("Add bottle to draft") }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("batch-manual-error")) }
@@ -3950,6 +3966,7 @@ private fun BottleReviewCard(
     draft: BottleIntakeDraft,
     homes: List<HomeLocation>,
     onUpdate: (BottleIntakeDraft) -> Boolean,
+    onUpdateDrinkCategory: (BottleIntakeDraft, String) -> Boolean = { _, _ -> false },
     onUpdateBarcode: (String, String) -> Boolean,
     onFieldEdited: (String, BottleDraftField) -> Unit,
     onValidityChanged: (String, Boolean) -> Unit,
@@ -3968,7 +3985,7 @@ private fun BottleReviewCard(
     onCancelSearch: () -> Unit,
 ) {
     var name by remember(draft.id, draft.barcode) { mutableStateOf(draft.ingredientName) }
-    var category by remember(draft.id, draft.category) { mutableStateOf(draft.category) }
+    var category by remember(draft.id, draft.drinkCategory) { mutableStateOf(draft.drinkCategory) }
     var brand by remember(draft.id, draft.barcode) { mutableStateOf(draft.brand.orEmpty()) }
     var productName by remember(draft.id, draft.barcode) { mutableStateOf(draft.productName.orEmpty()) }
     var quantity by remember(draft.id, draft.barcode) { mutableStateOf(draft.quantity.orEmpty()) }
@@ -4059,14 +4076,11 @@ private fun BottleReviewCard(
         )
     }
     val categoryField: @Composable () -> Unit = {
-        OutlinedTextField(
+        DrinkCategoryField(
             value = category,
             onValueChange = { value ->
-                category = value
-                onUpdate(draft.copy(category = value.trim().ifEmpty { "Spirit" }))
+                if (onUpdateDrinkCategory(draft, value)) category = value
             },
-            label = { Text("Category") },
-            singleLine = true,
             modifier = Modifier.fillMaxWidth().testTag("bottle-intake-draft-category-${draft.position}"),
         )
     }
@@ -4126,9 +4140,9 @@ private fun BottleReviewCard(
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     nameField()
-                    categoryField()
                 }
             }
+            categoryField()
             nameValidationMessage?.let {
                 Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("bottle-intake-draft-error-${draft.position}"))
             }
@@ -4399,6 +4413,7 @@ private fun BottleDraftCard(
     draft: BottleIntakeDraft,
     homes: List<HomeLocation>,
     onUpdate: (BottleIntakeDraft) -> Boolean,
+    onUpdateDrinkCategory: (BottleIntakeDraft, String) -> Boolean = { _, _ -> false },
     onFieldEdited: (String, BottleDraftField) -> Unit,
     onValidityChanged: (String, Boolean) -> Unit,
     onRemove: (BottleIntakeDraft) -> Unit,
@@ -4419,7 +4434,7 @@ private fun BottleDraftCard(
     onCancelSearch: () -> Unit,
 ) {
     var name by remember(draft.id) { mutableStateOf(draft.ingredientName) }
-    var category by remember(draft.id, draft.category) { mutableStateOf(draft.category) }
+    var category by remember(draft.id, draft.drinkCategory) { mutableStateOf(draft.drinkCategory) }
     var brand by remember(draft.id) { mutableStateOf(draft.brand.orEmpty()) }
     var productName by remember(draft.id) { mutableStateOf(draft.productName.orEmpty()) }
     var quantity by remember(draft.id) { mutableStateOf(draft.quantity.orEmpty()) }
@@ -4537,14 +4552,11 @@ private fun BottleDraftCard(
                 val saved = onUpdate(draft.copy(ingredientName = name, brand = brand.trim().ifEmpty { null }, productName = value.trim().ifEmpty { null }))
                 onValidityChanged(draft.id, name.isNotBlank() && saved)
             }, label = { Text("Product · optional") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("bottle-intake-draft-product-${draft.position}"))
-            if (activeReview) OutlinedTextField(
+            if (activeReview) DrinkCategoryField(
                 category,
                 { value ->
-                    category = value
-                    onUpdate(draft.copy(category = value.trim().ifEmpty { "Spirit" }))
+                    if (onUpdateDrinkCategory(draft, value)) category = value
                 },
-                label = { Text("Category") },
-                singleLine = true,
                 modifier = Modifier.fillMaxWidth().testTag("bottle-intake-draft-category-${draft.position}"),
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -4749,6 +4761,7 @@ private fun MyBarScreen(
     onExit: () -> Unit,
     onAddLocation: () -> Unit,
     onLevelSelected: (PantryEntry, InventoryLevel) -> Unit,
+    onCategorySaved: (PantryEntry, String) -> Boolean,
     onOpenShop: () -> Unit,
 ) {
     var locationMenuExpanded by remember { mutableStateOf(false) }
@@ -4792,7 +4805,7 @@ private fun MyBarScreen(
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(pantry, key = { it.inventoryId }) { entry ->
-                    PantryRow(entry, onLevelSelected)
+                    PantryRow(entry, onLevelSelected, onCategorySaved)
                 }
             }
         }
@@ -4800,7 +4813,22 @@ private fun MyBarScreen(
 }
 
 @Composable
-private fun PantryRow(entry: PantryEntry, onLevelSelected: (PantryEntry, InventoryLevel) -> Unit) {
+private fun PantryRow(entry: PantryEntry, onLevelSelected: (PantryEntry, InventoryLevel) -> Unit, onCategorySaved: (PantryEntry, String) -> Boolean) {
+    var editCategory by remember { mutableStateOf(false) }
+    var category by remember(entry.inventoryId, entry.drinkCategory) { mutableStateOf(entry.drinkCategory) }
+    var categoryError by remember { mutableStateOf(false) }
+    if (editCategory) AlertDialog(
+        onDismissRequest = { editCategory = false },
+        title = { Text("${entry.name} · drink category") },
+        text = { Column {
+            DrinkCategoryField(category, { category = it; categoryError = false }, Modifier.testTag("saved-bottle-drink-category"))
+            if (categoryError) Text("Category could not be saved. Try again.")
+        } },
+        confirmButton = { TextButton(onClick = {
+            if (onCategorySaved(entry, category)) editCategory = false else categoryError = true
+        }, modifier = Modifier.testTag("save-bottle-drink-category")) { Text("Save") } },
+        dismissButton = { TextButton(onClick = { editCategory = false }) { Text("Cancel") } },
+    )
     var menuExpanded by remember { mutableStateOf(false) }
     val photo = remember(entry.photoData) {
         entry.photoData?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
@@ -4815,7 +4843,7 @@ private fun PantryRow(entry: PantryEntry, onLevelSelected: (PantryEntry, Invento
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (photo != null) {
                     Image(photo, contentDescription = "${entry.name} product photo", modifier = Modifier.height(52.dp))
                 }
@@ -4823,7 +4851,10 @@ private fun PantryRow(entry: PantryEntry, onLevelSelected: (PantryEntry, Invento
                     Text(entry.name, style = MaterialTheme.typography.titleMedium)
                     entry.brand?.takeIf(String::isNotBlank)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                     entry.productName?.takeIf { it.isNotBlank() && it != entry.name }?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-                    Text(entry.category, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TextButton(onClick = { category = entry.drinkCategory; categoryError = false; editCategory = true },
+                        modifier = Modifier.testTag("edit-drink-category-${entry.inventoryId}")) {
+                        Text(entry.drinkCategory.ifBlank { "Set drink category" })
+                    }
                 }
             }
             Column(horizontalAlignment = Alignment.End) {
@@ -4860,15 +4891,15 @@ private fun AddIngredientDialog(
     onPickPhoto: () -> Unit,
     onRemovePhoto: () -> Unit,
     onDismiss: () -> Unit,
-    onSave: (String, String, InventoryLevel, String, String?, String?, ByteArray?) -> String?,
+    onSave: (String, String, InventoryLevel, String, String?, String?, ByteArray?, String) -> String?,
 ) {
     var name by remember { mutableStateOf("") }
     var brand by remember { mutableStateOf("") }
     var productName by remember { mutableStateOf("") }
     var saveError by remember { mutableStateOf<String?>(null) }
     var category by remember { mutableStateOf("Spirit") }
+    var drinkCategory by remember { mutableStateOf("") }
     var level by remember { mutableStateOf(InventoryLevel.FULL) }
-    var categoryMenuExpanded by remember { mutableStateOf(false) }
     var levelMenuExpanded by remember { mutableStateOf(false) }
 
     AlertDialog(
@@ -4889,13 +4920,8 @@ private fun AddIngredientDialog(
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
                     modifier = Modifier.fillMaxWidth().testTag("ingredient-name"),
                 )
-                Text("Category", style = MaterialTheme.typography.labelMedium)
-                OutlinedButton(onClick = { categoryMenuExpanded = true }, modifier = Modifier.fillMaxWidth()) { Text(category) }
-                DropdownMenu(expanded = categoryMenuExpanded, onDismissRequest = { categoryMenuExpanded = false }) {
-                    CATEGORIES.forEach { option ->
-                        DropdownMenuItem(text = { Text(option) }, onClick = { category = option; categoryMenuExpanded = false })
-                    }
-                }
+                IngredientGroupField(category, { category = it })
+                DrinkCategoryField(drinkCategory, { drinkCategory = it }, modifier = Modifier.testTag("ingredient-drink-category"))
                 Text("Stock at selected home", style = MaterialTheme.typography.labelMedium)
                 OutlinedButton(onClick = { levelMenuExpanded = true }, modifier = Modifier.fillMaxWidth()) { Text(level.label) }
                 DropdownMenu(expanded = levelMenuExpanded, onDismissRequest = { levelMenuExpanded = false }) {
@@ -4985,7 +5011,7 @@ private fun AddIngredientDialog(
         },
         confirmButton = {
             Button(
-                onClick = { saveError = onSave(name, category, level, barcode, brand.takeIf(String::isNotBlank), productName.takeIf(String::isNotBlank), productPhotoBytes) },
+                onClick = { saveError = onSave(name, category, level, barcode, brand.takeIf(String::isNotBlank), productName.takeIf(String::isNotBlank), productPhotoBytes, drinkCategory) },
                 enabled = name.isNotBlank(),
             ) { Text("Save") }
         },
@@ -6327,5 +6353,3 @@ private val InventoryLevel.label: String
         InventoryLevel.LOW -> "Low"
         InventoryLevel.OUT -> "Out"
     }
-
-private val CATEGORIES = listOf("Spirit", "Liqueur", "Bitters", "Mixer", "Fruit", "Other")

@@ -54,11 +54,21 @@ class CocktailsSchemaMigrationTest {
             }
 
             CocktailsDatabase.Schema.migrate(driver, 5, 9)
+            // Preview 23's v9 database can contain an unfinished intake during the upgrade.
+            driver.execute(null, "INSERT INTO bottle_intake_session VALUES ('session-v9', 'OPEN', 'home-v5', 'FULL', 3, 3, 0)", 0)
+            driver.execute(null, "INSERT INTO bottle_intake_draft(id, session_id, position, ingredient_name, category, brand, product_name, location_id, level, created_at) VALUES ('draft-v9', 'session-v9', 0, 'Existing bottle', 'Custom old group', 'Existing brand', 'Existing product', 'home-v5', 'HALF', 3)", 0)
+            CocktailsDatabase.Schema.migrate(driver, 9, 10)
             val database = CocktailsDatabase(driver)
             val repository = LocalCocktailRepository(database)
             val pantry = repository.pantry("home-v5")
             assertEquals(1, pantry.size)
             assertEquals("stock-v5", pantry.single().inventoryId)
+            assertEquals("", pantry.single().drinkCategory)
+            val restoredDraft = repository.openBottleIntakeSession()!!.drafts.single()
+            assertEquals("Existing bottle", restoredDraft.ingredientName)
+            assertEquals("Custom old group", restoredDraft.category)
+            assertEquals("Existing brand", restoredDraft.brand)
+            assertEquals("", restoredDraft.drinkCategory)
             assertEquals("Gin", pantry.single().name)
             assertEquals(InventoryLevel.FULL, pantry.single().level)
             assertEquals("bottle-v5", pantry.single().productId)
@@ -107,7 +117,7 @@ class CocktailsSchemaMigrationTest {
                 bindString(3, "HALF"); bindLong(4, 3L); bindString(5, "member-v4")
             }
 
-            CocktailsDatabase.Schema.migrate(driver, 4, 9)
+            CocktailsDatabase.Schema.migrate(driver, 4, 10)
             val database = CocktailsDatabase(driver)
             assertEquals("0012345678905", database.householdQueries.selectProductById("bottle-v4").executeAsOne().barcode)
             val migratedBottle = database.householdQueries.selectInventoryById("stock-v4").executeAsOne()
@@ -160,7 +170,7 @@ class CocktailsSchemaMigrationTest {
                 bindString(3, "HALF"); bindLong(4, 12L); bindString(5, "member-v3")
             }
 
-            CocktailsDatabase.Schema.migrate(driver, 3, 9)
+            CocktailsDatabase.Schema.migrate(driver, 3, 10)
             val database = CocktailsDatabase(driver)
             assertEquals("stock-v3", database.householdQueries.selectInventoryId("home-v3", "gin-v3").executeAsOne())
             assertEquals("HALF", database.householdQueries.selectPantryForLocation("home-v3").executeAsOne().level)
@@ -209,7 +219,7 @@ class CocktailsSchemaMigrationTest {
                 bindString(3, "LOW"); bindLong(4, 2L); bindString(5, "member-v2")
             }
 
-            CocktailsDatabase.Schema.migrate(driver, 2, 9)
+            CocktailsDatabase.Schema.migrate(driver, 2, 10)
             val database = CocktailsDatabase(driver)
             val repository = LocalCocktailRepository(database)
             assertEquals("stock-v2", database.householdQueries.selectInventoryId("home-v2", "gin-v2").executeAsOne())
@@ -252,7 +262,7 @@ class CocktailsSchemaMigrationTest {
         }
         driver.execute(null, "PRAGMA user_version = 1", 0)
 
-        CocktailsDatabase.Schema.migrate(driver, 1, 9)
+        CocktailsDatabase.Schema.migrate(driver, 1, 10)
         val database = CocktailsDatabase(driver)
         val migratedPantry = database.householdQueries.selectPantryForLocation(legacyLocationId).executeAsOne()
 

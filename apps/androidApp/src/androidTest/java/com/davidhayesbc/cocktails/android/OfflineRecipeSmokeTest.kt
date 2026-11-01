@@ -471,7 +471,7 @@ class OfflineRecipeSmokeTest {
                                 remainingDraftCount = activeSession.drafts.size,
                             )
                         },
-                        onAddManual = { _, _, _, _, _, _, _ -> false },
+                        onAddManual = { _, _, _, _, _, _, _, _ -> false },
                         onRemove = { draft -> repository.removeBottleIntakeDraft(draft.sessionId, draft.id); activeSession = repository.openBottleIntakeSession()!! },
                         onUpdate = { draft ->
                             val updated = repository.updateBottleIntakeDraft(draft)
@@ -601,8 +601,13 @@ class OfflineRecipeSmokeTest {
                         onSearchDraft = {}, onFetchDraftSource = { _, _ -> }, onExtractDraftDetails = {},
                         onExtractDraftDetailsOnDevice = {}, onResumeEnrichment = { _, _ -> }, onCancelDraftSearch = {},
                         onCaptureLabel = {}, onDiscardCapturedLabel = {}, onAttachCapturedLabel = {}, onScan = {},
-                        onAcceptAndScanNext = { BottleIntakeCommitResult.Invalid("Test only") }, onAddManual = { _, _, _, _, _, _, _ -> false },
+                        onAcceptAndScanNext = { BottleIntakeCommitResult.Invalid("Test only") }, onAddManual = { _, _, _, _, _, _, _, _ -> false },
                         onRemove = { },
+                        onUpdateDrinkCategory = { current, value ->
+                            repository.updateBottleIntakeDrinkCategory(current.sessionId, current.id, value).also {
+                                if (it) activeSession = repository.openBottleIntakeSession()!!
+                            }
+                        },
                         onUpdate = { updated ->
                             val saved = repository.updateBottleIntakeDraft(updated)
                             if (saved) activeSession = repository.openBottleIntakeSession()!!
@@ -620,8 +625,11 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-name-0"))
             composeRule.onNodeWithTag("bottle-intake-draft-name-0").performTextClearance()
             composeRule.onNodeWithTag("bottle-intake-draft-name-0").performTextInput("My chosen whisky")
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-category-0"))
+            composeRule.onNodeWithTag("bottle-intake-draft-category-0").performTextInput("My house whisky")
             webState = webState.copy(extractedSuggestions = delayedSuggestions)
             composeRule.waitForIdle()
+            assertEquals("My house whisky", repository.openBottleIntakeSession()!!.drafts.single().drinkCategory)
             composeRule.onNodeWithTag("bottle-intake-draft-name-0").assert(
                 editableTextIs("My chosen whisky"),
             )
@@ -636,6 +644,9 @@ class OfflineRecipeSmokeTest {
                 editableTextIs("Three Wood"),
             )
 
+            composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("bottle-intake-draft-category-0"))
+            composeRule.onNodeWithTag("bottle-intake-draft-category-0").performTextClearance()
+            InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK) // Dismiss category suggestions.
             composeRule.onNodeWithTag("bottle-intake-draft-name-0").performTextClearance()
             webState = webState.copy(extractedSuggestions = delayedSuggestions.copy(
                 facts = delayedSuggestions.facts.map { fact ->
@@ -646,6 +657,7 @@ class OfflineRecipeSmokeTest {
             composeRule.onNodeWithTag("bottle-intake-draft-name-0").assert(
                 editableTextIs(""),
             )
+            assertEquals("", repository.openBottleIntakeSession()!!.drafts.single().drinkCategory)
             val acceptTag = "accept-scanned-bottle-${draft.id}"
             composeRule.onNodeWithTag(acceptTag).assertIsNotEnabled()
 
@@ -709,7 +721,7 @@ class OfflineRecipeSmokeTest {
                         onUsePendingLabel = { true },
                         onSkipPendingLabel = { skippedDraft = it; true }, onDiscardCapturedLabel = {},
                         onAttachCapturedLabel = {}, onScan = {}, onAcceptAndScanNext = { BottleIntakeCommitResult.Invalid("Test only") },
-                        onAddManual = { _, _, _, _, _, _, _ -> false }, onRemove = {}, onUpdate = { true },
+                        onAddManual = { _, _, _, _, _, _, _, _ -> false }, onRemove = {}, onUpdate = { true },
                         onFieldEdited = { _, _ -> }, onHomeChanged = {}, onLevelChanged = {},
                         onConfirm = { BottleIntakeCommitResult.Invalid("Test only") }, onCancel = {}, onDismiss = {},
                         onPauseQueue = {}, onResumeScanning = {},
@@ -929,7 +941,7 @@ class OfflineRecipeSmokeTest {
                             onAttachCapturedLabel = {},
                             onScan = { nextScanRequested = true },
                             onAcceptAndScanNext = { BottleIntakeCommitResult.Invalid("Test only") },
-                            onAddManual = { _, _, _, _, _, _, _ -> false },
+                            onAddManual = { _, _, _, _, _, _, _, _ -> false },
                             onRemove = {},
                             onUpdate = { repository.updateBottleIntakeDraft(it) },
                             onFieldEdited = { _, _ -> },
@@ -1161,7 +1173,7 @@ class OfflineRecipeSmokeTest {
                         },
                         onReviewBottle = { activeReviewId = it; route = BottleIntakeRoute.REVIEW },
                         onAcceptAndScanNext = { activeReviewId = null; route = BottleIntakeRoute.SCANNING; BottleIntakeCommitResult.Invalid("Test only") },
-                        onAddManual = { _, _, _, _, _, _, _ -> false },
+                        onAddManual = { _, _, _, _, _, _, _, _ -> false },
                         onRemove = {}, onUpdate = { repository.updateBottleIntakeDraft(it) }, onFieldEdited = { _, _ -> },
                         onHomeChanged = {}, onLevelChanged = {},
                         onConfirm = { BottleIntakeCommitResult.Invalid("Test only") }, onCancel = {}, onDismiss = {},

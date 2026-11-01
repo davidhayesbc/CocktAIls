@@ -307,6 +307,7 @@ object BundleValidator {
                     }
                 }
                 "INVENTORY_ITEM" -> {
+                    if ("drinkCategory" in record.data && !record.data.hasString("drinkCategory")) errors += "INVENTORY_ITEM ${record.id} has an invalid drinkCategory."
                     reference("locationId", locationIds)
                     reference("ingredientId", ingredientIds)
                     reference("updatedByMemberId", memberIds)

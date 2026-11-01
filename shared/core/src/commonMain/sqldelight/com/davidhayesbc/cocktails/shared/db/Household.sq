@@ -96,7 +96,8 @@ CREATE TABLE inventory_item (
     product_id TEXT REFERENCES ingredient_product(id),
     level TEXT NOT NULL CHECK (level IN ('FULL', 'MOSTLY_FULL', 'HALF', 'LOW', 'OUT')),
     updated_at INTEGER NOT NULL,
-    updated_by_member_id TEXT NOT NULL REFERENCES household_member(id)
+    updated_by_member_id TEXT NOT NULL REFERENCES household_member(id),
+    drink_category TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX inventory_location_ingredient ON inventory_item(location_id, ingredient_id);
@@ -131,6 +132,7 @@ CREATE TABLE bottle_intake_draft (
     location_id TEXT NOT NULL REFERENCES household_location(id),
     level TEXT NOT NULL CHECK (level IN ('FULL', 'MOSTLY_FULL', 'HALF', 'LOW', 'OUT')),
     created_at INTEGER NOT NULL,
+    drink_category TEXT NOT NULL DEFAULT '',
     UNIQUE(session_id, position)
 );
 
@@ -272,11 +274,11 @@ selectInventoryId:
 SELECT id FROM inventory_item WHERE location_id = ? AND ingredient_id = ? ORDER BY updated_at, id LIMIT 1;
 
 selectInventoryForIngredient:
-SELECT id, location_id, ingredient_id, product_id, level, updated_at, updated_by_member_id
+SELECT id, location_id, ingredient_id, product_id, level, updated_at, updated_by_member_id, drink_category
 FROM inventory_item WHERE location_id = ? AND ingredient_id = ? ORDER BY updated_at, id;
 
 selectInventoryById:
-SELECT id, location_id, ingredient_id, product_id, level, updated_at, updated_by_member_id
+SELECT id, location_id, ingredient_id, product_id, level, updated_at, updated_by_member_id, drink_category
 FROM inventory_item WHERE id = ?;
 
 insertInventory:
@@ -292,7 +294,7 @@ UPDATE inventory_item SET level = ?, updated_at = ?, updated_by_member_id = ? WH
 selectPantryForLocation:
 SELECT inventory_item.id AS inventory_id, inventory_item.product_id, ingredient.id AS ingredient_id,
        ingredient.canonical_name, ingredient.category, ingredient_product.product_name,
-       ingredient_product.brand, ingredient_product.barcode, inventory_item.level,
+       ingredient_product.brand, ingredient_product.barcode, inventory_item.level, inventory_item.drink_category,
        ingredient_product.bottle_quantity, ingredient_product.abv_percent,
        COALESCE(ingredient_product.photo_data,
            (SELECT photo_data FROM ingredient_product WHERE ingredient_id = ingredient.id ORDER BY created_at LIMIT 1)
@@ -328,7 +330,7 @@ UPDATE bottle_intake_session SET status = 'CONFIRMED', updated_at = ?, confirmed
 
 selectBottleIntakeDrafts:
 SELECT id, session_id, position, barcode, product_id, ingredient_name, category, brand, product_name,
-       photo_data, photo_sha256, bottle_quantity, abv_percent, bottle_quantity_edited, abv_percent_edited, location_id, level, created_at
+       photo_data, photo_sha256, bottle_quantity, abv_percent, bottle_quantity_edited, abv_percent_edited, location_id, level, created_at, drink_category
 FROM bottle_intake_draft WHERE session_id = ? ORDER BY position, id;
 
 selectBottleIntakeDraft:
@@ -575,7 +577,7 @@ SELECT id, ingredient_id, brand, product_name, barcode, photo_mime_type, photo_d
 FROM ingredient_product WHERE id = ?;
 
 selectAllInventoryForBundle:
-SELECT id, location_id, ingredient_id, product_id, level, updated_at, updated_by_member_id FROM inventory_item;
+SELECT id, location_id, ingredient_id, product_id, level, updated_at, updated_by_member_id, drink_category FROM inventory_item;
 
 selectAllFamiliesForBundle:
 SELECT id, canonical_name, created_at FROM cocktail_family;
@@ -772,3 +774,9 @@ DELETE FROM local_preference WHERE preference_key IN ('selected_home', 'selected
 
 deleteTombstoneRevision:
 DELETE FROM tombstone WHERE record_id = ?;
+
+updateBottleDrinkCategory:
+UPDATE inventory_item SET drink_category = ?, updated_at = ?, updated_by_member_id = ? WHERE id = ?;
+
+updateDraftDrinkCategory:
+UPDATE bottle_intake_draft SET drink_category = ? WHERE id = ? AND session_id = ?;
