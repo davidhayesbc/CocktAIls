@@ -136,4 +136,56 @@ class AmberCatalogTest {
         } finally { driver.close(); restoredDriver.close() }
     }
 
+    @Test fun unifiedInstallUpgradesNeitherEitherOrBothSourcesWithoutReplacingHouseholdData() {
+        for (prior in listOf(emptyList(), listOf(starter), listOf(amber), listOf(starter, amber), listOf(amber, starter))) {
+            val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+            val targetDriver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+            try {
+                CocktailsDatabase.Schema.create(driver)
+                val repo = LocalCocktailRepository(CocktailsDatabase(driver)); repo.initialize(1)
+                assertTrue(repo.addRecipeLines("Daiquiri", listOf(RecipeIngredientDraft("House rum", 45.0, "ml")), "Keep my method", RecipeStyle.SOUR, nowMillis = 2))
+                prior.forEachIndexed { index, pack -> assertIs<CatalogInstallResult.Installed>(repo.installCatalogPack(pack, 1000L + index * 10000)) }
+                val oldCount = repo.recipes().count { it.sourceKind == "CATALOG" }
+                val own = repo.recipes().single { it.sourceKind == "HOUSEHOLD" }
+                val member = repo.members().single().id
+                repo.setFamilyFavorite(member, own.familyId, true, 30001)
+                repo.addTastingNote(own.id, member, 5, "Keep my tasting note", null, 30002)
+                val installed = assertIs<CatalogInstallResult.Installed>(repo.installCatalogPacks(listOf(starter, amber), 40000))
+                assertEquals(56 - oldCount, installed.added); assertEquals(oldCount, installed.alreadyPresent)
+                assertEquals(57, repo.recipes().size)
+                assertEquals(48, repo.recipeFamilies().size)
+                assertEquals(own, repo.recipes().single { it.id == own.id })
+                assertTrue(repo.isFamilyFavorite(member, own.familyId))
+                assertEquals("Keep my tasting note", repo.tastingNotes(own.id).single().note)
+                assertEquals(CatalogInstallResult.Installed(0, 56), repo.installCatalogPacks(listOf(starter, amber), 50000))
+                val bundle = assertIs<BundleDecodeResult.Valid>(HouseholdBundleCodec.decode(repo.exportHouseholdBundle(60000))).bundle
+                CocktailsDatabase.Schema.create(targetDriver)
+                val target = LocalCocktailRepository(CocktailsDatabase(targetDriver)); target.initialize(70000)
+                val preview = assertIs<ImportPreviewResult.Valid>(target.previewHouseholdBundle(bundle)).preview
+                assertIs<ImportApplyResult.Applied>(target.applyHouseholdBundle(bundle, preview, emptyMap(), 80000))
+                assertEquals(CatalogInstallResult.Installed(0, 56), target.installCatalogPacks(listOf(starter, amber), 90000))
+                assertEquals(57, target.recipes().size)
+                assertEquals(own, target.recipes().single { it.id == own.id })
+                assertEquals("Keep my tasting note", target.tastingNotes(own.id).single().note)
+                assertTrue(target.isFamilyFavorite(member, own.familyId))
+            } finally { driver.close(); targetDriver.close() }
+        }
+    }
+
+    @Test fun unifiedInstallRollsBackEarlierSourcesWhenLaterSourceFails() {
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        try {
+            CocktailsDatabase.Schema.create(driver)
+            val repo = LocalCocktailRepository(CocktailsDatabase(driver)); repo.initialize(1)
+            assertTrue(repo.addRecipeLines("My drink", listOf(RecipeIngredientDraft("My mixer", 30.0, "ml")), "My method", RecipeStyle.LONG, nowMillis = 2))
+            val own = repo.recipes().single()
+            driver.execute(null, "CREATE TRIGGER reject_later_pack BEFORE INSERT ON recipe_variant WHEN NEW.title = 'Gin Fizz' BEGIN SELECT RAISE(ABORT, 'forced later pack failure'); END", 0)
+            assertIs<CatalogInstallResult.Invalid>(repo.installCatalogPacks(listOf(starter, amber), 1000))
+            assertEquals(listOf(own), repo.recipes())
+            assertFalse(repo.hasStarterCatalog()); assertFalse(repo.hasCatalogPack("uploaded-amber-book"))
+            driver.execute(null, "DROP TRIGGER reject_later_pack", 0)
+            assertEquals(CatalogInstallResult.Installed(56, 0), repo.installCatalogPacks(listOf(starter, amber), 2000))
+        } finally { driver.close() }
+    }
+
 }

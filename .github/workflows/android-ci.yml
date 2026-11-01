@@ -22,6 +22,9 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
+      - name: Verify generated recipe catalog
+        run: python3 tools/catalog/build_amber_pack.py --check
+
       - name: Test preview workflow gate helpers
         run: python3 -m unittest discover -s .github/scripts -p 'test_preview_*.py'
 

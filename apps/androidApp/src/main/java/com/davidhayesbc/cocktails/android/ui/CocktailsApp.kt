@@ -898,16 +898,13 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
     var selectedRecipe by remember { mutableStateOf<RecipeDetail?>(null) }
     var showAddNote by remember { mutableStateOf(false) }
     var recipes by remember { mutableStateOf(repository.recipes()) }
-    var starterCatalogInstalled by remember(repository) { mutableStateOf(repository.hasStarterCatalog()) }
-    var catalogMessage by remember { mutableStateOf<String?>(null) }
-    var amberInstalled by remember(repository) { mutableStateOf(repository.hasCatalogPack("uploaded-amber-book")) }
-    var amberBusy by remember { mutableStateOf(false) }
-    var amberMessage by remember { mutableStateOf<String?>(null) }
-    var amberLicense by remember { mutableStateOf<String?>(null) }
-    amberLicense?.let { notice ->
-        AlertDialog(onDismissRequest = { amberLicense = null }, title = { Text("The Amber Book · MIT License") },
+    var starterCollectionBusy by remember { mutableStateOf(false) }
+    var starterCollectionMessage by remember { mutableStateOf<String?>(null) }
+    var starterSourceNotices by remember { mutableStateOf<String?>(null) }
+    starterSourceNotices?.let { notice ->
+        AlertDialog(onDismissRequest = { starterSourceNotices = null }, title = { Text("Starter collection · source notices") },
             text = { Text(notice, Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) },
-            confirmButton = { TextButton(onClick = { amberLicense = null }) { Text("Close") } })
+            confirmButton = { TextButton(onClick = { starterSourceNotices = null }) { Text("Close") } })
     }
     var recipeFamilies by remember { mutableStateOf(repository.recipeFamilies()) }
     var recentDrinks by remember { mutableStateOf(repository.recentlyMade()) }
@@ -1916,8 +1913,6 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
     }
 
     fun refreshHousehold() {
-        amberInstalled = repository.hasCatalogPack("uploaded-amber-book")
-        starterCatalogInstalled = repository.hasStarterCatalog()
         locations = repository.locations()
         members = repository.members()
         recipes = repository.recipes()
@@ -2495,55 +2490,34 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                 onToggleFavorite = { familyId, favorite ->
                     if (repository.setFamilyFavorite(selectedMemberId, familyId, favorite, System.currentTimeMillis())) favoritesVersion++
                 },
-                amberInstalled = amberInstalled,
-                amberBusy = amberBusy,
-                amberMessage = amberMessage,
-                onAmberLicense = { amberLicense = context.assets.open("amber-book/LICENSE").bufferedReader().use { it.readText() } },
-                onInstallAmber = {
-                    if (!amberBusy) {
-                        amberBusy = true
+                starterCollectionBusy = starterCollectionBusy,
+                starterCollectionMessage = starterCollectionMessage,
+                onSourceNotices = {
+                    starterSourceNotices = listOf("iba-wikipedia-starter/NOTICE.md", "amber-book/LICENSE")
+                        .joinToString("\n\n") { path -> context.assets.open(path).bufferedReader().use { it.readText() } }
+                },
+                onInstallStarterCollection = {
+                    if (!starterCollectionBusy) {
+                        starterCollectionBusy = true
                         coroutineScope.launch {
                             try {
                                 val result = withContext(Dispatchers.IO) {
-                                    repository.installCatalogPack(context.assets.open("amber-book/recipes.json").bufferedReader().use { it.readText() }, System.currentTimeMillis())
+                                    val packs = listOf("iba-wikipedia-starter/recipes.json", "amber-book/recipes.json")
+                                        .map { path -> context.assets.open(path).bufferedReader().use { it.readText() } }
+                                    repository.installCatalogPacks(packs, System.currentTimeMillis())
                                 }
                                 when (result) {
                                     is CatalogInstallResult.Installed -> {
                                         recipes = repository.recipes()
                                         recipeFamilies = repository.recipeFamilies()
-                                        amberInstalled = repository.hasCatalogPack("uploaded-amber-book")
-                                        amberMessage = "Added ${result.added} formulations; ${result.alreadyPresent} already present. Matching recipe names share a family; your recipes and notes are preserved."
+                                        starterCollectionMessage = "Added ${result.added} recipes; ${result.alreadyPresent} already in your collection."
                                     }
-                                    is CatalogInstallResult.Invalid -> amberMessage = result.reason
+                                    is CatalogInstallResult.Invalid -> starterCollectionMessage = result.reason
                                 }
                             } catch (cancelled: CancellationException) { throw cancelled }
-                            catch (_: Exception) { amberMessage = "Could not add The Amber Book. Your existing recipes are unchanged." }
-                            finally { amberBusy = false }
+                            catch (_: Exception) { starterCollectionMessage = "Could not add the starter collection. Your existing recipes are unchanged." }
+                            finally { starterCollectionBusy = false }
                         }
-                    }
-                },
-                starterCatalogInstalled = starterCatalogInstalled,
-                catalogMessage = catalogMessage,
-                onInstallStarterCatalog = {
-                    coroutineScope.launch {
-                        catalogMessage = "Adding the offline starter recipes…"
-                        val result = runCatching {
-                            withContext(Dispatchers.IO) {
-                                val pack = context.assets.open("iba-wikipedia-starter/recipes.json").bufferedReader().use { it.readText() }
-                                repository.installCatalogPack(pack, System.currentTimeMillis())
-                            }
-                        }
-                        result.onSuccess { installResult ->
-                            when (installResult) {
-                                is CatalogInstallResult.Installed -> {
-                                    recipes = repository.recipes()
-                                    recipeFamilies = repository.recipeFamilies()
-                                    starterCatalogInstalled = repository.hasStarterCatalog()
-                                    catalogMessage = "Added ${installResult.added} recipes; ${installResult.alreadyPresent} were already in your collection."
-                                }
-                                is CatalogInstallResult.Invalid -> catalogMessage = installResult.reason
-                            }
-                        }.onFailure { catalogMessage = "Could not add the starter recipes: ${it.message ?: "the bundled pack could not be read"}." }
                     }
                 },
             ) else RecipeDetailScreen(
@@ -5135,14 +5109,10 @@ private fun RecipeBrowser(
     pantry: List<PantryEntry>,
     favoriteFamilyIds: Set<CocktailFamilyId>,
     recentDrinks: List<RecentDrink>,
-    amberInstalled: Boolean,
-    amberBusy: Boolean,
-    amberMessage: String?,
-    onInstallAmber: () -> Unit,
-    onAmberLicense: () -> Unit,
-    starterCatalogInstalled: Boolean,
-    catalogMessage: String?,
-    onInstallStarterCatalog: () -> Unit,
+    starterCollectionBusy: Boolean,
+    starterCollectionMessage: String?,
+    onInstallStarterCollection: () -> Unit,
+    onSourceNotices: () -> Unit,
     onAddRecipe: () -> Unit,
     onSelectRecipe: (RecipeDetail) -> Unit,
     onOpenRecent: (com.davidhayesbc.cocktails.core.model.RecipeVariantId) -> Unit,
@@ -5193,30 +5163,17 @@ private fun RecipeBrowser(
                 }
             }
         }
-        if (!starterCatalogInstalled) {
-            item(key = "offline-starter-catalog") {
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
-                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Offline starter collection", style = MaterialTheme.typography.titleLarge)
-                        Text("Add eight classics: Daiquiri, Manhattan, Margarita, Dry Martini, Negroni, Old Fashioned, Sidecar, and Whiskey Sour. These are stored on this phone and work offline. Existing recipes and notes are left as they are.")
-                        Text("Recipe facts are shared under CC BY-SA 3.0. Each recipe includes source and revision history; methods were written for CocktAIls.", style = MaterialTheme.typography.bodySmall)
-                        Button(onClick = onInstallStarterCatalog) { Text("Add 8 starter recipes") }
-                        catalogMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-                    }
-                }
-            }
-        } else catalogMessage?.let { message -> item(key = "catalog-status") { Text(message, style = MaterialTheme.typography.bodySmall) } }
-        item(key = "offline-amber-catalog") {
+        item(key = "offline-starter-collection") {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
                 Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("The Amber Book", style = MaterialTheme.typography.titleLarge)
-                    Text("48 recipes, including 7 source-designated mocktails. Works offline. Quantities stay as written; existing recipes are preserved and alternate formulations share a recipe family.")
-                    Text("Uploaded collection · MIT · Copyright (c) 2026. No named copyright holder or confirmed upstream repository was supplied.", style = MaterialTheme.typography.bodySmall)
-                    TextButton(onClick = onAmberLicense, modifier = Modifier.testTag("amber-license")) { Text("Read full MIT notice") }
-                    Button(onClick = onInstallAmber, enabled = !amberInstalled && !amberBusy, modifier = Modifier.testTag("install-amber-catalog")) {
-                        Text(if (amberInstalled) "Amber collection added" else if (amberBusy) "Adding…" else "Add 48 Amber recipes")
+                    Text("Offline starter collection", style = MaterialTheme.typography.titleLarge)
+                    Text("48 drinks with 56 recipe versions, including 7 source-designated mocktails. Add missing recipes from both starter sources in one step. Existing recipes, favourites and notes are preserved.")
+                    Text("Works offline. Original quantities and alternate recipes are retained.", style = MaterialTheme.typography.bodySmall)
+                    TextButton(onClick = onSourceNotices, modifier = Modifier.testTag("starter-source-notices")) { Text("Source notices") }
+                    Button(onClick = onInstallStarterCollection, enabled = !starterCollectionBusy, modifier = Modifier.testTag("install-starter-collection")) {
+                        Text(if (starterCollectionBusy) "Adding…" else "Add or update starter collection")
                     }
-                    amberMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    starterCollectionMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                 }
             }
         }

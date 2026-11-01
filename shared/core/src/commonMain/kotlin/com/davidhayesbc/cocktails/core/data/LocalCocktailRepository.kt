@@ -283,6 +283,27 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         it.source_record_id?.startsWith("$id:") == true
     }
 
+    /** One atomic install action retaining each source pack's stable identity and licence. */
+    fun installCatalogPacks(packJsons: List<String>, nowMillis: Long): CatalogInstallResult {
+        if (packJsons.isEmpty() || packJsons.size > 10) return CatalogInstallResult.Invalid("Invalid collection size.")
+        val ids = mutableSetOf<String>()
+        for (json in packJsons) when (val decoded = decodeCatalogPack(json)) {
+            is CatalogPackDecodeResult.Invalid -> return CatalogInstallResult.Invalid(decoded.reason)
+            is CatalogPackDecodeResult.Valid -> if (!ids.add(decoded.pack.id)) return CatalogInstallResult.Invalid("Duplicate collection source.")
+        }
+        return try {
+            database.transactionWithResult {
+                var added = 0
+                var present = 0
+                for (json in packJsons) when (val result = installCatalogPack(json, nowMillis)) {
+                    is CatalogInstallResult.Installed -> { added += result.added; present += result.alreadyPresent }
+                    is CatalogInstallResult.Invalid -> error(result.reason) // Roll back all sources, including earlier successful inserts.
+                }
+                CatalogInstallResult.Installed(added, present)
+            }
+        } catch (_: Exception) { CatalogInstallResult.Invalid("The starter collection could not be installed. Existing recipes are unchanged.") }
+    }
+
     /** Adds an audited bundled pack without overwriting any existing or archived household records. */
     fun installCatalogPack(packJson: String, nowMillis: Long): CatalogInstallResult {
         val pack = when (val decoded = decodeCatalogPack(packJson)) {

@@ -1578,16 +1578,15 @@ class OfflineRecipeSmokeTest {
     @Test
     fun bundledCatalogLoadsOfflineAndStaysInstalledAfterActivityRecreation() {
         composeRule.onNodeWithText("Recipes").performClick()
-        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Add 8 starter recipes"))
-        composeRule.onNodeWithText("Add 8 starter recipes").assertIsDisplayed().performClick()
-        // Lazy recipe rows need not be composed while collection cards occupy the viewport.
-        // Installation removes its button only after the repository and recipe list are refreshed.
-        composeRule.waitUntil(timeoutMillis = 10_000) {
-            composeRule.onAllNodesWithText("Add 8 starter recipes").fetchSemanticsNodes().isEmpty()
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Add or update starter collection"))
+        composeRule.onNodeWithText("Add or update starter collection").assertIsDisplayed().performClick()
+        // Wait for the completed install, then scroll to explicitly tagged result rows.
+        composeRule.waitUntil(timeoutMillis = 15_000) {
+            composeRule.onAllNodesWithText("Added 56 recipes; 0 already in your collection.").fetchSemanticsNodes().isNotEmpty()
         }
         composeRule.onNodeWithTag("recipe-browser-scroll")
-            .performScrollToNode(hasText("Added 8 recipes; 0 were already in your collection."))
-        composeRule.onNodeWithText("Added 8 recipes; 0 were already in your collection.").assertIsDisplayed()
+            .performScrollToNode(hasText("Added 56 recipes; 0 already in your collection."))
+        composeRule.onNodeWithText("Added 56 recipes; 0 already in your collection.").assertIsDisplayed()
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Daiquiri"))
         composeRule.onNodeWithText("Daiquiri").assertIsDisplayed()
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Search recipes or ingredients"))
@@ -1601,25 +1600,31 @@ class OfflineRecipeSmokeTest {
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Daiquiri"))
         composeRule.onNodeWithText("Daiquiri").assertIsDisplayed()
         composeRule.onNodeWithText("Add 8 starter recipes").assertDoesNotExist()
+        composeRule.onNodeWithText("Add 48 Amber recipes").assertDoesNotExist()
     }
 
     @Test
-    fun amberCollectionInstallsWithLicenseAndPersistsOffline() {
+    fun combinedStarterCollectionInstallsWithNoticesAndPersistsOffline() {
         composeRule.onNodeWithText("Recipes").performClick()
-        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasTestTag("amber-license"))
-        composeRule.onNodeWithTag("amber-license").performClick()
-        composeRule.onNodeWithText("The Amber Book · MIT License").assertIsDisplayed()
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasTestTag("starter-source-notices"))
+        composeRule.onNodeWithTag("starter-source-notices").performClick()
+        composeRule.onNodeWithText("Starter collection · source notices").assertIsDisplayed()
         composeRule.onNodeWithText("Close").performClick()
-        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasTestTag("install-amber-catalog"))
-        composeRule.onNodeWithTag("install-amber-catalog").performClick()
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasTestTag("install-starter-collection"))
+        composeRule.onNodeWithTag("install-starter-collection").performClick()
         composeRule.waitUntil(timeoutMillis = 15_000) {
-            composeRule.onAllNodesWithText("Amber collection added").fetchSemanticsNodes().isNotEmpty()
+            composeRule.onAllNodesWithText("Added 56 recipes; 0 already in your collection.").fetchSemanticsNodes().isNotEmpty()
         }
-        composeRule.onNodeWithTag("install-amber-catalog").assertIsNotEnabled()
+        composeRule.onNodeWithTag("install-starter-collection").assertIsEnabled()
         composeRule.activityRule.scenario.recreate()
         composeRule.onNodeWithText("Recipes").performClick()
-        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasTestTag("install-amber-catalog"))
-        composeRule.onNodeWithTag("install-amber-catalog").assertTextContains("Amber collection added").assertIsNotEnabled()
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasTestTag("install-starter-collection"))
+        composeRule.onNodeWithTag("install-starter-collection").assertIsEnabled().performClick()
+        composeRule.waitUntil(timeoutMillis = 15_000) {
+            composeRule.onAllNodesWithText("Added 0 recipes; 56 already in your collection.").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Added 0 recipes; 56 already in your collection."))
+        composeRule.onNodeWithText("Added 0 recipes; 56 already in your collection.").assertIsDisplayed()
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Search recipes or ingredients"))
         composeRule.onNodeWithText("Search recipes or ingredients").performTextInput("Shirley Temple")
         composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Open recipe"))

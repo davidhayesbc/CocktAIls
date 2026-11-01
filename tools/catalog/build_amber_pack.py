@@ -1,4 +1,5 @@
 """Deterministic data-only conversion of the reviewed, relayed Amber Book records."""
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -49,5 +50,12 @@ pack = dict(format="cocktails.catalog-pack.v2", id="uploaded-amber-book", versio
             sourceName="The Amber Book (uploaded collection)", license="MIT", licenseUrl="https://opensource.org/license/mit",
             attribution="The Amber Book, supplied in TheAmberBook-main.zip. Copyright (c) 2026. The supplied notice names no copyright holder; upstream repository identity is unconfirmed.",
             repositoryUrl=None, repositoryRevision="sha256:"+SOURCE_SHA, licenseNotice=notice, recipes=recipes)
-(DEST / "recipes.json").write_text(json.dumps(pack, ensure_ascii=False, indent=2)+"\n")
-print(f"Built {len(recipes)} recipes, {sum(r['sourceMetadata']['mocktail'] for r in recipes)} designated mocktails; original SHA256 verified.")
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--check", action="store_true", help="Verify checked-in runtime data without rewriting it")
+args = parser.parse_args()
+rendered = json.dumps(pack, ensure_ascii=False, indent=2)+"\n"
+if args.check:
+    assert (DEST / "recipes.json").read_text() == rendered, "Generated Amber catalog differs; run tools/catalog/build_amber_pack.py"
+else:
+    (DEST / "recipes.json").write_text(rendered)
+print(f"Verified {len(recipes)} recipes, {sum(r['sourceMetadata']['mocktail'] for r in recipes)} designated mocktails; original SHA256 verified.")
