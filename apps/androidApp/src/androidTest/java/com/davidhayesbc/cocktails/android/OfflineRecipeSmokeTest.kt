@@ -1597,6 +1597,30 @@ class OfflineRecipeSmokeTest {
     }
 
     @Test
+    fun amberCollectionInstallsWithLicenseAndPersistsOffline() {
+        composeRule.onNodeWithText("Recipes").performClick()
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasTestTag("amber-license"))
+        composeRule.onNodeWithTag("amber-license").performClick()
+        composeRule.onNodeWithText("The Amber Book · MIT License").assertIsDisplayed()
+        composeRule.onNodeWithText("Close").performClick()
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasTestTag("install-amber-catalog"))
+        composeRule.onNodeWithTag("install-amber-catalog").performClick()
+        composeRule.waitUntil(timeoutMillis = 15_000) {
+            composeRule.onAllNodesWithText("Amber collection added").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("install-amber-catalog").assertIsNotEnabled()
+        composeRule.activityRule.scenario.recreate()
+        composeRule.onNodeWithText("Recipes").performClick()
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasTestTag("install-amber-catalog"))
+        composeRule.onNodeWithTag("install-amber-catalog").assertTextContains("Amber collection added").assertIsNotEnabled()
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Search recipes or ingredients"))
+        composeRule.onNodeWithText("Search recipes or ingredients").performTextInput("Shirley Temple")
+        composeRule.onNodeWithTag("recipe-browser-scroll").performScrollToNode(hasText("Open recipe"))
+        composeRule.onNodeWithText("Open recipe").performClick()
+        composeRule.onNodeWithText("Source formulation · original quantities, not automatically scaled").assertExists()
+    }
+
+    @Test
     fun bundledIngredientsMapIntoPantryAvailability() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val databaseName = "catalog-test-${System.currentTimeMillis()}.db"

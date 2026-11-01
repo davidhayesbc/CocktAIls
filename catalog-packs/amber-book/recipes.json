@@ -1,0 +1,4069 @@
+{
+  "format": "cocktails.catalog-pack.v2",
+  "id": "uploaded-amber-book",
+  "version": 1,
+  "sourceKind": "UPLOADED_DATA",
+  "sourceName": "The Amber Book (uploaded collection)",
+  "license": "MIT",
+  "licenseUrl": "https://opensource.org/license/mit",
+  "attribution": "The Amber Book, supplied in TheAmberBook-main.zip. Copyright (c) 2026. The supplied notice names no copyright holder; upstream repository identity is unconfirmed.",
+  "repositoryUrl": null,
+  "repositoryRevision": "sha256:8c0fe99512b0327924e0342bd0ba01cbf5235da23e45851dd3851b8225c6e002",
+  "licenseNotice": "MIT License\n\nCopyright (c) 2026\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n\n",
+  "recipes": [
+    {
+      "recordId": "old-fashioned",
+      "title": "Old Fashioned",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Place the sugar cube in a rocks glass and saturate with bitters.\n2. Add a splash of water and muddle until dissolved.\n3. Fill the glass with a large ice cube, then pour in the whiskey.\n4. Stir gently for 20-30 seconds to chill and dilute.\n5. Express an orange peel over the top and drop it in, then garnish with a cherry.\nGarnish: Orange peel & a cocktail cherry",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Bourbon or rye whiskey; 1 Sugar cube (or 1 tsp sugar); 2-3 dashes Angostura bitters; 1 splash Water or soda",
+      "ingredients": [
+        {
+          "name": "Bourbon or rye whiskey",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Sugar cube (or 1 tsp sugar)",
+          "category": "Other",
+          "amount": null,
+          "unit": "1",
+          "optional": false
+        },
+        {
+          "name": "Angostura bitters",
+          "category": "Other",
+          "amount": null,
+          "unit": "2-3 dashes",
+          "optional": false
+        },
+        {
+          "name": "Water or soda",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 splash",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Whiskey",
+        "styleLabel": "Stirred",
+        "mocktail": false,
+        "glass": "rocks",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Whiskey\nStyle: Stirred\nGlass: rocks\nSource strength: Strong (editorial, not measured ABV)\nSource difficulty: Easy\nThe original cocktail — bourbon, sugar, and bitters, slowly stirred over ice.",
+        "originalRecord": {
+          "id": "old-fashioned",
+          "name": "Old Fashioned",
+          "category": "Whiskey",
+          "glass": "rocks",
+          "strength": "Strong",
+          "difficulty": "Easy",
+          "tags": [
+            "classic",
+            "stirred",
+            "boozy",
+            "bitters"
+          ],
+          "description": "The original cocktail — bourbon, sugar, and bitters, slowly stirred over ice.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Bourbon or rye whiskey"
+            },
+            {
+              "amount": "1",
+              "item": "Sugar cube (or 1 tsp sugar)"
+            },
+            {
+              "amount": "2-3 dashes",
+              "item": "Angostura bitters"
+            },
+            {
+              "amount": "1 splash",
+              "item": "Water or soda"
+            }
+          ],
+          "garnish": "Orange peel & a cocktail cherry",
+          "method": [
+            "Place the sugar cube in a rocks glass and saturate with bitters.",
+            "Add a splash of water and muddle until dissolved.",
+            "Fill the glass with a large ice cube, then pour in the whiskey.",
+            "Stir gently for 20-30 seconds to chill and dilute.",
+            "Express an orange peel over the top and drop it in, then garnish with a cherry."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "manhattan",
+      "title": "Manhattan",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add all ingredients to a mixing glass filled with ice.\n2. Stir for about 30 seconds until well chilled.\n3. Strain into a chilled coupe glass.\n4. Garnish with a brandied cherry.\nGarnish: Brandied cherry",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Rye whiskey; 1 oz Sweet vermouth; 2 dashes Angostura bitters",
+      "ingredients": [
+        {
+          "name": "Rye whiskey",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Sweet vermouth",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        },
+        {
+          "name": "Angostura bitters",
+          "category": "Other",
+          "amount": null,
+          "unit": "2 dashes",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Whiskey",
+        "styleLabel": "Stirred",
+        "mocktail": false,
+        "glass": "coupe",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Whiskey\nStyle: Stirred\nGlass: coupe\nSource strength: Strong (editorial, not measured ABV)\nSource difficulty: Easy\nA rich, stirred blend of rye whiskey and sweet vermouth with a whisper of bitters.",
+        "originalRecord": {
+          "id": "manhattan",
+          "name": "Manhattan",
+          "category": "Whiskey",
+          "glass": "coupe",
+          "strength": "Strong",
+          "difficulty": "Easy",
+          "tags": [
+            "classic",
+            "stirred",
+            "boozy",
+            "vermouth"
+          ],
+          "description": "A rich, stirred blend of rye whiskey and sweet vermouth with a whisper of bitters.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Rye whiskey"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Sweet vermouth"
+            },
+            {
+              "amount": "2 dashes",
+              "item": "Angostura bitters"
+            }
+          ],
+          "garnish": "Brandied cherry",
+          "method": [
+            "Add all ingredients to a mixing glass filled with ice.",
+            "Stir for about 30 seconds until well chilled.",
+            "Strain into a chilled coupe glass.",
+            "Garnish with a brandied cherry."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "whiskey-sour",
+      "title": "Whiskey Sour",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add all ingredients to a shaker without ice and dry-shake for 15 seconds.\n2. Add ice and shake hard for another 15 seconds.\n3. Strain into a rocks glass over fresh ice.\n4. Garnish with an orange wheel and cherry.\nGarnish: Orange wheel & cherry",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Bourbon; 3/4 oz Fresh lemon juice; 3/4 oz Simple syrup; 1 Egg white (optional)",
+      "ingredients": [
+        {
+          "name": "Bourbon whiskey",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Lemon juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "3/4 oz",
+          "optional": false
+        },
+        {
+          "name": "Simple syrup",
+          "category": "Other",
+          "amount": null,
+          "unit": "3/4 oz",
+          "optional": false
+        },
+        {
+          "name": "Egg white",
+          "category": "Other",
+          "amount": null,
+          "unit": "1",
+          "optional": true
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Whiskey",
+        "styleLabel": "Shaken",
+        "mocktail": false,
+        "glass": "rocks",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Whiskey\nStyle: Shaken\nGlass: rocks\nSource strength: Medium (editorial, not measured ABV)\nSource difficulty: Easy\nA perfectly balanced shake of bourbon, lemon, and sugar with a silky egg-white foam.",
+        "originalRecord": {
+          "id": "whiskey-sour",
+          "name": "Whiskey Sour",
+          "category": "Whiskey",
+          "glass": "rocks",
+          "strength": "Medium",
+          "difficulty": "Easy",
+          "tags": [
+            "shaken",
+            "citrusy",
+            "classic",
+            "egg white"
+          ],
+          "description": "A perfectly balanced shake of bourbon, lemon, and sugar with a silky egg-white foam.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Bourbon"
+            },
+            {
+              "amount": "3/4 oz",
+              "item": "Fresh lemon juice"
+            },
+            {
+              "amount": "3/4 oz",
+              "item": "Simple syrup"
+            },
+            {
+              "amount": "1",
+              "item": "Egg white (optional)"
+            }
+          ],
+          "garnish": "Orange wheel & cherry",
+          "method": [
+            "Add all ingredients to a shaker without ice and dry-shake for 15 seconds.",
+            "Add ice and shake hard for another 15 seconds.",
+            "Strain into a rocks glass over fresh ice.",
+            "Garnish with an orange wheel and cherry."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "mint-julep",
+      "title": "Mint Julep",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Gently muddle mint leaves with simple syrup in a julep cup or rocks glass.\n2. Pack the cup tightly with crushed ice.\n3. Pour in the bourbon and stir until the cup frosts.\n4. Top with more crushed ice and a generous bouquet of mint.\nGarnish: Large mint bouquet & powdered sugar",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 1/2 oz Bourbon; 1/2 oz Simple syrup; 8-10 Fresh mint leaves",
+      "ingredients": [
+        {
+          "name": "Bourbon whiskey",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Simple syrup",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Fresh mint leaves",
+          "category": "Other",
+          "amount": null,
+          "unit": "8-10",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Whiskey",
+        "styleLabel": "Muddled",
+        "mocktail": false,
+        "glass": "rocks",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Whiskey\nStyle: Muddled\nGlass: rocks\nSource strength: Strong (editorial, not measured ABV)\nSource difficulty: Intermediate\nCrushed ice, bourbon, and fresh mint — the iconic sip of the Kentucky Derby.",
+        "originalRecord": {
+          "id": "mint-julep",
+          "name": "Mint Julep",
+          "category": "Whiskey",
+          "glass": "rocks",
+          "strength": "Strong",
+          "difficulty": "Intermediate",
+          "tags": [
+            "muddled",
+            "herbal",
+            "refreshing",
+            "classic"
+          ],
+          "description": "Crushed ice, bourbon, and fresh mint — the iconic sip of the Kentucky Derby.",
+          "ingredients": [
+            {
+              "amount": "2 1/2 oz",
+              "item": "Bourbon"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Simple syrup"
+            },
+            {
+              "amount": "8-10",
+              "item": "Fresh mint leaves"
+            }
+          ],
+          "garnish": "Large mint bouquet & powdered sugar",
+          "method": [
+            "Gently muddle mint leaves with simple syrup in a julep cup or rocks glass.",
+            "Pack the cup tightly with crushed ice.",
+            "Pour in the bourbon and stir until the cup frosts.",
+            "Top with more crushed ice and a generous bouquet of mint."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "boulevardier",
+      "title": "Boulevardier",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add all ingredients to a mixing glass with ice.\n2. Stir until well chilled, about 30 seconds.\n3. Strain over a large ice cube in a rocks glass.\n4. Express orange peel oils over the top and garnish.\nGarnish: Orange peel",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "1 1/2 oz Bourbon or rye; 1 oz Campari; 1 oz Sweet vermouth",
+      "ingredients": [
+        {
+          "name": "Bourbon or rye whiskey",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "1 1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Campari",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        },
+        {
+          "name": "Sweet vermouth",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Whiskey",
+        "styleLabel": "Stirred",
+        "mocktail": false,
+        "glass": "rocks",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Whiskey\nStyle: Stirred\nGlass: rocks\nSource strength: Strong (editorial, not measured ABV)\nSource difficulty: Easy\nThe whiskey cousin of the Negroni — bourbon, Campari, and sweet vermouth in equal harmony.",
+        "originalRecord": {
+          "id": "boulevardier",
+          "name": "Boulevardier",
+          "category": "Whiskey",
+          "glass": "rocks",
+          "strength": "Strong",
+          "difficulty": "Easy",
+          "tags": [
+            "stirred",
+            "bitter",
+            "boozy",
+            "modern classic"
+          ],
+          "description": "The whiskey cousin of the Negroni — bourbon, Campari, and sweet vermouth in equal harmony.",
+          "ingredients": [
+            {
+              "amount": "1 1/2 oz",
+              "item": "Bourbon or rye"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Campari"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Sweet vermouth"
+            }
+          ],
+          "garnish": "Orange peel",
+          "method": [
+            "Add all ingredients to a mixing glass with ice.",
+            "Stir until well chilled, about 30 seconds.",
+            "Strain over a large ice cube in a rocks glass.",
+            "Express orange peel oils over the top and garnish."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "sazerac",
+      "title": "Sazerac",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Chill a rocks glass, then rinse it with absinthe and discard the excess.\n2. In a separate mixing glass, muddle the sugar cube with bitters.\n3. Add rye and ice, then stir until chilled.\n4. Strain into the absinthe-rinsed glass and express lemon peel over the top.\nGarnish: Lemon peel (expressed, not dropped)",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Rye whiskey; 1/4 oz Absinthe (for rinsing); 1 Sugar cube; 3 dashes Peychaud's bitters",
+      "ingredients": [
+        {
+          "name": "Rye whiskey",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Absinthe (for rinsing)",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/4 oz",
+          "optional": false
+        },
+        {
+          "name": "Sugar cube",
+          "category": "Other",
+          "amount": null,
+          "unit": "1",
+          "optional": false
+        },
+        {
+          "name": "Peychaud's bitters",
+          "category": "Other",
+          "amount": null,
+          "unit": "3 dashes",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Whiskey",
+        "styleLabel": "Stirred",
+        "mocktail": false,
+        "glass": "rocks",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Whiskey\nStyle: Stirred\nGlass: rocks\nSource strength: Strong (editorial, not measured ABV)\nSource difficulty: Intermediate\nA New Orleans institution: rye whiskey, absinthe rinse, and Peychaud's bitters.",
+        "originalRecord": {
+          "id": "sazerac",
+          "name": "Sazerac",
+          "category": "Whiskey",
+          "glass": "rocks",
+          "strength": "Strong",
+          "difficulty": "Intermediate",
+          "tags": [
+            "stirred",
+            "anise",
+            "new orleans",
+            "classic"
+          ],
+          "description": "A New Orleans institution: rye whiskey, absinthe rinse, and Peychaud's bitters.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Rye whiskey"
+            },
+            {
+              "amount": "1/4 oz",
+              "item": "Absinthe (for rinsing)"
+            },
+            {
+              "amount": "1",
+              "item": "Sugar cube"
+            },
+            {
+              "amount": "3 dashes",
+              "item": "Peychaud's bitters"
+            }
+          ],
+          "garnish": "Lemon peel (expressed, not dropped)",
+          "method": [
+            "Chill a rocks glass, then rinse it with absinthe and discard the excess.",
+            "In a separate mixing glass, muddle the sugar cube with bitters.",
+            "Add rye and ice, then stir until chilled.",
+            "Strain into the absinthe-rinsed glass and express lemon peel over the top."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "paper-plane",
+      "title": "Paper Plane",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add all ingredients to a shaker with ice.\n2. Shake hard for 15 seconds until well chilled.\n3. Double-strain into a chilled coupe glass.",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "3/4 oz Bourbon; 3/4 oz Aperol; 3/4 oz Amaro Nonino; 3/4 oz Fresh lemon juice",
+      "ingredients": [
+        {
+          "name": "Bourbon whiskey",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "3/4 oz",
+          "optional": false
+        },
+        {
+          "name": "Aperol",
+          "category": "Other",
+          "amount": null,
+          "unit": "3/4 oz",
+          "optional": false
+        },
+        {
+          "name": "Amaro Nonino",
+          "category": "Other",
+          "amount": null,
+          "unit": "3/4 oz",
+          "optional": false
+        },
+        {
+          "name": "Lemon juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "3/4 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Whiskey",
+        "styleLabel": "Shaken",
+        "mocktail": false,
+        "glass": "coupe",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Whiskey\nStyle: Shaken\nGlass: coupe\nSource strength: Strong (editorial, not measured ABV)\nSource difficulty: Intermediate\nA brilliant equal-parts modern classic of bourbon, Aperol, Amaro Nonino, and lemon.",
+        "originalRecord": {
+          "id": "paper-plane",
+          "name": "Paper Plane",
+          "category": "Whiskey",
+          "glass": "coupe",
+          "strength": "Strong",
+          "difficulty": "Intermediate",
+          "tags": [
+            "shaken",
+            "bitter",
+            "modern classic",
+            "equal parts"
+          ],
+          "description": "A brilliant equal-parts modern classic of bourbon, Aperol, Amaro Nonino, and lemon.",
+          "ingredients": [
+            {
+              "amount": "3/4 oz",
+              "item": "Bourbon"
+            },
+            {
+              "amount": "3/4 oz",
+              "item": "Aperol"
+            },
+            {
+              "amount": "3/4 oz",
+              "item": "Amaro Nonino"
+            },
+            {
+              "amount": "3/4 oz",
+              "item": "Fresh lemon juice"
+            }
+          ],
+          "garnish": "None",
+          "method": [
+            "Add all ingredients to a shaker with ice.",
+            "Shake hard for 15 seconds until well chilled.",
+            "Double-strain into a chilled coupe glass."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "irish-coffee",
+      "title": "Irish Coffee",
+      "style": "HOT",
+      "servings": 1,
+      "instructions": "1. Warm a glass mug with hot water, then discard the water.\n2. Add brown sugar and hot coffee, stirring to dissolve.\n3. Stir in the Irish whiskey.\n4. Gently float the lightly whipped cream over the back of a spoon on top.\nGarnish: Grated nutmeg",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "1 1/2 oz Irish whiskey; 4 oz Hot brewed coffee; 1 tsp Brown sugar; 1 oz Lightly whipped cream",
+      "ingredients": [
+        {
+          "name": "Irish whiskey",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "1 1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Hot brewed coffee",
+          "category": "Other",
+          "amount": null,
+          "unit": "4 oz",
+          "optional": false
+        },
+        {
+          "name": "Brown sugar",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 tsp",
+          "optional": false
+        },
+        {
+          "name": "Lightly whipped cream",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Whiskey",
+        "styleLabel": "Hot",
+        "mocktail": false,
+        "glass": "mug",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Whiskey\nStyle: Hot\nGlass: mug\nSource strength: Medium (editorial, not measured ABV)\nSource difficulty: Easy\nHot coffee, Irish whiskey, and brown sugar topped with a raft of softly whipped cream.",
+        "originalRecord": {
+          "id": "irish-coffee",
+          "name": "Irish Coffee",
+          "category": "Whiskey",
+          "glass": "mug",
+          "strength": "Medium",
+          "difficulty": "Easy",
+          "tags": [
+            "hot",
+            "coffee",
+            "creamy",
+            "classic"
+          ],
+          "description": "Hot coffee, Irish whiskey, and brown sugar topped with a raft of softly whipped cream.",
+          "ingredients": [
+            {
+              "amount": "1 1/2 oz",
+              "item": "Irish whiskey"
+            },
+            {
+              "amount": "4 oz",
+              "item": "Hot brewed coffee"
+            },
+            {
+              "amount": "1 tsp",
+              "item": "Brown sugar"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Lightly whipped cream"
+            }
+          ],
+          "garnish": "Grated nutmeg",
+          "method": [
+            "Warm a glass mug with hot water, then discard the water.",
+            "Add brown sugar and hot coffee, stirring to dissolve.",
+            "Stir in the Irish whiskey.",
+            "Gently float the lightly whipped cream over the back of a spoon on top."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "martini",
+      "title": "Classic Martini",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add gin and vermouth to a mixing glass filled with ice.\n2. Stir for about 30 seconds until very cold.\n3. Strain into a chilled martini glass.\n4. Garnish with a lemon twist or olives.\nGarnish: Lemon twist or olives",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 1/2 oz Gin; 1/2 oz Dry vermouth",
+      "ingredients": [
+        {
+          "name": "Gin",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Dry vermouth",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [
+        "Dry Martini"
+      ],
+      "sourceMetadata": {
+        "baseSpirit": "Gin",
+        "styleLabel": "Stirred",
+        "mocktail": false,
+        "glass": "martini",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Gin\nStyle: Stirred\nGlass: martini\nSource strength: Strong (editorial, not measured ABV)\nSource difficulty: Easy\nGin and dry vermouth, stirred to icy clarity — the definition of sophistication.",
+        "originalRecord": {
+          "id": "martini",
+          "name": "Classic Martini",
+          "category": "Gin",
+          "glass": "martini",
+          "strength": "Strong",
+          "difficulty": "Easy",
+          "tags": [
+            "stirred",
+            "classic",
+            "dry",
+            "elegant"
+          ],
+          "description": "Gin and dry vermouth, stirred to icy clarity — the definition of sophistication.",
+          "ingredients": [
+            {
+              "amount": "2 1/2 oz",
+              "item": "Gin"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Dry vermouth"
+            }
+          ],
+          "garnish": "Lemon twist or olives",
+          "method": [
+            "Add gin and vermouth to a mixing glass filled with ice.",
+            "Stir for about 30 seconds until very cold.",
+            "Strain into a chilled martini glass.",
+            "Garnish with a lemon twist or olives."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "negroni",
+      "title": "Negroni",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add all ingredients to a mixing glass with ice.\n2. Stir until well chilled, about 30 seconds.\n3. Strain into a rocks glass over a large ice cube.\n4. Garnish with an orange slice.\nGarnish: Orange slice",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "1 oz Gin; 1 oz Campari; 1 oz Sweet vermouth",
+      "ingredients": [
+        {
+          "name": "Gin",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        },
+        {
+          "name": "Campari",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        },
+        {
+          "name": "Sweet vermouth",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Gin",
+        "styleLabel": "Stirred",
+        "mocktail": false,
+        "glass": "rocks",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Gin\nStyle: Stirred\nGlass: rocks\nSource strength: Strong (editorial, not measured ABV)\nSource difficulty: Easy\nEqual parts gin, Campari, and sweet vermouth — bittersweet perfection.",
+        "originalRecord": {
+          "id": "negroni",
+          "name": "Negroni",
+          "category": "Gin",
+          "glass": "rocks",
+          "strength": "Strong",
+          "difficulty": "Easy",
+          "tags": [
+            "stirred",
+            "bitter",
+            "equal parts",
+            "classic"
+          ],
+          "description": "Equal parts gin, Campari, and sweet vermouth — bittersweet perfection.",
+          "ingredients": [
+            {
+              "amount": "1 oz",
+              "item": "Gin"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Campari"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Sweet vermouth"
+            }
+          ],
+          "garnish": "Orange slice",
+          "method": [
+            "Add all ingredients to a mixing glass with ice.",
+            "Stir until well chilled, about 30 seconds.",
+            "Strain into a rocks glass over a large ice cube.",
+            "Garnish with an orange slice."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "tom-collins",
+      "title": "Tom Collins",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add gin, lemon juice, and simple syrup to a shaker with ice.\n2. Shake well and strain into a collins glass filled with fresh ice.\n3. Top with soda water and stir gently.\n4. Garnish with a lemon wheel and cherry.\nGarnish: Lemon wheel & cherry",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Gin; 3/4 oz Fresh lemon juice; 1/2 oz Simple syrup; 2-3 oz Soda water, to top",
+      "ingredients": [
+        {
+          "name": "Gin",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Lemon juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "3/4 oz",
+          "optional": false
+        },
+        {
+          "name": "Simple syrup",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Soda water, to top",
+          "category": "Other",
+          "amount": null,
+          "unit": "2-3 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Gin",
+        "styleLabel": "Fizzy",
+        "mocktail": false,
+        "glass": "collins",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Gin\nStyle: Fizzy\nGlass: collins\nSource strength: Light (editorial, not measured ABV)\nSource difficulty: Easy\nA tall, bubbly refresher of gin, lemon, and soda water.",
+        "originalRecord": {
+          "id": "tom-collins",
+          "name": "Tom Collins",
+          "category": "Gin",
+          "glass": "collins",
+          "strength": "Light",
+          "difficulty": "Easy",
+          "tags": [
+            "fizzy",
+            "citrusy",
+            "refreshing",
+            "classic"
+          ],
+          "description": "A tall, bubbly refresher of gin, lemon, and soda water.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Gin"
+            },
+            {
+              "amount": "3/4 oz",
+              "item": "Fresh lemon juice"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Simple syrup"
+            },
+            {
+              "amount": "2-3 oz",
+              "item": "Soda water, to top"
+            }
+          ],
+          "garnish": "Lemon wheel & cherry",
+          "method": [
+            "Add gin, lemon juice, and simple syrup to a shaker with ice.",
+            "Shake well and strain into a collins glass filled with fresh ice.",
+            "Top with soda water and stir gently.",
+            "Garnish with a lemon wheel and cherry."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "gin-fizz",
+      "title": "Gin Fizz",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Dry-shake gin, lemon juice, syrup, and egg white without ice for 15 seconds.\n2. Add ice and shake hard again until very cold.\n3. Strain into a highball glass with no ice.\n4. Top with soda water and serve immediately.",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Gin; 3/4 oz Fresh lemon juice; 3/4 oz Simple syrup; 1 Egg white; Top Soda water",
+      "ingredients": [
+        {
+          "name": "Gin",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Lemon juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "3/4 oz",
+          "optional": false
+        },
+        {
+          "name": "Simple syrup",
+          "category": "Other",
+          "amount": null,
+          "unit": "3/4 oz",
+          "optional": false
+        },
+        {
+          "name": "Egg white",
+          "category": "Other",
+          "amount": null,
+          "unit": "1",
+          "optional": false
+        },
+        {
+          "name": "Soda water",
+          "category": "Other",
+          "amount": null,
+          "unit": "Top",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Gin",
+        "styleLabel": "Fizzy",
+        "mocktail": false,
+        "glass": "highball",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Gin\nStyle: Fizzy\nGlass: highball\nSource strength: Light (editorial, not measured ABV)\nSource difficulty: Intermediate\nA frothy, effervescent classic shaken with lemon and topped with soda.",
+        "originalRecord": {
+          "id": "gin-fizz",
+          "name": "Gin Fizz",
+          "category": "Gin",
+          "glass": "highball",
+          "strength": "Light",
+          "difficulty": "Intermediate",
+          "tags": [
+            "fizzy",
+            "citrusy",
+            "egg white",
+            "classic"
+          ],
+          "description": "A frothy, effervescent classic shaken with lemon and topped with soda.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Gin"
+            },
+            {
+              "amount": "3/4 oz",
+              "item": "Fresh lemon juice"
+            },
+            {
+              "amount": "3/4 oz",
+              "item": "Simple syrup"
+            },
+            {
+              "amount": "1",
+              "item": "Egg white"
+            },
+            {
+              "amount": "Top",
+              "item": "Soda water"
+            }
+          ],
+          "garnish": "None",
+          "method": [
+            "Dry-shake gin, lemon juice, syrup, and egg white without ice for 15 seconds.",
+            "Add ice and shake hard again until very cold.",
+            "Strain into a highball glass with no ice.",
+            "Top with soda water and serve immediately."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "french-75",
+      "title": "French 75",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Shake gin, lemon juice, and syrup with ice until cold.\n2. Strain into a chilled champagne flute.\n3. Top slowly with Champagne.\n4. Garnish with a lemon twist.\nGarnish: Lemon twist",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed. Gin base and Bubbly style recorded separately.",
+      "originalIngredients": "1 oz Gin; 1/2 oz Fresh lemon juice; 1/2 oz Simple syrup; 2-3 oz Champagne, to top",
+      "ingredients": [
+        {
+          "name": "Gin",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        },
+        {
+          "name": "Lemon juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Simple syrup",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Champagne, to top",
+          "category": "Other",
+          "amount": null,
+          "unit": "2-3 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Gin",
+        "styleLabel": "Bubbly",
+        "mocktail": false,
+        "glass": "flute",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Gin\nStyle: Bubbly\nGlass: flute\nSource strength: Light (editorial, not measured ABV)\nSource difficulty: Intermediate\nGin and lemon lifted by a crown of chilled Champagne.",
+        "originalRecord": {
+          "id": "french-75",
+          "name": "French 75",
+          "category": "Bubbly",
+          "glass": "flute",
+          "strength": "Light",
+          "difficulty": "Intermediate",
+          "tags": [
+            "fizzy",
+            "citrusy",
+            "celebratory",
+            "classic"
+          ],
+          "description": "Gin and lemon lifted by a crown of chilled Champagne.",
+          "ingredients": [
+            {
+              "amount": "1 oz",
+              "item": "Gin"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Fresh lemon juice"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Simple syrup"
+            },
+            {
+              "amount": "2-3 oz",
+              "item": "Champagne, to top"
+            }
+          ],
+          "garnish": "Lemon twist",
+          "method": [
+            "Shake gin, lemon juice, and syrup with ice until cold.",
+            "Strain into a chilled champagne flute.",
+            "Top slowly with Champagne.",
+            "Garnish with a lemon twist."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "bees-knees",
+      "title": "Bee's Knees",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add all ingredients to a shaker with ice.\n2. Shake hard until well chilled.\n3. Double-strain into a chilled coupe glass.\n4. Garnish with a lemon twist.\nGarnish: Lemon twist",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Gin; 3/4 oz Fresh lemon juice; 3/4 oz Honey syrup",
+      "ingredients": [
+        {
+          "name": "Gin",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Lemon juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "3/4 oz",
+          "optional": false
+        },
+        {
+          "name": "Honey syrup",
+          "category": "Other",
+          "amount": null,
+          "unit": "3/4 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Gin",
+        "styleLabel": "Shaken",
+        "mocktail": false,
+        "glass": "coupe",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Gin\nStyle: Shaken\nGlass: coupe\nSource strength: Medium (editorial, not measured ABV)\nSource difficulty: Easy\nA Prohibition-era favorite balancing gin with honey and lemon.",
+        "originalRecord": {
+          "id": "bees-knees",
+          "name": "Bee's Knees",
+          "category": "Gin",
+          "glass": "coupe",
+          "strength": "Medium",
+          "difficulty": "Easy",
+          "tags": [
+            "shaken",
+            "citrusy",
+            "honey",
+            "prohibition-era"
+          ],
+          "description": "A Prohibition-era favorite balancing gin with honey and lemon.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Gin"
+            },
+            {
+              "amount": "3/4 oz",
+              "item": "Fresh lemon juice"
+            },
+            {
+              "amount": "3/4 oz",
+              "item": "Honey syrup"
+            }
+          ],
+          "garnish": "Lemon twist",
+          "method": [
+            "Add all ingredients to a shaker with ice.",
+            "Shake hard until well chilled.",
+            "Double-strain into a chilled coupe glass.",
+            "Garnish with a lemon twist."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "aviation",
+      "title": "Aviation",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add all ingredients to a shaker with ice.\n2. Shake well until chilled.\n3. Double-strain into a chilled coupe glass.\n4. Garnish with a brandied cherry.\nGarnish: Brandied cherry",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Gin; 1/2 oz Maraschino liqueur; 1/2 oz Fresh lemon juice; 1/4 oz Crème de violette",
+      "ingredients": [
+        {
+          "name": "Gin",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Maraschino liqueur",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Lemon juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Crème de violette",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/4 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Gin",
+        "styleLabel": "Shaken",
+        "mocktail": false,
+        "glass": "coupe",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Gin\nStyle: Shaken\nGlass: coupe\nSource strength: Medium (editorial, not measured ABV)\nSource difficulty: Intermediate\nA delicately floral gin cocktail tinted violet by crème de violette.",
+        "originalRecord": {
+          "id": "aviation",
+          "name": "Aviation",
+          "category": "Gin",
+          "glass": "coupe",
+          "strength": "Medium",
+          "difficulty": "Intermediate",
+          "tags": [
+            "shaken",
+            "floral",
+            "classic",
+            "purple"
+          ],
+          "description": "A delicately floral gin cocktail tinted violet by crème de violette.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Gin"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Maraschino liqueur"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Fresh lemon juice"
+            },
+            {
+              "amount": "1/4 oz",
+              "item": "Crème de violette"
+            }
+          ],
+          "garnish": "Brandied cherry",
+          "method": [
+            "Add all ingredients to a shaker with ice.",
+            "Shake well until chilled.",
+            "Double-strain into a chilled coupe glass.",
+            "Garnish with a brandied cherry."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "gimlet",
+      "title": "Gimlet",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add all ingredients to a shaker with ice.\n2. Shake well until chilled.\n3. Strain into a chilled coupe glass.\n4. Garnish with a lime wheel.\nGarnish: Lime wheel",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Gin; 3/4 oz Lime cordial; 1/4 oz Fresh lime juice",
+      "ingredients": [
+        {
+          "name": "Gin",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Lime cordial",
+          "category": "Other",
+          "amount": null,
+          "unit": "3/4 oz",
+          "optional": false
+        },
+        {
+          "name": "Lime juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/4 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Gin",
+        "styleLabel": "Shaken",
+        "mocktail": false,
+        "glass": "coupe",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Gin\nStyle: Shaken\nGlass: coupe\nSource strength: Medium (editorial, not measured ABV)\nSource difficulty: Easy\nA crisp, tart classic of gin and lime cordial.",
+        "originalRecord": {
+          "id": "gimlet",
+          "name": "Gimlet",
+          "category": "Gin",
+          "glass": "coupe",
+          "strength": "Medium",
+          "difficulty": "Easy",
+          "tags": [
+            "shaken",
+            "citrusy",
+            "classic",
+            "tart"
+          ],
+          "description": "A crisp, tart classic of gin and lime cordial.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Gin"
+            },
+            {
+              "amount": "3/4 oz",
+              "item": "Lime cordial"
+            },
+            {
+              "amount": "1/4 oz",
+              "item": "Fresh lime juice"
+            }
+          ],
+          "garnish": "Lime wheel",
+          "method": [
+            "Add all ingredients to a shaker with ice.",
+            "Shake well until chilled.",
+            "Strain into a chilled coupe glass.",
+            "Garnish with a lime wheel."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "mojito",
+      "title": "Mojito",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Muddle mint leaves gently with sugar and lime juice in a highball glass.\n2. Fill the glass with crushed ice.\n3. Pour in the rum and stir well.\n4. Top with soda water and garnish with mint and lime.\nGarnish: Mint sprig & lime wheel",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz White rum; 3/4 oz Fresh lime juice; 2 tsp Sugar; 8-10 Fresh mint leaves; Top Soda water",
+      "ingredients": [
+        {
+          "name": "White rum",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Lime juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "3/4 oz",
+          "optional": false
+        },
+        {
+          "name": "Sugar",
+          "category": "Other",
+          "amount": null,
+          "unit": "2 tsp",
+          "optional": false
+        },
+        {
+          "name": "Fresh mint leaves",
+          "category": "Other",
+          "amount": null,
+          "unit": "8-10",
+          "optional": false
+        },
+        {
+          "name": "Soda water",
+          "category": "Other",
+          "amount": null,
+          "unit": "Top",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Rum",
+        "styleLabel": "Muddled",
+        "mocktail": false,
+        "glass": "highball",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Rum\nStyle: Muddled\nGlass: highball\nSource strength: Light (editorial, not measured ABV)\nSource difficulty: Easy\nWhite rum, lime, mint, and soda — Cuba's most refreshing export.",
+        "originalRecord": {
+          "id": "mojito",
+          "name": "Mojito",
+          "category": "Rum",
+          "glass": "highball",
+          "strength": "Light",
+          "difficulty": "Easy",
+          "tags": [
+            "muddled",
+            "herbal",
+            "refreshing",
+            "classic"
+          ],
+          "description": "White rum, lime, mint, and soda — Cuba's most refreshing export.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "White rum"
+            },
+            {
+              "amount": "3/4 oz",
+              "item": "Fresh lime juice"
+            },
+            {
+              "amount": "2 tsp",
+              "item": "Sugar"
+            },
+            {
+              "amount": "8-10",
+              "item": "Fresh mint leaves"
+            },
+            {
+              "amount": "Top",
+              "item": "Soda water"
+            }
+          ],
+          "garnish": "Mint sprig & lime wheel",
+          "method": [
+            "Muddle mint leaves gently with sugar and lime juice in a highball glass.",
+            "Fill the glass with crushed ice.",
+            "Pour in the rum and stir well.",
+            "Top with soda water and garnish with mint and lime."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "daiquiri",
+      "title": "Daiquiri",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add all ingredients to a shaker with ice.\n2. Shake hard until well chilled.\n3. Double-strain into a chilled coupe glass.\n4. Garnish with a lime wheel.\nGarnish: Lime wheel",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz White rum; 1 oz Fresh lime juice; 3/4 oz Simple syrup",
+      "ingredients": [
+        {
+          "name": "White rum",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Lime juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        },
+        {
+          "name": "Simple syrup",
+          "category": "Other",
+          "amount": null,
+          "unit": "3/4 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Rum",
+        "styleLabel": "Shaken",
+        "mocktail": false,
+        "glass": "coupe",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Rum\nStyle: Shaken\nGlass: coupe\nSource strength: Medium (editorial, not measured ABV)\nSource difficulty: Easy\nRum, lime, and sugar in perfect three-ingredient harmony.",
+        "originalRecord": {
+          "id": "daiquiri",
+          "name": "Daiquiri",
+          "category": "Rum",
+          "glass": "coupe",
+          "strength": "Medium",
+          "difficulty": "Easy",
+          "tags": [
+            "shaken",
+            "citrusy",
+            "classic",
+            "simple"
+          ],
+          "description": "Rum, lime, and sugar in perfect three-ingredient harmony.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "White rum"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Fresh lime juice"
+            },
+            {
+              "amount": "3/4 oz",
+              "item": "Simple syrup"
+            }
+          ],
+          "garnish": "Lime wheel",
+          "method": [
+            "Add all ingredients to a shaker with ice.",
+            "Shake hard until well chilled.",
+            "Double-strain into a chilled coupe glass.",
+            "Garnish with a lime wheel."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "pina-colada",
+      "title": "Piña Colada",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add all ingredients to a blender.\n2. Blend until smooth and slushy.\n3. Pour into a hurricane glass.\n4. Garnish with a pineapple wedge and cherry.\nGarnish: Pineapple wedge & cherry",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz White rum; 1 oz Coconut cream; 3 oz Pineapple juice; 1 cup Crushed ice",
+      "ingredients": [
+        {
+          "name": "White rum",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Coconut cream",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        },
+        {
+          "name": "Pineapple juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "3 oz",
+          "optional": false
+        },
+        {
+          "name": "Crushed ice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 cup",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Rum",
+        "styleLabel": "Blended",
+        "mocktail": false,
+        "glass": "hurricane",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Rum\nStyle: Blended\nGlass: hurricane\nSource strength: Medium (editorial, not measured ABV)\nSource difficulty: Easy\nA blended tropical escape of rum, coconut cream, and pineapple.",
+        "originalRecord": {
+          "id": "pina-colada",
+          "name": "Piña Colada",
+          "category": "Rum",
+          "glass": "hurricane",
+          "strength": "Medium",
+          "difficulty": "Easy",
+          "tags": [
+            "blended",
+            "creamy",
+            "tropical",
+            "sweet"
+          ],
+          "description": "A blended tropical escape of rum, coconut cream, and pineapple.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "White rum"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Coconut cream"
+            },
+            {
+              "amount": "3 oz",
+              "item": "Pineapple juice"
+            },
+            {
+              "amount": "1 cup",
+              "item": "Crushed ice"
+            }
+          ],
+          "garnish": "Pineapple wedge & cherry",
+          "method": [
+            "Add all ingredients to a blender.",
+            "Blend until smooth and slushy.",
+            "Pour into a hurricane glass.",
+            "Garnish with a pineapple wedge and cherry."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "dark-n-stormy",
+      "title": "Dark 'n' Stormy",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Fill a highball glass with ice.\n2. Add ginger beer and lime juice.\n3. Slowly float the dark rum on top.\n4. Garnish with a lime wheel and serve with a straw.\nGarnish: Lime wheel",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Dark rum; 4 oz Ginger beer; 1/4 oz Fresh lime juice",
+      "ingredients": [
+        {
+          "name": "Dark rum",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Ginger beer",
+          "category": "Other",
+          "amount": null,
+          "unit": "4 oz",
+          "optional": false
+        },
+        {
+          "name": "Lime juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/4 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Rum",
+        "styleLabel": "Fizzy",
+        "mocktail": false,
+        "glass": "highball",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Rum\nStyle: Fizzy\nGlass: highball\nSource strength: Light (editorial, not measured ABV)\nSource difficulty: Easy\nDark rum floated over spicy ginger beer, Bermuda's signature cocktail.",
+        "originalRecord": {
+          "id": "dark-n-stormy",
+          "name": "Dark 'n' Stormy",
+          "category": "Rum",
+          "glass": "highball",
+          "strength": "Light",
+          "difficulty": "Easy",
+          "tags": [
+            "fizzy",
+            "spicy",
+            "ginger",
+            "classic"
+          ],
+          "description": "Dark rum floated over spicy ginger beer, Bermuda's signature cocktail.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Dark rum"
+            },
+            {
+              "amount": "4 oz",
+              "item": "Ginger beer"
+            },
+            {
+              "amount": "1/4 oz",
+              "item": "Fresh lime juice"
+            }
+          ],
+          "garnish": "Lime wheel",
+          "method": [
+            "Fill a highball glass with ice.",
+            "Add ginger beer and lime juice.",
+            "Slowly float the dark rum on top.",
+            "Garnish with a lime wheel and serve with a straw."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "mai-tai",
+      "title": "Mai Tai",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add all ingredients except the dark rum to a shaker with ice.\n2. Shake well and pour (unstrained) into a rocks glass with crushed ice.\n3. Float the dark rum on top.\n4. Garnish with mint and a spent lime shell.\nGarnish: Mint sprig & lime shell",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "1 oz Aged rum; 1 oz Dark rum; 1/2 oz Orange curaçao; 3/4 oz Fresh lime juice; 1/2 oz Orgeat syrup",
+      "ingredients": [
+        {
+          "name": "Aged rum",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        },
+        {
+          "name": "Dark rum",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        },
+        {
+          "name": "Orange curaçao",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Lime juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "3/4 oz",
+          "optional": false
+        },
+        {
+          "name": "Orgeat syrup",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Rum",
+        "styleLabel": "Shaken",
+        "mocktail": false,
+        "glass": "rocks",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Rum\nStyle: Shaken\nGlass: rocks\nSource strength: Strong (editorial, not measured ABV)\nSource difficulty: Advanced\nA tiki classic layering two rums with orgeat, orange curaçao, and lime.",
+        "originalRecord": {
+          "id": "mai-tai",
+          "name": "Mai Tai",
+          "category": "Rum",
+          "glass": "rocks",
+          "strength": "Strong",
+          "difficulty": "Advanced",
+          "tags": [
+            "shaken",
+            "tropical",
+            "tiki",
+            "classic"
+          ],
+          "description": "A tiki classic layering two rums with orgeat, orange curaçao, and lime.",
+          "ingredients": [
+            {
+              "amount": "1 oz",
+              "item": "Aged rum"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Dark rum"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Orange curaçao"
+            },
+            {
+              "amount": "3/4 oz",
+              "item": "Fresh lime juice"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Orgeat syrup"
+            }
+          ],
+          "garnish": "Mint sprig & lime shell",
+          "method": [
+            "Add all ingredients except the dark rum to a shaker with ice.",
+            "Shake well and pour (unstrained) into a rocks glass with crushed ice.",
+            "Float the dark rum on top.",
+            "Garnish with mint and a spent lime shell."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "hurricane",
+      "title": "Hurricane",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add all ingredients to a shaker with ice.\n2. Shake well until chilled.\n3. Strain into a hurricane glass filled with ice.\n4. Garnish with an orange slice and cherry.\nGarnish: Orange slice & cherry",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "1 1/2 oz Light rum; 1 1/2 oz Dark rum; 1 oz Passion fruit syrup; 1/2 oz Fresh lime juice; 1/2 oz Simple syrup",
+      "ingredients": [
+        {
+          "name": "Light rum",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "1 1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Dark rum",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "1 1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Passion fruit syrup",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        },
+        {
+          "name": "Lime juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Simple syrup",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Rum",
+        "styleLabel": "Shaken",
+        "mocktail": false,
+        "glass": "hurricane",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Rum\nStyle: Shaken\nGlass: hurricane\nSource strength: Strong (editorial, not measured ABV)\nSource difficulty: Intermediate\nA vibrant New Orleans classic bursting with rum, passion fruit, and lime.",
+        "originalRecord": {
+          "id": "hurricane",
+          "name": "Hurricane",
+          "category": "Rum",
+          "glass": "hurricane",
+          "strength": "Strong",
+          "difficulty": "Intermediate",
+          "tags": [
+            "shaken",
+            "fruity",
+            "tropical",
+            "new orleans"
+          ],
+          "description": "A vibrant New Orleans classic bursting with rum, passion fruit, and lime.",
+          "ingredients": [
+            {
+              "amount": "1 1/2 oz",
+              "item": "Light rum"
+            },
+            {
+              "amount": "1 1/2 oz",
+              "item": "Dark rum"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Passion fruit syrup"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Fresh lime juice"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Simple syrup"
+            }
+          ],
+          "garnish": "Orange slice & cherry",
+          "method": [
+            "Add all ingredients to a shaker with ice.",
+            "Shake well until chilled.",
+            "Strain into a hurricane glass filled with ice.",
+            "Garnish with an orange slice and cherry."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "rum-punch",
+      "title": "Caribbean Rum Punch",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add all ingredients except grenadine to a shaker with ice and shake.\n2. Strain into a hurricane or highball glass filled with ice.\n3. Slowly pour grenadine down the side so it settles at the bottom.\n4. Garnish with an orange wheel and cherry.\nGarnish: Orange wheel & cherry",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Spiced rum; 1 oz Orange juice; 1 oz Pineapple juice; 1/2 oz Grenadine; 1/4 oz Fresh lime juice",
+      "ingredients": [
+        {
+          "name": "Spiced rum",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Orange juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        },
+        {
+          "name": "Pineapple juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        },
+        {
+          "name": "Grenadine",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Lime juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/4 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Rum",
+        "styleLabel": "Shaken",
+        "mocktail": false,
+        "glass": "hurricane",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Rum\nStyle: Shaken\nGlass: hurricane\nSource strength: Medium (editorial, not measured ABV)\nSource difficulty: Easy\nA crowd-pleasing blend of rum and tropical juices, easy to batch for a party.",
+        "originalRecord": {
+          "id": "rum-punch",
+          "name": "Caribbean Rum Punch",
+          "category": "Rum",
+          "glass": "hurricane",
+          "strength": "Medium",
+          "difficulty": "Easy",
+          "tags": [
+            "fruity",
+            "tropical",
+            "party",
+            "shaken"
+          ],
+          "description": "A crowd-pleasing blend of rum and tropical juices, easy to batch for a party.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Spiced rum"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Orange juice"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Pineapple juice"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Grenadine"
+            },
+            {
+              "amount": "1/4 oz",
+              "item": "Fresh lime juice"
+            }
+          ],
+          "garnish": "Orange wheel & cherry",
+          "method": [
+            "Add all ingredients except grenadine to a shaker with ice and shake.",
+            "Strain into a hurricane or highball glass filled with ice.",
+            "Slowly pour grenadine down the side so it settles at the bottom.",
+            "Garnish with an orange wheel and cherry."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "margarita",
+      "title": "Margarita",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Rim a margarita glass with salt and set aside.\n2. Add tequila, orange liqueur, and lime juice to a shaker with ice.\n3. Shake hard until well chilled.\n4. Strain into the prepared glass over fresh ice, garnish with a lime wheel.\nGarnish: Salt rim & lime wheel",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Blanco tequila; 1 oz Orange liqueur (triple sec); 1 oz Fresh lime juice",
+      "ingredients": [
+        {
+          "name": "Blanco tequila",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Triple sec",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        },
+        {
+          "name": "Lime juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Tequila",
+        "styleLabel": "Shaken",
+        "mocktail": false,
+        "glass": "margarita",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Tequila\nStyle: Shaken\nGlass: margarita\nSource strength: Medium (editorial, not measured ABV)\nSource difficulty: Easy\nTequila, lime, and orange liqueur shaken over ice with a salted rim.",
+        "originalRecord": {
+          "id": "margarita",
+          "name": "Margarita",
+          "category": "Tequila",
+          "glass": "margarita",
+          "strength": "Medium",
+          "difficulty": "Easy",
+          "tags": [
+            "shaken",
+            "citrusy",
+            "classic",
+            "salted rim"
+          ],
+          "description": "Tequila, lime, and orange liqueur shaken over ice with a salted rim.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Blanco tequila"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Orange liqueur (triple sec)"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Fresh lime juice"
+            }
+          ],
+          "garnish": "Salt rim & lime wheel",
+          "method": [
+            "Rim a margarita glass with salt and set aside.",
+            "Add tequila, orange liqueur, and lime juice to a shaker with ice.",
+            "Shake hard until well chilled.",
+            "Strain into the prepared glass over fresh ice, garnish with a lime wheel."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "paloma",
+      "title": "Paloma",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Salt the rim of a highball glass and fill with ice.\n2. Add tequila and lime juice.\n3. Top with grapefruit soda and stir gently.\n4. Garnish with a grapefruit wedge.\nGarnish: Grapefruit wedge, salted rim",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Blanco tequila; 1/2 oz Fresh lime juice; 4 oz Grapefruit soda; Pinch Salt",
+      "ingredients": [
+        {
+          "name": "Blanco tequila",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Lime juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Grapefruit soda",
+          "category": "Other",
+          "amount": null,
+          "unit": "4 oz",
+          "optional": false
+        },
+        {
+          "name": "Salt",
+          "category": "Other",
+          "amount": null,
+          "unit": "Pinch",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Tequila",
+        "styleLabel": "Fizzy",
+        "mocktail": false,
+        "glass": "highball",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Tequila\nStyle: Fizzy\nGlass: highball\nSource strength: Light (editorial, not measured ABV)\nSource difficulty: Easy\nTequila and grapefruit soda over ice — Mexico's favorite everyday cocktail.",
+        "originalRecord": {
+          "id": "paloma",
+          "name": "Paloma",
+          "category": "Tequila",
+          "glass": "highball",
+          "strength": "Light",
+          "difficulty": "Easy",
+          "tags": [
+            "fizzy",
+            "citrusy",
+            "refreshing",
+            "grapefruit"
+          ],
+          "description": "Tequila and grapefruit soda over ice — Mexico's favorite everyday cocktail.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Blanco tequila"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Fresh lime juice"
+            },
+            {
+              "amount": "4 oz",
+              "item": "Grapefruit soda"
+            },
+            {
+              "amount": "Pinch",
+              "item": "Salt"
+            }
+          ],
+          "garnish": "Grapefruit wedge, salted rim",
+          "method": [
+            "Salt the rim of a highball glass and fill with ice.",
+            "Add tequila and lime juice.",
+            "Top with grapefruit soda and stir gently.",
+            "Garnish with a grapefruit wedge."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "tequila-sunrise",
+      "title": "Tequila Sunrise",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Fill a highball glass with ice and add tequila and orange juice.\n2. Stir gently.\n3. Slowly pour grenadine over the back of a spoon so it sinks and settles.\n4. Garnish with an orange slice and cherry.\nGarnish: Orange slice & cherry",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Blanco tequila; 4 oz Orange juice; 1/2 oz Grenadine",
+      "ingredients": [
+        {
+          "name": "Blanco tequila",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Orange juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "4 oz",
+          "optional": false
+        },
+        {
+          "name": "Grenadine",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Tequila",
+        "styleLabel": "",
+        "mocktail": false,
+        "glass": "highball",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Tequila\nStyle: \nGlass: highball\nSource strength: Light (editorial, not measured ABV)\nSource difficulty: Easy\nTequila, orange juice, and grenadine layered into a sunrise of color.",
+        "originalRecord": {
+          "id": "tequila-sunrise",
+          "name": "Tequila Sunrise",
+          "category": "Tequila",
+          "glass": "highball",
+          "strength": "Light",
+          "difficulty": "Easy",
+          "tags": [
+            "fruity",
+            "layered",
+            "brunch",
+            "classic"
+          ],
+          "description": "Tequila, orange juice, and grenadine layered into a sunrise of color.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Blanco tequila"
+            },
+            {
+              "amount": "4 oz",
+              "item": "Orange juice"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Grenadine"
+            }
+          ],
+          "garnish": "Orange slice & cherry",
+          "method": [
+            "Fill a highball glass with ice and add tequila and orange juice.",
+            "Stir gently.",
+            "Slowly pour grenadine over the back of a spoon so it sinks and settles.",
+            "Garnish with an orange slice and cherry."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "mexican-mule",
+      "title": "Mexican Mule",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Fill a copper mule mug with ice.\n2. Add tequila and lime juice.\n3. Top with ginger beer and stir gently.\n4. Garnish with a lime wheel and mint sprig.\nGarnish: Lime wheel & mint",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Blanco tequila; 1/2 oz Fresh lime juice; 4 oz Ginger beer",
+      "ingredients": [
+        {
+          "name": "Blanco tequila",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Lime juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Ginger beer",
+          "category": "Other",
+          "amount": null,
+          "unit": "4 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Tequila",
+        "styleLabel": "Fizzy",
+        "mocktail": false,
+        "glass": "mule",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Tequila\nStyle: Fizzy\nGlass: mule\nSource strength: Light (editorial, not measured ABV)\nSource difficulty: Easy\nThe classic Moscow Mule reimagined with tequila instead of vodka.",
+        "originalRecord": {
+          "id": "mexican-mule",
+          "name": "Mexican Mule",
+          "category": "Tequila",
+          "glass": "mule",
+          "strength": "Light",
+          "difficulty": "Easy",
+          "tags": [
+            "fizzy",
+            "ginger",
+            "spicy",
+            "refreshing"
+          ],
+          "description": "The classic Moscow Mule reimagined with tequila instead of vodka.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Blanco tequila"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Fresh lime juice"
+            },
+            {
+              "amount": "4 oz",
+              "item": "Ginger beer"
+            }
+          ],
+          "garnish": "Lime wheel & mint",
+          "method": [
+            "Fill a copper mule mug with ice.",
+            "Add tequila and lime juice.",
+            "Top with ginger beer and stir gently.",
+            "Garnish with a lime wheel and mint sprig."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "tommys-margarita",
+      "title": "Tommy's Margarita",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add all ingredients to a shaker with ice.\n2. Shake hard until well chilled.\n3. Strain into a rocks glass filled with fresh ice.\n4. Garnish with a lime wheel.\nGarnish: Lime wheel",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Blanco tequila; 1 oz Fresh lime juice; 1/2 oz Agave nectar",
+      "ingredients": [
+        {
+          "name": "Blanco tequila",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Lime juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        },
+        {
+          "name": "Agave nectar",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Tequila",
+        "styleLabel": "Shaken",
+        "mocktail": false,
+        "glass": "rocks",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Tequila\nStyle: Shaken\nGlass: rocks\nSource strength: Medium (editorial, not measured ABV)\nSource difficulty: Easy\nA cleaner take on the margarita, swapping triple sec for agave nectar.",
+        "originalRecord": {
+          "id": "tommys-margarita",
+          "name": "Tommy's Margarita",
+          "category": "Tequila",
+          "glass": "rocks",
+          "strength": "Medium",
+          "difficulty": "Easy",
+          "tags": [
+            "shaken",
+            "citrusy",
+            "modern classic",
+            "agave"
+          ],
+          "description": "A cleaner take on the margarita, swapping triple sec for agave nectar.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Blanco tequila"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Fresh lime juice"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Agave nectar"
+            }
+          ],
+          "garnish": "Lime wheel",
+          "method": [
+            "Add all ingredients to a shaker with ice.",
+            "Shake hard until well chilled.",
+            "Strain into a rocks glass filled with fresh ice.",
+            "Garnish with a lime wheel."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "espresso-martini",
+      "title": "Espresso Martini",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add all ingredients to a shaker with ice.\n2. Shake very hard for 15-20 seconds to build a foamy crema.\n3. Double-strain into a chilled martini glass.\n4. Garnish with three coffee beans on top of the foam.\nGarnish: Three coffee beans",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Vodka; 1 oz Coffee liqueur; 1 oz Fresh espresso; 1/4 oz Simple syrup",
+      "ingredients": [
+        {
+          "name": "Vodka",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Coffee liqueur",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        },
+        {
+          "name": "Fresh espresso",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        },
+        {
+          "name": "Simple syrup",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/4 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Vodka",
+        "styleLabel": "Shaken",
+        "mocktail": false,
+        "glass": "martini",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Vodka\nStyle: Shaken\nGlass: martini\nSource strength: Medium (editorial, not measured ABV)\nSource difficulty: Intermediate\nVodka, coffee liqueur, and fresh espresso shaken to a velvety, crema-topped finish.",
+        "originalRecord": {
+          "id": "espresso-martini",
+          "name": "Espresso Martini",
+          "category": "Vodka",
+          "glass": "martini",
+          "strength": "Medium",
+          "difficulty": "Intermediate",
+          "tags": [
+            "shaken",
+            "coffee",
+            "modern classic",
+            "party"
+          ],
+          "description": "Vodka, coffee liqueur, and fresh espresso shaken to a velvety, crema-topped finish.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Vodka"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Coffee liqueur"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Fresh espresso"
+            },
+            {
+              "amount": "1/4 oz",
+              "item": "Simple syrup"
+            }
+          ],
+          "garnish": "Three coffee beans",
+          "method": [
+            "Add all ingredients to a shaker with ice.",
+            "Shake very hard for 15-20 seconds to build a foamy crema.",
+            "Double-strain into a chilled martini glass.",
+            "Garnish with three coffee beans on top of the foam."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "cosmopolitan",
+      "title": "Cosmopolitan",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add all ingredients to a shaker with ice.\n2. Shake hard until well chilled.\n3. Double-strain into a chilled martini glass.\n4. Garnish with an orange twist.\nGarnish: Orange twist",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "1 1/2 oz Citrus vodka; 1 oz Orange liqueur; 1/2 oz Fresh lime juice; 1/2 oz Cranberry juice",
+      "ingredients": [
+        {
+          "name": "Citrus vodka",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "1 1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Orange liqueur",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        },
+        {
+          "name": "Lime juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Cranberry juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Vodka",
+        "styleLabel": "Shaken",
+        "mocktail": false,
+        "glass": "martini",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Vodka\nStyle: Shaken\nGlass: martini\nSource strength: Medium (editorial, not measured ABV)\nSource difficulty: Easy\nA pink, citrus-forward classic of vodka, cranberry, and lime.",
+        "originalRecord": {
+          "id": "cosmopolitan",
+          "name": "Cosmopolitan",
+          "category": "Vodka",
+          "glass": "martini",
+          "strength": "Medium",
+          "difficulty": "Easy",
+          "tags": [
+            "shaken",
+            "citrusy",
+            "fruity",
+            "90s classic"
+          ],
+          "description": "A pink, citrus-forward classic of vodka, cranberry, and lime.",
+          "ingredients": [
+            {
+              "amount": "1 1/2 oz",
+              "item": "Citrus vodka"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Orange liqueur"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Fresh lime juice"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Cranberry juice"
+            }
+          ],
+          "garnish": "Orange twist",
+          "method": [
+            "Add all ingredients to a shaker with ice.",
+            "Shake hard until well chilled.",
+            "Double-strain into a chilled martini glass.",
+            "Garnish with an orange twist."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "moscow-mule",
+      "title": "Moscow Mule",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Fill a copper mule mug with ice.\n2. Add vodka and lime juice.\n3. Top with ginger beer and stir gently.\n4. Garnish with a lime wheel and mint sprig.\nGarnish: Lime wheel & mint",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Vodka; 1/2 oz Fresh lime juice; 4 oz Ginger beer",
+      "ingredients": [
+        {
+          "name": "Vodka",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Lime juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Ginger beer",
+          "category": "Other",
+          "amount": null,
+          "unit": "4 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Vodka",
+        "styleLabel": "Fizzy",
+        "mocktail": false,
+        "glass": "mule",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Vodka\nStyle: Fizzy\nGlass: mule\nSource strength: Light (editorial, not measured ABV)\nSource difficulty: Easy\nVodka, lime, and spicy ginger beer, traditionally served in a frosty copper mug.",
+        "originalRecord": {
+          "id": "moscow-mule",
+          "name": "Moscow Mule",
+          "category": "Vodka",
+          "glass": "mule",
+          "strength": "Light",
+          "difficulty": "Easy",
+          "tags": [
+            "fizzy",
+            "ginger",
+            "refreshing",
+            "classic"
+          ],
+          "description": "Vodka, lime, and spicy ginger beer, traditionally served in a frosty copper mug.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Vodka"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Fresh lime juice"
+            },
+            {
+              "amount": "4 oz",
+              "item": "Ginger beer"
+            }
+          ],
+          "garnish": "Lime wheel & mint",
+          "method": [
+            "Fill a copper mule mug with ice.",
+            "Add vodka and lime juice.",
+            "Top with ginger beer and stir gently.",
+            "Garnish with a lime wheel and mint sprig."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "vodka-martini",
+      "title": "Vodka Martini",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add vodka and vermouth to a mixing glass with ice.\n2. Stir (or shake, if you prefer it colder and cloudier) until well chilled.\n3. Strain into a chilled martini glass.\n4. Garnish with a lemon twist or olives.\nGarnish: Lemon twist or olives",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 1/2 oz Vodka; 1/2 oz Dry vermouth",
+      "ingredients": [
+        {
+          "name": "Vodka",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Dry vermouth",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Vodka",
+        "styleLabel": "Stirred",
+        "mocktail": false,
+        "glass": "martini",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Vodka\nStyle: Stirred\nGlass: martini\nSource strength: Strong (editorial, not measured ABV)\nSource difficulty: Easy\nThe Bond favorite — vodka and dry vermouth, stirred or shaken to icy clarity.",
+        "originalRecord": {
+          "id": "vodka-martini",
+          "name": "Vodka Martini",
+          "category": "Vodka",
+          "glass": "martini",
+          "strength": "Strong",
+          "difficulty": "Easy",
+          "tags": [
+            "stirred",
+            "classic",
+            "dry",
+            "elegant"
+          ],
+          "description": "The Bond favorite — vodka and dry vermouth, stirred or shaken to icy clarity.",
+          "ingredients": [
+            {
+              "amount": "2 1/2 oz",
+              "item": "Vodka"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Dry vermouth"
+            }
+          ],
+          "garnish": "Lemon twist or olives",
+          "method": [
+            "Add vodka and vermouth to a mixing glass with ice.",
+            "Stir (or shake, if you prefer it colder and cloudier) until well chilled.",
+            "Strain into a chilled martini glass.",
+            "Garnish with a lemon twist or olives."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "bloody-mary",
+      "title": "Bloody Mary",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Fill a highball glass with ice.\n2. Add all ingredients and stir well to combine.\n3. Taste and adjust seasoning as needed.\n4. Garnish generously with celery, olives, and a lemon wedge.\nGarnish: Celery stalk, olives & lemon wedge",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Vodka; 4 oz Tomato juice; 1/2 oz Fresh lemon juice; 2 dashes Worcestershire sauce; 2 dashes Hot sauce; Pinch Celery salt & pepper",
+      "ingredients": [
+        {
+          "name": "Vodka",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Tomato juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "4 oz",
+          "optional": false
+        },
+        {
+          "name": "Lemon juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Worcestershire sauce",
+          "category": "Other",
+          "amount": null,
+          "unit": "2 dashes",
+          "optional": false
+        },
+        {
+          "name": "Hot sauce",
+          "category": "Other",
+          "amount": null,
+          "unit": "2 dashes",
+          "optional": false
+        },
+        {
+          "name": "Celery salt & pepper",
+          "category": "Other",
+          "amount": null,
+          "unit": "Pinch",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Vodka",
+        "styleLabel": "",
+        "mocktail": false,
+        "glass": "highball",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Vodka\nStyle: \nGlass: highball\nSource strength: Light (editorial, not measured ABV)\nSource difficulty: Intermediate\nA savory, spiced brunch classic of vodka, tomato juice, and bold seasoning.",
+        "originalRecord": {
+          "id": "bloody-mary",
+          "name": "Bloody Mary",
+          "category": "Vodka",
+          "glass": "highball",
+          "strength": "Light",
+          "difficulty": "Intermediate",
+          "tags": [
+            "savory",
+            "spicy",
+            "brunch",
+            "classic"
+          ],
+          "description": "A savory, spiced brunch classic of vodka, tomato juice, and bold seasoning.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Vodka"
+            },
+            {
+              "amount": "4 oz",
+              "item": "Tomato juice"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Fresh lemon juice"
+            },
+            {
+              "amount": "2 dashes",
+              "item": "Worcestershire sauce"
+            },
+            {
+              "amount": "2 dashes",
+              "item": "Hot sauce"
+            },
+            {
+              "amount": "Pinch",
+              "item": "Celery salt & pepper"
+            }
+          ],
+          "garnish": "Celery stalk, olives & lemon wedge",
+          "method": [
+            "Fill a highball glass with ice.",
+            "Add all ingredients and stir well to combine.",
+            "Taste and adjust seasoning as needed.",
+            "Garnish generously with celery, olives, and a lemon wedge."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "sidecar",
+      "title": "Sidecar",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Rim a coupe glass with sugar.\n2. Add all ingredients to a shaker with ice.\n3. Shake hard until well chilled.\n4. Strain into the prepared glass and garnish with an orange twist.\nGarnish: Sugared rim & orange twist",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Cognac; 3/4 oz Orange liqueur; 3/4 oz Fresh lemon juice",
+      "ingredients": [
+        {
+          "name": "Cognac",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Orange liqueur",
+          "category": "Other",
+          "amount": null,
+          "unit": "3/4 oz",
+          "optional": false
+        },
+        {
+          "name": "Lemon juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "3/4 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Brandy",
+        "styleLabel": "Shaken",
+        "mocktail": false,
+        "glass": "coupe",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Brandy\nStyle: Shaken\nGlass: coupe\nSource strength: Strong (editorial, not measured ABV)\nSource difficulty: Intermediate\nCognac, orange liqueur, and lemon shaken with a sugared rim.",
+        "originalRecord": {
+          "id": "sidecar",
+          "name": "Sidecar",
+          "category": "Brandy",
+          "glass": "coupe",
+          "strength": "Strong",
+          "difficulty": "Intermediate",
+          "tags": [
+            "shaken",
+            "citrusy",
+            "classic",
+            "sugared rim"
+          ],
+          "description": "Cognac, orange liqueur, and lemon shaken with a sugared rim.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Cognac"
+            },
+            {
+              "amount": "3/4 oz",
+              "item": "Orange liqueur"
+            },
+            {
+              "amount": "3/4 oz",
+              "item": "Fresh lemon juice"
+            }
+          ],
+          "garnish": "Sugared rim & orange twist",
+          "method": [
+            "Rim a coupe glass with sugar.",
+            "Add all ingredients to a shaker with ice.",
+            "Shake hard until well chilled.",
+            "Strain into the prepared glass and garnish with an orange twist."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "brandy-alexander",
+      "title": "Brandy Alexander",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add all ingredients to a shaker with ice.\n2. Shake hard until well chilled and frothy.\n3. Strain into a chilled coupe glass.\n4. Garnish with freshly grated nutmeg.\nGarnish: Grated nutmeg",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "1 1/2 oz Cognac; 1 oz Dark crème de cacao; 1 oz Heavy cream",
+      "ingredients": [
+        {
+          "name": "Cognac",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "1 1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Dark crème de cacao",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        },
+        {
+          "name": "Heavy cream",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Brandy",
+        "styleLabel": "Shaken",
+        "mocktail": false,
+        "glass": "coupe",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Brandy\nStyle: Shaken\nGlass: coupe\nSource strength: Medium (editorial, not measured ABV)\nSource difficulty: Easy\nA dessert in a glass — brandy, dark crème de cacao, and cream.",
+        "originalRecord": {
+          "id": "brandy-alexander",
+          "name": "Brandy Alexander",
+          "category": "Brandy",
+          "glass": "coupe",
+          "strength": "Medium",
+          "difficulty": "Easy",
+          "tags": [
+            "shaken",
+            "creamy",
+            "dessert",
+            "classic"
+          ],
+          "description": "A dessert in a glass — brandy, dark crème de cacao, and cream.",
+          "ingredients": [
+            {
+              "amount": "1 1/2 oz",
+              "item": "Cognac"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Dark crème de cacao"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Heavy cream"
+            }
+          ],
+          "garnish": "Grated nutmeg",
+          "method": [
+            "Add all ingredients to a shaker with ice.",
+            "Shake hard until well chilled and frothy.",
+            "Strain into a chilled coupe glass.",
+            "Garnish with freshly grated nutmeg."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "french-connection",
+      "title": "French Connection",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Fill a rocks glass with ice.\n2. Add cognac and amaretto.\n3. Stir gently to combine and chill.",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "1 1/2 oz Cognac; 1 oz Amaretto",
+      "ingredients": [
+        {
+          "name": "Cognac",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "1 1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Amaretto",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Brandy",
+        "styleLabel": "Stirred",
+        "mocktail": false,
+        "glass": "rocks",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Brandy\nStyle: Stirred\nGlass: rocks\nSource strength: Strong (editorial, not measured ABV)\nSource difficulty: Easy\nA dead-simple, spirit-forward sipper of cognac and amaretto over ice.",
+        "originalRecord": {
+          "id": "french-connection",
+          "name": "French Connection",
+          "category": "Brandy",
+          "glass": "rocks",
+          "strength": "Strong",
+          "difficulty": "Easy",
+          "tags": [
+            "stirred",
+            "nutty",
+            "boozy",
+            "simple"
+          ],
+          "description": "A dead-simple, spirit-forward sipper of cognac and amaretto over ice.",
+          "ingredients": [
+            {
+              "amount": "1 1/2 oz",
+              "item": "Cognac"
+            },
+            {
+              "amount": "1 oz",
+              "item": "Amaretto"
+            }
+          ],
+          "garnish": "None",
+          "method": [
+            "Fill a rocks glass with ice.",
+            "Add cognac and amaretto.",
+            "Stir gently to combine and chill."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "bellini",
+      "title": "Bellini",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Pour the peach purée into a chilled champagne flute.\n2. Slowly top with Prosecco.\n3. Stir once, gently, to combine.",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz White peach purée; 4 oz Prosecco, chilled",
+      "ingredients": [
+        {
+          "name": "White peach purée",
+          "category": "Other",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Prosecco, chilled",
+          "category": "Other",
+          "amount": null,
+          "unit": "4 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": null,
+        "styleLabel": "Bubbly",
+        "mocktail": false,
+        "glass": "flute",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: None specified\nStyle: Bubbly\nGlass: flute\nSource strength: Light (editorial, not measured ABV)\nSource difficulty: Easy\nProsecco and white peach purée, born in Venice at Harry's Bar.",
+        "originalRecord": {
+          "id": "bellini",
+          "name": "Bellini",
+          "category": "Bubbly",
+          "glass": "flute",
+          "strength": "Light",
+          "difficulty": "Easy",
+          "tags": [
+            "fizzy",
+            "fruity",
+            "brunch",
+            "classic"
+          ],
+          "description": "Prosecco and white peach purée, born in Venice at Harry's Bar.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "White peach purée"
+            },
+            {
+              "amount": "4 oz",
+              "item": "Prosecco, chilled"
+            }
+          ],
+          "garnish": "None",
+          "method": [
+            "Pour the peach purée into a chilled champagne flute.",
+            "Slowly top with Prosecco.",
+            "Stir once, gently, to combine."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "mimosa",
+      "title": "Mimosa",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Pour chilled orange juice into a champagne flute.\n2. Top slowly with Champagne.\n3. Garnish with an orange twist, if desired.\nGarnish: Orange twist",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "3 oz Champagne or sparkling wine, chilled; 3 oz Fresh orange juice, chilled",
+      "ingredients": [
+        {
+          "name": "Champagne or sparkling wine, chilled",
+          "category": "Other",
+          "amount": null,
+          "unit": "3 oz",
+          "optional": false
+        },
+        {
+          "name": "Fresh orange juice, chilled",
+          "category": "Other",
+          "amount": null,
+          "unit": "3 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": null,
+        "styleLabel": "Bubbly",
+        "mocktail": false,
+        "glass": "flute",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: None specified\nStyle: Bubbly\nGlass: flute\nSource strength: Light (editorial, not measured ABV)\nSource difficulty: Easy\nThe simplest brunch staple — equal parts Champagne and orange juice.",
+        "originalRecord": {
+          "id": "mimosa",
+          "name": "Mimosa",
+          "category": "Bubbly",
+          "glass": "flute",
+          "strength": "Light",
+          "difficulty": "Easy",
+          "tags": [
+            "fizzy",
+            "citrusy",
+            "brunch",
+            "classic"
+          ],
+          "description": "The simplest brunch staple — equal parts Champagne and orange juice.",
+          "ingredients": [
+            {
+              "amount": "3 oz",
+              "item": "Champagne or sparkling wine, chilled"
+            },
+            {
+              "amount": "3 oz",
+              "item": "Fresh orange juice, chilled"
+            }
+          ],
+          "garnish": "Orange twist",
+          "method": [
+            "Pour chilled orange juice into a champagne flute.",
+            "Top slowly with Champagne.",
+            "Garnish with an orange twist, if desired."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "aperol-spritz",
+      "title": "Aperol Spritz",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Fill a large wine glass with ice.\n2. Add Prosecco, then Aperol.\n3. Top with a splash of soda water and stir gently.\n4. Garnish with an orange slice.\nGarnish: Orange slice",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "3 oz Prosecco; 2 oz Aperol; 1 splash Soda water",
+      "ingredients": [
+        {
+          "name": "Prosecco",
+          "category": "Other",
+          "amount": null,
+          "unit": "3 oz",
+          "optional": false
+        },
+        {
+          "name": "Aperol",
+          "category": "Other",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Soda water",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 splash",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": null,
+        "styleLabel": "Bubbly",
+        "mocktail": false,
+        "glass": "wine",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: None specified\nStyle: Bubbly\nGlass: wine\nSource strength: Light (editorial, not measured ABV)\nSource difficulty: Easy\nItaly's favorite aperitif — Aperol, Prosecco, and a splash of soda over ice.",
+        "originalRecord": {
+          "id": "aperol-spritz",
+          "name": "Aperol Spritz",
+          "category": "Bubbly",
+          "glass": "wine",
+          "strength": "Light",
+          "difficulty": "Easy",
+          "tags": [
+            "fizzy",
+            "bitter-sweet",
+            "aperitif",
+            "modern classic"
+          ],
+          "description": "Italy's favorite aperitif — Aperol, Prosecco, and a splash of soda over ice.",
+          "ingredients": [
+            {
+              "amount": "3 oz",
+              "item": "Prosecco"
+            },
+            {
+              "amount": "2 oz",
+              "item": "Aperol"
+            },
+            {
+              "amount": "1 splash",
+              "item": "Soda water"
+            }
+          ],
+          "garnish": "Orange slice",
+          "method": [
+            "Fill a large wine glass with ice.",
+            "Add Prosecco, then Aperol.",
+            "Top with a splash of soda water and stir gently.",
+            "Garnish with an orange slice."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "kir-royale",
+      "title": "Kir Royale",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Pour crème de cassis into a chilled champagne flute.\n2. Top slowly with Champagne.\n3. Serve immediately without stirring.",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "1/2 oz Crème de cassis; 4 1/2 oz Champagne, chilled",
+      "ingredients": [
+        {
+          "name": "Crème de cassis",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Champagne, chilled",
+          "category": "Other",
+          "amount": null,
+          "unit": "4 1/2 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": null,
+        "styleLabel": "Bubbly",
+        "mocktail": false,
+        "glass": "flute",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: None specified\nStyle: Bubbly\nGlass: flute\nSource strength: Light (editorial, not measured ABV)\nSource difficulty: Easy\nChampagne tinted deep pink with a touch of blackcurrant liqueur.",
+        "originalRecord": {
+          "id": "kir-royale",
+          "name": "Kir Royale",
+          "category": "Bubbly",
+          "glass": "flute",
+          "strength": "Light",
+          "difficulty": "Easy",
+          "tags": [
+            "fizzy",
+            "elegant",
+            "berry",
+            "classic"
+          ],
+          "description": "Champagne tinted deep pink with a touch of blackcurrant liqueur.",
+          "ingredients": [
+            {
+              "amount": "1/2 oz",
+              "item": "Crème de cassis"
+            },
+            {
+              "amount": "4 1/2 oz",
+              "item": "Champagne, chilled"
+            }
+          ],
+          "garnish": "None",
+          "method": [
+            "Pour crème de cassis into a chilled champagne flute.",
+            "Top slowly with Champagne.",
+            "Serve immediately without stirring."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "french-blonde",
+      "title": "French Blonde",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add all ingredients to a shaker with ice.\n2. Shake until well chilled.\n3. Strain into a chilled coupe glass.\n4. Garnish with a grapefruit twist.\nGarnish: Grapefruit twist",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed. French Blonde classified as gin-based rather than Bubbly: its listed ingredients contain no sparkling component. Original category retained in the source record.",
+      "originalIngredients": "1 1/2 oz Gin; 1/2 oz Lillet Blanc; 1/2 oz St-Germain elderflower liqueur; 1/2 oz Fresh grapefruit juice",
+      "ingredients": [
+        {
+          "name": "Gin",
+          "category": "Spirit",
+          "amount": null,
+          "unit": "1 1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Lillet Blanc",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "St-Germain elderflower liqueur",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Fresh grapefruit juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": "Gin",
+        "styleLabel": "Shaken",
+        "mocktail": false,
+        "glass": "coupe",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: Gin\nStyle: Shaken\nGlass: coupe\nSource strength: Medium (editorial, not measured ABV)\nSource difficulty: Intermediate\nA modern classic pairing gin, Lillet Blanc, St-Germain, and grapefruit.",
+        "originalRecord": {
+          "id": "french-blonde",
+          "name": "French Blonde",
+          "category": "Bubbly",
+          "glass": "coupe",
+          "strength": "Medium",
+          "difficulty": "Intermediate",
+          "tags": [
+            "shaken",
+            "floral",
+            "modern classic",
+            "gin"
+          ],
+          "description": "A modern classic pairing gin, Lillet Blanc, St-Germain, and grapefruit.",
+          "ingredients": [
+            {
+              "amount": "1 1/2 oz",
+              "item": "Gin"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Lillet Blanc"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "St-Germain elderflower liqueur"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Fresh grapefruit juice"
+            }
+          ],
+          "garnish": "Grapefruit twist",
+          "method": [
+            "Add all ingredients to a shaker with ice.",
+            "Shake until well chilled.",
+            "Strain into a chilled coupe glass.",
+            "Garnish with a grapefruit twist."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "virgin-mojito",
+      "title": "Virgin Mojito",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Muddle mint leaves gently with sugar and lime juice in a highball glass.\n2. Fill the glass with crushed ice.\n3. Top with soda water and stir well.\n4. Garnish with mint and a lime wheel.\nGarnish: Mint sprig & lime wheel",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "3/4 oz Fresh lime juice; 2 tsp Sugar; 8-10 Fresh mint leaves; Top Soda water",
+      "ingredients": [
+        {
+          "name": "Lime juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "3/4 oz",
+          "optional": false
+        },
+        {
+          "name": "Sugar",
+          "category": "Other",
+          "amount": null,
+          "unit": "2 tsp",
+          "optional": false
+        },
+        {
+          "name": "Fresh mint leaves",
+          "category": "Other",
+          "amount": null,
+          "unit": "8-10",
+          "optional": false
+        },
+        {
+          "name": "Soda water",
+          "category": "Other",
+          "amount": null,
+          "unit": "Top",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": null,
+        "styleLabel": "Muddled",
+        "mocktail": true,
+        "glass": "highball",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: None specified\nStyle: Muddled\nGlass: highball\nSource designation: Mocktail; this is not a measured alcohol or allergen declaration.\nSource strength: Non-Alcoholic (editorial, not measured ABV)\nSource difficulty: Easy\nAll the mint-lime refreshment of a mojito, without the rum.",
+        "originalRecord": {
+          "id": "virgin-mojito",
+          "name": "Virgin Mojito",
+          "category": "Mocktail",
+          "glass": "highball",
+          "strength": "Non-Alcoholic",
+          "difficulty": "Easy",
+          "tags": [
+            "muddled",
+            "herbal",
+            "refreshing",
+            "mocktail"
+          ],
+          "description": "All the mint-lime refreshment of a mojito, without the rum.",
+          "ingredients": [
+            {
+              "amount": "3/4 oz",
+              "item": "Fresh lime juice"
+            },
+            {
+              "amount": "2 tsp",
+              "item": "Sugar"
+            },
+            {
+              "amount": "8-10",
+              "item": "Fresh mint leaves"
+            },
+            {
+              "amount": "Top",
+              "item": "Soda water"
+            }
+          ],
+          "garnish": "Mint sprig & lime wheel",
+          "method": [
+            "Muddle mint leaves gently with sugar and lime juice in a highball glass.",
+            "Fill the glass with crushed ice.",
+            "Top with soda water and stir well.",
+            "Garnish with mint and a lime wheel."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "shirley-temple",
+      "title": "Shirley Temple",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Fill a highball glass with ice.\n2. Pour in ginger ale.\n3. Add grenadine and let it settle, or stir gently.\n4. Garnish with a cherry and orange slice.\nGarnish: Maraschino cherry & orange slice",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "6 oz Ginger ale; 1/2 oz Grenadine",
+      "ingredients": [
+        {
+          "name": "Ginger ale",
+          "category": "Other",
+          "amount": null,
+          "unit": "6 oz",
+          "optional": false
+        },
+        {
+          "name": "Grenadine",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": null,
+        "styleLabel": "Fizzy",
+        "mocktail": true,
+        "glass": "highball",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: None specified\nStyle: Fizzy\nGlass: highball\nSource designation: Mocktail; this is not a measured alcohol or allergen declaration.\nSource strength: Non-Alcoholic (editorial, not measured ABV)\nSource difficulty: Easy\nGinger ale and grenadine — the classic kid-friendly mocktail, adored by adults too.",
+        "originalRecord": {
+          "id": "shirley-temple",
+          "name": "Shirley Temple",
+          "category": "Mocktail",
+          "glass": "highball",
+          "strength": "Non-Alcoholic",
+          "difficulty": "Easy",
+          "tags": [
+            "fizzy",
+            "sweet",
+            "classic",
+            "mocktail"
+          ],
+          "description": "Ginger ale and grenadine — the classic kid-friendly mocktail, adored by adults too.",
+          "ingredients": [
+            {
+              "amount": "6 oz",
+              "item": "Ginger ale"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Grenadine"
+            }
+          ],
+          "garnish": "Maraschino cherry & orange slice",
+          "method": [
+            "Fill a highball glass with ice.",
+            "Pour in ginger ale.",
+            "Add grenadine and let it settle, or stir gently.",
+            "Garnish with a cherry and orange slice."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "virgin-pina-colada",
+      "title": "Virgin Piña Colada",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Add all ingredients to a blender.\n2. Blend until smooth and slushy.\n3. Pour into a hurricane glass.\n4. Garnish with a pineapple wedge and cherry.\nGarnish: Pineapple wedge & cherry",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "2 oz Coconut cream; 4 oz Pineapple juice; 1 cup Crushed ice",
+      "ingredients": [
+        {
+          "name": "Coconut cream",
+          "category": "Other",
+          "amount": null,
+          "unit": "2 oz",
+          "optional": false
+        },
+        {
+          "name": "Pineapple juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "4 oz",
+          "optional": false
+        },
+        {
+          "name": "Crushed ice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1 cup",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": null,
+        "styleLabel": "Blended",
+        "mocktail": true,
+        "glass": "hurricane",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: None specified\nStyle: Blended\nGlass: hurricane\nSource designation: Mocktail; this is not a measured alcohol or allergen declaration.\nSource strength: Non-Alcoholic (editorial, not measured ABV)\nSource difficulty: Easy\nA creamy, blended coconut-pineapple escape, no passport (or alcohol) required.",
+        "originalRecord": {
+          "id": "virgin-pina-colada",
+          "name": "Virgin Piña Colada",
+          "category": "Mocktail",
+          "glass": "hurricane",
+          "strength": "Non-Alcoholic",
+          "difficulty": "Easy",
+          "tags": [
+            "blended",
+            "creamy",
+            "tropical",
+            "mocktail"
+          ],
+          "description": "A creamy, blended coconut-pineapple escape, no passport (or alcohol) required.",
+          "ingredients": [
+            {
+              "amount": "2 oz",
+              "item": "Coconut cream"
+            },
+            {
+              "amount": "4 oz",
+              "item": "Pineapple juice"
+            },
+            {
+              "amount": "1 cup",
+              "item": "Crushed ice"
+            }
+          ],
+          "garnish": "Pineapple wedge & cherry",
+          "method": [
+            "Add all ingredients to a blender.",
+            "Blend until smooth and slushy.",
+            "Pour into a hurricane glass.",
+            "Garnish with a pineapple wedge and cherry."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "cucumber-mint-cooler",
+      "title": "Cucumber Mint Cooler",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Muddle cucumber and mint with lime juice and syrup in a collins glass.\n2. Fill the glass with ice.\n3. Top with soda water and stir gently.\n4. Garnish with a cucumber ribbon and mint sprig.\nGarnish: Cucumber ribbon & mint sprig",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "4-5 slices Fresh cucumber; 8 Fresh mint leaves; 3/4 oz Fresh lime juice; 1/2 oz Simple syrup; Top Soda water",
+      "ingredients": [
+        {
+          "name": "Fresh cucumber",
+          "category": "Other",
+          "amount": null,
+          "unit": "4-5 slices",
+          "optional": false
+        },
+        {
+          "name": "Fresh mint leaves",
+          "category": "Other",
+          "amount": null,
+          "unit": "8",
+          "optional": false
+        },
+        {
+          "name": "Lime juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "3/4 oz",
+          "optional": false
+        },
+        {
+          "name": "Simple syrup",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Soda water",
+          "category": "Other",
+          "amount": null,
+          "unit": "Top",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": null,
+        "styleLabel": "Muddled",
+        "mocktail": true,
+        "glass": "collins",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: None specified\nStyle: Muddled\nGlass: collins\nSource designation: Mocktail; this is not a measured alcohol or allergen declaration.\nSource strength: Non-Alcoholic (editorial, not measured ABV)\nSource difficulty: Easy\nA spa-worthy, crisp cooler of muddled cucumber, mint, and lime.",
+        "originalRecord": {
+          "id": "cucumber-mint-cooler",
+          "name": "Cucumber Mint Cooler",
+          "category": "Mocktail",
+          "glass": "collins",
+          "strength": "Non-Alcoholic",
+          "difficulty": "Easy",
+          "tags": [
+            "muddled",
+            "herbal",
+            "refreshing",
+            "mocktail"
+          ],
+          "description": "A spa-worthy, crisp cooler of muddled cucumber, mint, and lime.",
+          "ingredients": [
+            {
+              "amount": "4-5 slices",
+              "item": "Fresh cucumber"
+            },
+            {
+              "amount": "8",
+              "item": "Fresh mint leaves"
+            },
+            {
+              "amount": "3/4 oz",
+              "item": "Fresh lime juice"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Simple syrup"
+            },
+            {
+              "amount": "Top",
+              "item": "Soda water"
+            }
+          ],
+          "garnish": "Cucumber ribbon & mint sprig",
+          "method": [
+            "Muddle cucumber and mint with lime juice and syrup in a collins glass.",
+            "Fill the glass with ice.",
+            "Top with soda water and stir gently.",
+            "Garnish with a cucumber ribbon and mint sprig."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "virgin-mary",
+      "title": "Virgin Mary",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Fill a highball glass with ice.\n2. Add all ingredients and stir well.\n3. Taste and adjust seasoning.\n4. Garnish with celery and a lemon wedge.\nGarnish: Celery stalk & lemon wedge",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "5 oz Tomato juice; 1/2 oz Fresh lemon juice; 2 dashes Worcestershire sauce; 2 dashes Hot sauce; Pinch Celery salt & pepper",
+      "ingredients": [
+        {
+          "name": "Tomato juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "5 oz",
+          "optional": false
+        },
+        {
+          "name": "Lemon juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Worcestershire sauce",
+          "category": "Other",
+          "amount": null,
+          "unit": "2 dashes",
+          "optional": false
+        },
+        {
+          "name": "Hot sauce",
+          "category": "Other",
+          "amount": null,
+          "unit": "2 dashes",
+          "optional": false
+        },
+        {
+          "name": "Celery salt & pepper",
+          "category": "Other",
+          "amount": null,
+          "unit": "Pinch",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": null,
+        "styleLabel": "",
+        "mocktail": true,
+        "glass": "highball",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: None specified\nStyle: \nGlass: highball\nSource designation: Mocktail; this is not a measured alcohol or allergen declaration.\nSource strength: Non-Alcoholic (editorial, not measured ABV)\nSource difficulty: Easy\nAll the savory spice of a Bloody Mary, minus the vodka.",
+        "originalRecord": {
+          "id": "virgin-mary",
+          "name": "Virgin Mary",
+          "category": "Mocktail",
+          "glass": "highball",
+          "strength": "Non-Alcoholic",
+          "difficulty": "Easy",
+          "tags": [
+            "savory",
+            "spicy",
+            "brunch",
+            "mocktail"
+          ],
+          "description": "All the savory spice of a Bloody Mary, minus the vodka.",
+          "ingredients": [
+            {
+              "amount": "5 oz",
+              "item": "Tomato juice"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Fresh lemon juice"
+            },
+            {
+              "amount": "2 dashes",
+              "item": "Worcestershire sauce"
+            },
+            {
+              "amount": "2 dashes",
+              "item": "Hot sauce"
+            },
+            {
+              "amount": "Pinch",
+              "item": "Celery salt & pepper"
+            }
+          ],
+          "garnish": "Celery stalk & lemon wedge",
+          "method": [
+            "Fill a highball glass with ice.",
+            "Add all ingredients and stir well.",
+            "Taste and adjust seasoning.",
+            "Garnish with celery and a lemon wedge."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "sparkling-cranberry-spritz",
+      "title": "Sparkling Cranberry Spritz",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Fill a flute or wine glass with ice, if desired.\n2. Add cranberry juice and lime juice.\n3. Top with sparkling water and stir gently.\n4. Garnish with fresh cranberries and a rosemary sprig.\nGarnish: Fresh cranberries & rosemary sprig",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "3 oz Cranberry juice; 1/2 oz Fresh lime juice; 3 oz Sparkling water",
+      "ingredients": [
+        {
+          "name": "Cranberry juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "3 oz",
+          "optional": false
+        },
+        {
+          "name": "Lime juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Sparkling water",
+          "category": "Other",
+          "amount": null,
+          "unit": "3 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": null,
+        "styleLabel": "Fizzy",
+        "mocktail": true,
+        "glass": "flute",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: None specified\nStyle: Fizzy\nGlass: flute\nSource designation: Mocktail; this is not a measured alcohol or allergen declaration.\nSource strength: Non-Alcoholic (editorial, not measured ABV)\nSource difficulty: Easy\nA festive, ruby-red spritz of cranberry, lime, and sparkling water.",
+        "originalRecord": {
+          "id": "sparkling-cranberry-spritz",
+          "name": "Sparkling Cranberry Spritz",
+          "category": "Mocktail",
+          "glass": "flute",
+          "strength": "Non-Alcoholic",
+          "difficulty": "Easy",
+          "tags": [
+            "fizzy",
+            "fruity",
+            "festive",
+            "mocktail"
+          ],
+          "description": "A festive, ruby-red spritz of cranberry, lime, and sparkling water.",
+          "ingredients": [
+            {
+              "amount": "3 oz",
+              "item": "Cranberry juice"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Fresh lime juice"
+            },
+            {
+              "amount": "3 oz",
+              "item": "Sparkling water"
+            }
+          ],
+          "garnish": "Fresh cranberries & rosemary sprig",
+          "method": [
+            "Fill a flute or wine glass with ice, if desired.",
+            "Add cranberry juice and lime juice.",
+            "Top with sparkling water and stir gently.",
+            "Garnish with fresh cranberries and a rosemary sprig."
+          ]
+        }
+      }
+    },
+    {
+      "recordId": "ginger-peach-fizz",
+      "title": "Ginger Peach Fizz",
+      "style": "OTHER",
+      "servings": 1,
+      "instructions": "1. Fill a collins glass with ice.\n2. Add peach nectar and lemon juice.\n3. Top with ginger beer and stir gently.\n4. Garnish with a peach slice and mint sprig.\nGarnish: Peach slice & mint",
+      "permanentUrl": null,
+      "historyUrl": null,
+      "modifications": "Names, instructions and source quantities retained. Ingredient aliases are explicit spelling/qualifier mappings. Quantities are not converted or automatically scaled; one source formulation is displayed.",
+      "originalIngredients": "3 oz Peach nectar; 1/2 oz Fresh lemon juice; 3 oz Ginger beer",
+      "ingredients": [
+        {
+          "name": "Peach nectar",
+          "category": "Other",
+          "amount": null,
+          "unit": "3 oz",
+          "optional": false
+        },
+        {
+          "name": "Lemon juice",
+          "category": "Other",
+          "amount": null,
+          "unit": "1/2 oz",
+          "optional": false
+        },
+        {
+          "name": "Ginger beer",
+          "category": "Other",
+          "amount": null,
+          "unit": "3 oz",
+          "optional": false
+        }
+      ],
+      "familyAliases": [],
+      "sourceMetadata": {
+        "baseSpirit": null,
+        "styleLabel": "Fizzy",
+        "mocktail": true,
+        "glass": "collins",
+        "rawQuantities": true,
+        "displayDescription": "Base spirit: None specified\nStyle: Fizzy\nGlass: collins\nSource designation: Mocktail; this is not a measured alcohol or allergen declaration.\nSource strength: Non-Alcoholic (editorial, not measured ABV)\nSource difficulty: Easy\nA bright, gingery peach cooler that drinks like a spritz without the spirits.",
+        "originalRecord": {
+          "id": "ginger-peach-fizz",
+          "name": "Ginger Peach Fizz",
+          "category": "Mocktail",
+          "glass": "collins",
+          "strength": "Non-Alcoholic",
+          "difficulty": "Easy",
+          "tags": [
+            "fizzy",
+            "fruity",
+            "refreshing",
+            "mocktail"
+          ],
+          "description": "A bright, gingery peach cooler that drinks like a spritz without the spirits.",
+          "ingredients": [
+            {
+              "amount": "3 oz",
+              "item": "Peach nectar"
+            },
+            {
+              "amount": "1/2 oz",
+              "item": "Fresh lemon juice"
+            },
+            {
+              "amount": "3 oz",
+              "item": "Ginger beer"
+            }
+          ],
+          "garnish": "Peach slice & mint",
+          "method": [
+            "Fill a collins glass with ice.",
+            "Add peach nectar and lemon juice.",
+            "Top with ginger beer and stir gently.",
+            "Garnish with a peach slice and mint sprig."
+          ]
+        }
+      }
+    }
+  ]
+}

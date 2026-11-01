@@ -267,6 +267,9 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                     licenseUrl = source.modifications?.let(::parseSourceLicenseUrl),
                     repositoryUrl = source.modifications?.let(::parseSourceRepositoryUrl),
                     repositoryRevision = source.modifications?.let(::parseSourceRepositoryRevision),
+                    licenseNotice = source.modifications?.let { sourceMetadataString(it, "licenseNotice") },
+                    catalogDescription = source.modifications?.let { sourceMetadataString(it, "catalogDescription") },
+                    rawQuantities = source.modifications?.let { sourceMetadataString(it, "rawQuantities") } == "true",
                 )
             },
         )
@@ -274,6 +277,10 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
 
     fun hasStarterCatalog(): Boolean = queries.selectAllSourcesForBundle().executeAsList().any { source ->
         source.source_record_id?.startsWith("cocktails-wikipedia-iba-starter:") == true
+    }
+
+    fun hasCatalogPack(id: String): Boolean = queries.selectAllSourcesForBundle().executeAsList().any {
+        it.source_record_id?.startsWith("$id:") == true
     }
 
     /** Adds an audited bundled pack without overwriting any existing or archived household records. */
@@ -295,11 +302,17 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                         skipped++
                         continue
                     }
-                    val familyId = newUuidV7(nowMillis + rowIndex * 20L)
+                    // Uploaded collections add formulations to a matching family, never edit a household recipe.
+                    val names = (recipe.familyAliases + recipe.title).map(::catalogFamilyKey).toSet()
+                    val existingFamily = queries.selectAllFamiliesForBundle().executeAsList()
+                        .filter { catalogFamilyKey(it.canonical_name) in names }.sortedBy { it.id }.firstOrNull()
+                    val familyId = existingFamily?.id ?: newUuidV7(nowMillis + rowIndex * 20L)
                     val variantId = newUuidV7(nowMillis + rowIndex * 20L + 1)
                     val sourceId = newUuidV7(nowMillis + rowIndex * 20L + 2)
-                    queries.insertRecipeFamily(familyId, recipe.title, nowMillis)
-                    writeRevision(familyId, "COCKTAIL_FAMILY", memberId, nowMillis, jsonObject("name" to jsonString(recipe.title)))
+                    if (existingFamily == null) {
+                        queries.insertRecipeFamily(familyId, recipe.title, nowMillis)
+                        writeRevision(familyId, "COCKTAIL_FAMILY", memberId, nowMillis, jsonObject("name" to jsonString(recipe.title)))
+                    }
                     queries.insertCatalogRecipeVariant(variantId, familyId, recipe.title, recipe.instructions, "", recipe.servings, recipe.style.name, nowMillis)
                     val ingredientIds = recipe.ingredients.map { it.name to it.category }.distinctBy { "${it.first.lowercase()}\u0000${it.second.lowercase()}" }
                     ingredientIds.forEachIndexed { index, (name, category) ->
@@ -317,7 +330,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                             amount_value = line.amount,
                             amount_unit = line.unit,
                             preparation = line.preparation,
-                            optional = 0L,
+                            optional = if (line.optional) 1L else 0L,
                             sort_order = index.toLong(),
                         )
                     }
@@ -325,7 +338,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                         jsonObject(
                             "name" to jsonString(line.name), "amount" to (line.amount?.toString() ?: "null"),
                             "unit" to (line.unit?.let(::jsonString) ?: "null"), "preparation" to (line.preparation?.let(::jsonString) ?: "null"),
-                            "optional" to "false",
+                            "optional" to line.optional.toString(),
                         )
                     }
                     val variantRevision = writeRevision(
@@ -337,9 +350,13 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                     val modifications = jsonObject(
                         "catalogPackId" to jsonString(pack.id), "catalogPackVersion" to pack.version.toString(),
                         "licenseUrl" to jsonString(pack.licenseUrl),
-                        "repositoryUrl" to jsonString(pack.repositoryUrl), "repositoryRevision" to jsonString(pack.repositoryRevision),
-                        "historyUrl" to jsonString(recipe.historyUrl), "modifications" to jsonString(recipe.modifications),
+                        "repositoryUrl" to nullableJsonString(pack.repositoryUrl), "repositoryRevision" to jsonString(pack.repositoryRevision),
+                        "historyUrl" to nullableJsonString(recipe.historyUrl), "modifications" to jsonString(recipe.modifications),
                         "originalIngredients" to jsonString(recipe.originalIngredients),
+                        "licenseNotice" to nullableJsonString(pack.licenseNotice),
+                        "sourceMetadata" to (recipe.sourceMetadata?.toString() ?: "null"),
+                        "catalogDescription" to nullableJsonString(recipe.sourceMetadata?.get("displayDescription")?.jsonPrimitive?.contentOrNull),
+                        "rawQuantities" to (recipe.sourceMetadata?.get("rawQuantities")?.toString() ?: "false"),
                         "associationState" to jsonString("LINKED"),
                     )
                     queries.insertRecipeSource(sourceId, variantId, pack.sourceName, sourceRecordId, recipe.permanentUrl, pack.licenseName, pack.attribution, modifications, nowMillis)
@@ -1743,3 +1760,13 @@ private fun sameImportedRecipe(
 
 private fun favoriteRecordId(memberId: String, familyId: String): String =
     "${memberId.length}#$memberId${familyId.length}#$familyId"
+
+/** Deliberately conservative: punctuation/case aliases only, no guessed brand or recipe equivalences. */
+private fun catalogFamilyKey(name: String): String = when (val key = name.lowercase().filter { it.isLetterOrDigit() }) {
+    "classicmartini", "drymartini" -> "drymartini"
+    else -> key
+}
+
+private fun sourceMetadataString(notes: String, key: String): String? = try {
+    Json.parseToJsonElement(notes).jsonObject[key]?.jsonPrimitive?.contentOrNull
+} catch (_: Exception) { null }

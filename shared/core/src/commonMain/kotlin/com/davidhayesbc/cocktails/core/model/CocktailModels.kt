@@ -186,6 +186,9 @@ data class RecipeSourceInfo(
     val licenseUrl: String? = null,
     val repositoryUrl: String? = null,
     val repositoryRevision: String? = null,
+    val licenseNotice: String? = null,
+    val catalogDescription: String? = null,
+    val rawQuantities: Boolean = false,
 )
 
 data class RecipeLine(

@@ -890,6 +890,15 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
     var recipes by remember { mutableStateOf(repository.recipes()) }
     var starterCatalogInstalled by remember(repository) { mutableStateOf(repository.hasStarterCatalog()) }
     var catalogMessage by remember { mutableStateOf<String?>(null) }
+    var amberInstalled by remember(repository) { mutableStateOf(repository.hasCatalogPack("uploaded-amber-book")) }
+    var amberBusy by remember { mutableStateOf(false) }
+    var amberMessage by remember { mutableStateOf<String?>(null) }
+    var amberLicense by remember { mutableStateOf<String?>(null) }
+    amberLicense?.let { notice ->
+        AlertDialog(onDismissRequest = { amberLicense = null }, title = { Text("The Amber Book · MIT License") },
+            text = { Text(notice, Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) },
+            confirmButton = { TextButton(onClick = { amberLicense = null }) { Text("Close") } })
+    }
     var recipeFamilies by remember { mutableStateOf(repository.recipeFamilies()) }
     var recentDrinks by remember { mutableStateOf(repository.recentlyMade()) }
     var favoritesVersion by remember { mutableStateOf(0) }
@@ -1897,6 +1906,8 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
     }
 
     fun refreshHousehold() {
+        amberInstalled = repository.hasCatalogPack("uploaded-amber-book")
+        starterCatalogInstalled = repository.hasStarterCatalog()
         locations = repository.locations()
         members = repository.members()
         recipes = repository.recipes()
@@ -2473,6 +2484,33 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                 onOpenRecent = { id -> selectedRecipe = recipes.firstOrNull { it.id == id } },
                 onToggleFavorite = { familyId, favorite ->
                     if (repository.setFamilyFavorite(selectedMemberId, familyId, favorite, System.currentTimeMillis())) favoritesVersion++
+                },
+                amberInstalled = amberInstalled,
+                amberBusy = amberBusy,
+                amberMessage = amberMessage,
+                onAmberLicense = { amberLicense = context.assets.open("amber-book/LICENSE").bufferedReader().use { it.readText() } },
+                onInstallAmber = {
+                    if (!amberBusy) {
+                        amberBusy = true
+                        coroutineScope.launch {
+                            try {
+                                val result = withContext(Dispatchers.IO) {
+                                    repository.installCatalogPack(context.assets.open("amber-book/recipes.json").bufferedReader().use { it.readText() }, System.currentTimeMillis())
+                                }
+                                when (result) {
+                                    is CatalogInstallResult.Installed -> {
+                                        recipes = repository.recipes()
+                                        recipeFamilies = repository.recipeFamilies()
+                                        amberInstalled = repository.hasCatalogPack("uploaded-amber-book")
+                                        amberMessage = "Added ${result.added} formulations; ${result.alreadyPresent} already present. Matching recipe names share a family; your recipes and notes are preserved."
+                                    }
+                                    is CatalogInstallResult.Invalid -> amberMessage = result.reason
+                                }
+                            } catch (cancelled: CancellationException) { throw cancelled }
+                            catch (_: Exception) { amberMessage = "Could not add The Amber Book. Your existing recipes are unchanged." }
+                            finally { amberBusy = false }
+                        }
+                    }
                 },
                 starterCatalogInstalled = starterCatalogInstalled,
                 catalogMessage = catalogMessage,
@@ -5087,6 +5125,11 @@ private fun RecipeBrowser(
     pantry: List<PantryEntry>,
     favoriteFamilyIds: Set<CocktailFamilyId>,
     recentDrinks: List<RecentDrink>,
+    amberInstalled: Boolean,
+    amberBusy: Boolean,
+    amberMessage: String?,
+    onInstallAmber: () -> Unit,
+    onAmberLicense: () -> Unit,
     starterCatalogInstalled: Boolean,
     catalogMessage: String?,
     onInstallStarterCatalog: () -> Unit,
@@ -5105,7 +5148,8 @@ private fun RecipeBrowser(
         (!favoritesOnly || recipe.familyId in favoriteFamilyIds) &&
             (selectedStyle == null || recipe.style == selectedStyle) &&
             availabilityFilter.matchesMissingCount(missingCount(recipe)) &&
-            (search.isBlank() || recipe.title.contains(search, ignoreCase = true) || recipe.ingredients.any { it.name.contains(search, true) })
+            (search.isBlank() || recipe.title.contains(search, ignoreCase = true) || recipe.ingredients.any { it.name.contains(search, true) } ||
+                recipe.sources.any { it.catalogDescription?.contains(search, ignoreCase = true) == true })
     }
     val families = matching.groupBy { it.familyId }
     LazyColumn(
@@ -5152,6 +5196,20 @@ private fun RecipeBrowser(
                 }
             }
         } else catalogMessage?.let { message -> item(key = "catalog-status") { Text(message, style = MaterialTheme.typography.bodySmall) } }
+        item(key = "offline-amber-catalog") {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("The Amber Book", style = MaterialTheme.typography.titleLarge)
+                    Text("48 recipes, including 7 source-designated mocktails. Works offline. Quantities stay as written; existing recipes are preserved and alternate formulations share a recipe family.")
+                    Text("Uploaded collection · MIT · Copyright (c) 2026. No named copyright holder or confirmed upstream repository was supplied.", style = MaterialTheme.typography.bodySmall)
+                    TextButton(onClick = onAmberLicense, modifier = Modifier.testTag("amber-license")) { Text("Read full MIT notice") }
+                    Button(onClick = onInstallAmber, enabled = !amberInstalled && !amberBusy, modifier = Modifier.testTag("install-amber-catalog")) {
+                        Text(if (amberInstalled) "Amber collection added" else if (amberBusy) "Adding…" else "Add 48 Amber recipes")
+                    }
+                    amberMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                }
+            }
+        }
         if (recipes.isEmpty()) {
             item(key = "empty-recipes") {
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
@@ -5190,7 +5248,8 @@ private fun RecipeBrowser(
                             )
                             variants.forEach { variant ->
                                 TextButton(onClick = { onSelectRecipe(variant) }) {
-                                    Text(if (variants.size == 1) "Open recipe" else variant.title)
+                                    Text(if (variants.size == 1) "Open recipe" else if (variants.any { v -> v.sources.any { it.recordId?.startsWith("uploaded-amber-book:") == true } })
+                                        "${variant.title} · ${if (variant.sourceKind == "HOUSEHOLD") "Your recipe" else variant.sources.firstOrNull()?.name.orEmpty()}" else variant.title)
                                 }
                             }
                         }
@@ -5237,7 +5296,9 @@ private fun RecipeDetailScreen(
             }
         }
         item {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (recipe.sourceKind == "CATALOG" && recipe.sources.any { it.rawQuantities }) {
+                Text("Source formulation · original quantities, not automatically scaled", style = MaterialTheme.typography.bodySmall)
+            } else Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Servings", style = MaterialTheme.typography.titleMedium)
                 TextButton(onClick = { targetServings = (targetServings - 0.5).coerceAtLeast(0.5) }) { Text("−") }
                 Text(formatRecipeQuantity(targetServings), style = MaterialTheme.typography.titleMedium)
@@ -5262,7 +5323,13 @@ private fun RecipeDetailScreen(
                     Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         Text(source.name + if (source.linked) " · linked" else " · unlinked", style = MaterialTheme.typography.titleSmall)
                         source.recordId?.let { Text("Source record: $it", style = MaterialTheme.typography.bodySmall) }
+                        source.catalogDescription?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                         source.license?.let { Text("License: $it", style = MaterialTheme.typography.bodySmall) }
+                        source.licenseNotice?.let { notice ->
+                            var showNotice by remember(source.id) { mutableStateOf(false) }
+                            TextButton(onClick = { showNotice = !showNotice }) { Text(if (showNotice) "Hide full license notice" else "Show full license notice") }
+                            if (showNotice) Text(notice, style = MaterialTheme.typography.bodySmall)
+                        }
                         source.licenseUrl?.let { url -> TextButton(onClick = { runCatching { uriHandler.openUri(url) } }) { Text("Read license terms") } }
                         source.attribution?.let { Text("Attribution: $it", style = MaterialTheme.typography.bodySmall) }
                         source.url?.let { url -> TextButton(onClick = { runCatching { uriHandler.openUri(url) } }) { Text("View source revision") } }
