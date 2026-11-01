@@ -1281,7 +1281,9 @@ class OfflineRecipeSmokeTest {
                 quantity = "700 mL",
                 abvPercent = "40%",
             )))
+            assertTrue(repository.updateBottleIntakeDrinkCategory(session.id, first.id, "Gin"))
             activeSession = repository.openBottleIntakeSession()!!
+            assertEquals("Spirit", activeSession.drafts.first { it.id == first.id }.category)
             webStates = webStates + (first.id to BottleWebSearchState(
                 automatedScan = true,
                 barcodeVerifiedInPage = true,
@@ -1319,7 +1321,7 @@ class OfflineRecipeSmokeTest {
             assertEquals(first.id, activeReviewId)
 
             composeRule.onNodeWithTag("bottle-intake-draft-name-0").assert(editableTextIs(sampleName))
-            composeRule.onNodeWithTag("bottle-intake-draft-category-0").assert(editableTextIs("Spirit"))
+            composeRule.onNodeWithTag("bottle-intake-draft-category-0").assert(editableTextIs("Gin"))
             captureOnboardingScreenshot("onboarding-review-simulated.png")
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasTestTag("review-evidence-toggle"))
             composeRule.onNodeWithTag("review-evidence-toggle").assertIsDisplayed()
