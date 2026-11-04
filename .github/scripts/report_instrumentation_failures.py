@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import sys
+import re
 import xml.etree.ElementTree as ET
 
 
@@ -34,6 +35,12 @@ def annotations(directory):
             )
             if first_line and first_line[0].startswith(diagnostic_prefixes):
                 message += "; " + first_line[0][:1500]
+            if first_line and case.get("classname") == "com.davidhayesbc.cocktails.android.BundledLabelOcrTest":
+                stages = "IMAGE|DIRECT_RECOGNITION|DIRECT_FACTS|DIRECT_QUANTITY|DIRECT_ABV|OPEN_REPOSITORY|CREATE_SESSION|CREATE_DRAFT|ENQUEUE|WAIT_WORKER|WORKER_STATE|RECOGNITION_STATE|TEXT_FOUND|RECOGNITION_TIME|AI_STATE|AI_REASON|SUPPORTED_FIELDS|PRIVACY|CATEGORY"
+                states = "ABSENT|QUEUED|RUNNING|COMPLETED|SKIPPED|FAILED|CANCELLED|STALE|INTERRUPTED"
+                pattern = rf"(?:java\.lang\.AssertionError: )?Synthetic OCR diagnostic: stage=({stages}); failure=(TIMEOUT|ASSERTION|ILLEGAL_STATE|ILLEGAL_ARGUMENT|OTHER); worker=({states})"
+                if re.fullmatch(pattern, first_line[0]):
+                    message += "; " + first_line[0]
             yield "::error::" + escape(message)
 
 

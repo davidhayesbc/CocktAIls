@@ -66,6 +66,31 @@ class FailureReportingTest(unittest.TestCase):
             "::error::Instrumentation failed: Intake.restore; " + detail[:1500].replace("%", "%25")
         ])
 
+    def test_synthetic_ocr_fixed_codes_only(self):
+        name = "com.davidhayesbc.cocktails.android.BundledLabelOcrTest"
+        detail = "Synthetic OCR diagnostic: stage=WAIT_WORKER; failure=TIMEOUT; worker=QUEUED"
+        for prefix in ("", "java.lang.AssertionError: "):
+            for location in ("message", "body"):
+                root = ET.Element("testsuite")
+                case = ET.SubElement(root, "testcase", classname=name, name="synthetic")
+                failure = ET.SubElement(case, "failure")
+                if location == "message":
+                    failure.set("message", prefix + detail)
+                else:
+                    failure.text = prefix + detail + "\nprivate stack and cause"
+                output = self.report(ET.tostring(root, encoding="unicode"))
+                self.assertEqual(output, ["::error::Instrumentation failed: " + name + ".synthetic; " + prefix + detail])
+
+    def test_synthetic_ocr_rejects_untrusted_values_and_suffixes(self):
+        name = "com.davidhayesbc.cocktails.android.BundledLabelOcrTest"
+        base = "Synthetic OCR diagnostic: stage=WAIT_WORKER; failure=TIMEOUT; worker=QUEUED"
+        for detail in (base + "; secret=private", base.replace("WAIT_WORKER", "PRIVATE"), base.replace("TIMEOUT", "secret"), base.replace("QUEUED", "SECRET")):
+            root = ET.Element("testsuite")
+            case = ET.SubElement(root, "testcase", classname=name, name="synthetic")
+            ET.SubElement(case, "failure", message=detail)
+            self.assertEqual(self.report(ET.tostring(root, encoding="unicode")), ["::error::Instrumentation failed: " + name + ".synthetic"])
+        self.assertEqual(self.report('<testsuite><testcase classname="Other" name="test"><failure message="' + base + '"/></testcase></testsuite>'), ["::error::Instrumentation failed: Other.test"])
+
     def test_success_and_skips_are_not_failures(self):
         self.assertEqual(self.report('<testsuite><testcase name="pass"/><testcase name="skip"><skipped/></testcase></testsuite>'), [])
 
