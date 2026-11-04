@@ -6,6 +6,8 @@ import android.graphics.Color
 import android.graphics.Paint
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.davidhayesbc.cocktails.core.interchange.isProductPhotoJpeg
+import com.davidhayesbc.cocktails.android.product.stripJpegMetadata
 import com.davidhayesbc.cocktails.android.product.recognizeBottleLabel
 import com.davidhayesbc.cocktails.android.product.explicitLabelCandidates
 import com.davidhayesbc.cocktails.android.product.independentBottleFacts
@@ -46,8 +48,13 @@ class BundledLabelOcrTest {
             canvas.drawText("EXAMPLE LABEL", 100f, 180f, paint)
             canvas.drawText("40% ALC/VOL", 100f, 350f, paint)
             canvas.drawText("750 mL", 100f, 520f, paint)
-            val bytes = ByteArrayOutputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 95, it); it.toByteArray() }
+            val encoded = ByteArrayOutputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 95, it); it.toByteArray() }
             bitmap.recycle()
+            stage = "IMAGE_VALIDATION"
+            // Match retained production label photos: Android's encoder can add APP metadata,
+            // which the repository deliberately rejects. Keep the strict validator intact.
+            val bytes = checkNotNull(stripJpegMetadata(encoded))
+            assertTrue("Synthetic label must satisfy the retained-photo contract", isProductPhotoJpeg(bytes))
             stage = "DIRECT_RECOGNITION"
             val text = kotlinx.coroutines.withTimeout(30_000) { recognizeBottleLabel(bytes) }
             stage = "DIRECT_FACTS"
