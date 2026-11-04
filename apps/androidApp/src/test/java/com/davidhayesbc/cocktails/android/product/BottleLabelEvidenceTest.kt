@@ -183,6 +183,44 @@ class BottleLabelEvidenceTest {
         store.cancel(draft.id)
         assertFalse(store.save("second", label("700 mL")))
     }
+    @Test fun unselectedVerifiedPageConflictSurvivesCoordinatorPersistenceAndLabelMerge() = runBlocking {
+        val first = WebPageText("Acme Gin", "https://first.example/item", "# Acme Gin\nUPC: $code\nSize: 750 mL", "Fixture")
+        val second = WebPageText("Acme Gin", "https://second.example/item", "# Acme Gin\nUPC: $code\nSize: 750 mL and 700 mL", "Fixture")
+        val hits = listOf(first, second).map { WebSearchHit("Acme Gin $code", it.sourceUrl, "$code 750 mL") }
+        val fetched = mutableListOf<String>()
+        val extracted = mutableListOf<String>()
+        val outcome = ScannedBottleEnrichmentCoordinator(
+            lookup = { error("disabled") },
+            search = { BottleProviderCall(WebSearchResult.Found(hits)) },
+            fetch = { url -> fetched += url; BottleProviderCall(WebPageResult.Found(if (url == first.sourceUrl) first else second)) },
+            extract = { page, _, _ ->
+                extracted += page.sourceUrl
+                BottleProviderCall(checkNotNull(labeledBottleSpecifications(page, code)))
+            },
+        ).processScannedBarcode(code, ScannedBottlePlan(false, true, AutomaticBottleExtractor.ON_DEVICE))
+        assertEquals(hits.map { it.url }, fetched)
+        assertEquals(hits.first(), outcome.selectedHit)
+        assertEquals(listOf(first.sourceUrl), extracted)
+        val result = outcome.extraction as BottleDetailExtractionResult.Found
+        assertFalse(result.suggestions.facts.any { it.field == BottleFactField.QUANTITY })
+        val memory = object : PendingBottleEvidenceStorage {
+            var value: String? = null
+            override fun read(draftId: String) = value
+            override fun write(draftId: String, value: String): Boolean { this.value = value; return true }
+            override fun remove(draftId: String): Boolean { value = null; return true }
+        }
+        assertTrue(PendingBottleEvidenceStore(memory).save(draft.id, result.suggestions))
+        val restored = PendingBottleEvidenceStore(memory).read(draft.id)!!
+        val rejection = BottleFactRejection(BottleFactField.QUANTITY, BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES)
+        assertTrue(rejection in restored.fieldRejections)
+        for (labelSize in listOf("750 mL", "700 mL")) {
+            val merged = mergeLabelAndWebEvidence(restored, label(labelSize), draft)!!
+            assertFalse(merged.facts.any { it.field == BottleFactField.QUANTITY })
+            assertTrue(BottleFactField.QUANTITY in merged.unresolvedFields)
+            assertTrue(rejection in merged.fieldRejections)
+        }
+    }
+
     @Test fun crossSourceConflictSurvivesFailedExtractionPersistenceAndLaterLabelMerge() {
         val page = WebPageText("Acme Gin", "https://shop.example/item", "# Acme Gin\nUPC: $code\nSize: 750 mL\nABV: 40%", "Fixture")
         val verified = checkNotNull(labeledBottleSpecifications(page, code))

@@ -440,20 +440,25 @@ internal fun retainSourceConflicts(result: BottleDetailExtractionResult, page: W
     ), found?.rejectedCandidates.orEmpty() + BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES)
 }
 
-/** Rank only independently validated facts from the fetched page, never search snippets. */
-private fun verifiedPageCoreFacts(page: WebPageText, barcode: String): List<BottleFactEvidence> {
+private data class VerifiedPageCoreEvidence(
+    val facts: List<BottleFactEvidence>,
+    val conflicts: Set<BottleFactField>,
+)
+
+/** Keep negative evidence separately from ranking facts, including for pages not selected. */
+private fun verifiedPageCoreEvidence(page: WebPageText, barcode: String): VerifiedPageCoreEvidence {
     val markdown = barcodeBoundMarkdownProduct(barcode, page.markdown)
     val structured = resolveStructuredBottleIdentityForPage(barcode, page).identity?.let { structuredProductNameFallback(barcode, page, it).suggestions }
     val labeled = labeledBottleSpecifications(page, barcode)?.suggestions
     val partial = barcodeBoundPartialSpecifications(page, barcode)?.suggestions
-    val conflicts = markdown?.unresolvedFields.orEmpty() + labeled?.unresolvedFields.orEmpty().filter { field ->
-        labeled?.fieldRejections?.any { it.field == field && it.reason == BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES } == true
-    } + partial?.unresolvedFields.orEmpty().filter { field ->
-        partial?.fieldRejections?.any { it.field == field && it.reason == BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES } == true
-    }
-    return (markdown?.facts.orEmpty() + labeled?.facts.orEmpty() + partial?.facts.orEmpty() + structured?.facts.orEmpty())
+    val conflicts = (markdown?.fieldRejections.orEmpty() + structured?.fieldRejections.orEmpty() +
+        labeled?.fieldRejections.orEmpty() + partial?.fieldRejections.orEmpty())
+        .filter { it.reason == BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES }
+        .map { it.field }.toSet() + unresolvedBottleSourceFields(page.markdown)
+    val facts = (markdown?.facts.orEmpty() + labeled?.facts.orEmpty() + partial?.facts.orEmpty() + structured?.facts.orEmpty())
         .filter { it.field in setOf(BottleFactField.PRODUCT_NAME, BottleFactField.QUANTITY, BottleFactField.ABV_PERCENT) && it.field !in conflicts }
         .distinctBy { it.field }
+    return VerifiedPageCoreEvidence(facts, conflicts)
 }
 
 /** Avoids spending a page-fetch request on generic barcode lookup tools when a source page is absent. */
@@ -880,7 +885,9 @@ internal class ScannedBottleEnrichmentCoordinator(
             ))
             if (decision == ScannedBarcodePageDecision.VERIFIED) {
                 val candidate = if (structuredIdentity == null) page else page.copy(structuredBottleIdentities = listOf(structuredIdentity))
-                val facts = verifiedPageCoreFacts(candidate, barcode)
+                val evidence = verifiedPageCoreEvidence(candidate, barcode)
+                val facts = evidence.facts
+                crossSourceConflicts += evidence.conflicts
                 val previousName = verifiedFacts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }?.value ?: verifiedFacts.firstNotNullOfOrNull { it.barcodeBoundProductName }
                 val nextName = facts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }?.value ?: facts.firstNotNullOfOrNull { it.barcodeBoundProductName }
                 val identityDisagreement = previousName != null && nextName != null && !structuredProductNamesAgree(previousName, nextName)
@@ -890,7 +897,7 @@ internal class ScannedBottleEnrichmentCoordinator(
                     else bottleFactFingerprint(prior) != bottleFactFingerprint(next)
                 } }.map { it.field }.toSet()
                 if (identityDisagreement) crossSourceConflicts += BottleFactField.entries else crossSourceConflicts += conflictingFields
-                val disagreement = identityDisagreement || conflictingFields.isNotEmpty()
+                val disagreement = identityDisagreement || conflictingFields.isNotEmpty() || evidence.conflicts.isNotEmpty()
                 val replace = verifiedPage == null || (!disagreement && facts.size > verifiedFacts.size)
                 if (replace) {
                     verifiedPage = candidate
@@ -903,7 +910,7 @@ internal class ScannedBottleEnrichmentCoordinator(
                     sourceUrls = listOf(page.sourceUrl), factFields = facts.map { it.field.wireValue },
                     reasonCodes = listOf(if (disagreement) "VERIFIED_SOURCE_FACT_CONFLICT" else if (facts.size == 3) "VERIFIED_CORE_FACTS_COMPLETE" else "VERIFIED_SOURCE_INCOMPLETE")))
                 // Do not use a second source to silently resolve explicit contradictions.
-                if (verifiedFacts.size == 3 || unresolvedBottleSourceFields(candidate.markdown).isNotEmpty() || disagreement) break
+                if (verifiedFacts.size == 3 || disagreement) break
             }
         }
         val page = verifiedPage

@@ -663,7 +663,9 @@ class ScannedBottleWorkflowTest {
         ).processScannedBarcode("5011333150725", ScannedBottlePlan(false, true, AutomaticBottleExtractor.ON_DEVICE))
 
         assertTrue(result.barcodeVerifiedInPage)
-        assertTrue(result.extraction is BottleDetailExtractionResult.InvalidResponse)
+        val suggestions = (result.extraction as BottleDetailExtractionResult.Found).suggestions
+        assertTrue(suggestions.facts.isEmpty())
+        assertTrue(BottleFactRejection(BottleFactField.QUANTITY, BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES) in suggestions.fieldRejections)
     }
     @Test fun incompleteVerifiedPageFallsBackOnlyToRicherVerifiedFacts() = runBlocking {
         val code = "8000296000380"
