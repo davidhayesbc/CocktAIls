@@ -94,10 +94,10 @@ internal class BottleLabelEvidenceStore(private val storage: PendingBottleEviden
 
 internal object BottleLabelOcrScheduler {
     private fun name(id: String) = "cocktails-label-$id"
-    fun enqueue(context: Context, draft: BottleIntakeDraft, attemptToken: String?) {
-        runCatching { enqueueChecked(context, draft, attemptToken) }
+    fun enqueue(context: Context, draft: BottleIntakeDraft, attemptToken: String?, trigger: OcrTrigger = OcrTrigger.UNKNOWN) {
+        runCatching { enqueueChecked(context, draft, attemptToken, trigger) }
     }
-    private fun enqueueChecked(context: Context, draft: BottleIntakeDraft, attemptToken: String?) {
+    private fun enqueueChecked(context: Context, draft: BottleIntakeDraft, attemptToken: String?, trigger: OcrTrigger) {
         val runtime = BottleScanEnrichmentRuntime(context)
         val journal = BottleOcrJournal.forContext(context)
         BottleLabelSchedulingGate.processWide.serialized {
@@ -112,15 +112,15 @@ internal object BottleLabelOcrScheduler {
             val correlation = OcrCorrelation.of(current, attemptToken)
             val token = UUID.randomUUID().toString()
             if (job?.status in setOf(BottleEnrichmentStatus.CANCELLED, BottleEnrichmentStatus.PAUSED, BottleEnrichmentStatus.REVIEWED)) {
-                runCatching { journal.begin(correlation, token, OcrState.SKIPPED, OcrReason.QUEUE_INACTIVE) }
+                runCatching { journal.begin(correlation, token, OcrState.SKIPPED, OcrReason.QUEUE_INACTIVE, trigger) }
                 return@serialized
             }
             if (current.photoData == null || current.photoSha256 == null) {
-                runCatching { journal.begin(correlation, token, OcrState.SKIPPED, OcrReason.MISSING_PHOTO) }
+                runCatching { journal.begin(correlation, token, OcrState.SKIPPED, OcrReason.MISSING_PHOTO, trigger) }
                 return@serialized
             }
             BottleLabelSchedulingGate.processWide.scheduleIfCurrent(draft, attemptToken, { current to job }) {
-                runCatching { journal.begin(correlation, token) }
+                runCatching { journal.begin(correlation, token, trigger = trigger) }
                 fun failed(reason: OcrReason) { runCatching { journal.update(correlation, token) { it.copy(state = OcrState.FAILED, reason = reason) } } }
                 val store = BottleLabelEvidenceStore.forContext(context)
                 if (!store.request(draft.id, token)) { failed(OcrReason.REQUEST_STORAGE_FAILED); return@scheduleIfCurrent false }
@@ -194,12 +194,14 @@ internal class BottleLabelOcrWorker(context: Context, parameters: WorkerParamete
                 val recognitionStarted = System.nanoTime()
                 val recognition = withTimeoutOrNull(30_000) { recognizeBottleLabelResult(checkNotNull(draft.photoData)) }
                     ?: LabelRecognition("", OcrReason.RECOGNITION_TIMEOUT)
-                update { it.copy(recognitionMs = (System.nanoTime() - recognitionStarted).coerceAtLeast(0) / 1_000_000, textFound = recognition.text.isNotBlank(), recognitionState = if (recognition.reason == OcrReason.NONE) OcrState.COMPLETED else OcrState.FAILED, recognitionReason = recognition.reason) }
+                update { it.copy(recognitionMs = (System.nanoTime() - recognitionStarted).coerceAtLeast(0) / 1_000_000, textFound = recognition.text.isNotBlank(), textCharacterCount = recognition.text.take(8000).length, recognitionState = if (recognition.reason == OcrReason.NONE) OcrState.COMPLETED else OcrState.FAILED, recognitionReason = recognition.reason) }
                 currentCoroutineContext().ensureActive()
                 if (recognition.reason != OcrReason.NONE) { finish(OcrState.FAILED, recognition.reason); return@withContext Result.success() }
                 if (currentDraft() == null) return@withContext Result.success()
                 update { it.copy(phase = OcrPhase.WAITING_FOR_LABEL_AI) }
+                val waitingStarted = System.nanoTime()
                 val extracted = BottleEnrichmentSerialGate.processWide.withSlot {
+                    update { it.copy(labelAiWaitMs = (System.nanoTime() - waitingStarted).coerceAtLeast(0) / 1_000_000) }
                     val current = currentDraft() ?: return@withSlot null
                     val preferences = applicationContext.getSharedPreferences("cocktails_privacy_settings", Context.MODE_PRIVATE)
                     val enabled = preferences.getBoolean("local_ai_enabled", false)
@@ -222,7 +224,10 @@ internal class BottleLabelOcrWorker(context: Context, parameters: WorkerParamete
                 val evidence = BottleLabelEvidence(session, id, photo, draft.barcode, extracted.facts, extracted.unresolved, extracted.conflicts)
                 val saved = evidence.belongsTo(current) && store.save(request, evidence)
                 update { it.copy(state = if (saved) OcrState.COMPLETED else OcrState.FAILED, phase = OcrPhase.DONE,
-                    reason = if (!saved) OcrReason.EVIDENCE_STORAGE_FAILED else if (recognition.text.isBlank()) OcrReason.NO_TEXT else OcrReason.NONE,
+                    reason = if (!saved) OcrReason.EVIDENCE_STORAGE_FAILED else if (recognition.text.isBlank()) OcrReason.NO_TEXT
+                        else if (extracted.explicitCandidateCount + extracted.modelCandidateCount == 0) OcrReason.NO_CANDIDATES
+                        else if (extracted.facts.isEmpty()) OcrReason.NO_ACCEPTED_FIELDS else OcrReason.NONE,
+                    explicitCandidateCount = extracted.explicitCandidateCount, modelCandidateCount = extracted.modelCandidateCount,
                     workerElapsedMs = elapsed(), supportedFields = extracted.facts.map { fact -> fact.field.wireValue }.toSet(),
                     unresolvedFields = extracted.unresolved.map { field -> field.wireValue }.toSet(), conflictingFields = extracted.conflicts.map { field -> field.wireValue }.toSet()) }
             }

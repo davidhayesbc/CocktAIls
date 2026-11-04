@@ -665,4 +665,75 @@ class ScannedBottleWorkflowTest {
         assertTrue(result.barcodeVerifiedInPage)
         assertTrue(result.extraction is BottleDetailExtractionResult.InvalidResponse)
     }
+    @Test fun incompleteVerifiedPageFallsBackOnlyToRicherVerifiedFacts() = runBlocking {
+        val code = "8000296000380"
+        for (second in listOf("richer", "mismatch", "unavailable", "conflict", "snippet-only")) {
+            val hits = listOf(WebSearchHit("Product $code", "https://first.example/product", code),
+                WebSearchHit("Russo Limoncello $code", "https://second.example/product", "$code 700 mL 32% ABV"))
+            val firstText = if (second == "conflict") "# Russo Limoncello\nEAN: $code\nSize: 750 mL" else "EAN: $code\nProduct details incomplete"
+            val first = WebPageText("Russo Limoncello", hits[0].url, firstText, "Firecrawl")
+            val fetched = mutableListOf<String>()
+            val extracted = mutableListOf<String>()
+            val result = ScannedBottleEnrichmentCoordinator(
+                lookup = { error("disabled") },
+                search = { BottleProviderCall(WebSearchResult.Found(hits)) },
+                fetch = { url ->
+                    fetched += url
+                    when {
+                        url == hits[0].url -> BottleProviderCall(WebPageResult.Found(first))
+                        second == "unavailable" -> BottleProviderCall(WebPageResult.Unavailable)
+                        else -> BottleProviderCall(WebPageResult.Found(WebPageText("Russo Limoncello", url,
+                            when (second) {
+                                "mismatch" -> "# Russo Limoncello\nEAN: 5011333150725\nSize: 700 mL\nABV: 32%"
+                                "snippet-only" -> "EAN: $code\nNo product details"
+                                else -> "# Russo Limoncello\nEAN: $code\nSize: 700 mL\nABV: 32%"
+                            }, "Firecrawl")))
+                    }
+                },
+                extract = { page, _, _ -> extracted += page.sourceUrl; BottleProviderCall(BottleDetailExtractionResult.InvalidResponse) },
+            ).processScannedBarcode(code, ScannedBottlePlan(false, true, AutomaticBottleExtractor.ON_DEVICE))
+            assertEquals(2, fetched.size)
+            val expected = if (second == "richer") hits[1] else hits[0]
+            assertEquals(expected, result.selectedHit)
+            assertEquals(listOf(expected.url), extracted)
+            assertTrue(result.barcodeVerifiedInPage)
+        }
+    }
+
+    @Test fun challengePageIsNotProductEvidenceAndNextCandidateMustVerifyIndependently() = runBlocking {
+        val code = "086785900001"
+        val hits = listOf(WebSearchHit("Aperol", "https://buycott.example/item", code),
+            WebSearchHit("Aperol", "https://eandata.example/item", code),
+            WebSearchHit("Aperol 750 mL", "https://retailer.example/item", code))
+        for (validLast in listOf(true, false)) {
+            val events = mutableListOf<BottleLookupDebugEvent>()
+            val extracted = mutableListOf<String>()
+            val fetched = mutableListOf<String>()
+            val result = ScannedBottleEnrichmentCoordinator(
+                lookup = { error("disabled") }, search = { BottleProviderCall(WebSearchResult.Found(hits)) },
+                fetch = { url ->
+                    fetched += url
+                    BottleProviderCall(WebPageResult.Found(WebPageText("Aperol", url, when (url) {
+                        hits[0].url -> "UPC $code and UPC 5011333150725"
+                        hits[1].url -> "UPC $code\nPlease wait while we verify you are human."
+                        else -> if (validLast) "# Aperol\nUPC: $code\nSize: 750 mL\nABV: 11%" else "Aperol 750 mL, no barcode evidence"
+                    }, "Firecrawl")))
+                },
+                extract = { page, _, _ -> extracted += page.sourceUrl; BottleProviderCall(BottleDetailExtractionResult.InvalidResponse) },
+            ).processScannedBarcode(code, ScannedBottlePlan(false, true, AutomaticBottleExtractor.ON_DEVICE), onDebugEvent = events::add)
+            assertEquals(3, fetched.size)
+            assertEquals(if (validLast) listOf(hits[2].url) else emptyList<String>(), extracted)
+            assertEquals(validLast, result.barcodeVerifiedInPage)
+            assertTrue(events.any { "BOT_CHALLENGE_PAGE" in it.reasonCodes })
+        }
+    }
+
+    @Test fun challengeMarkersRejectInterstitialsButNotOrdinaryProductText() {
+        for (text in listOf("Verify that you are a human", "Checking your browser", "Performing a security verification", "Enable JavaScript and cookies to continue", "Complete the CAPTCHA", "Access denied")) {
+            assertTrue(text, isBottleSourceChallenge(WebPageText("Product", "https://example.com/product", text, "Firecrawl")))
+        }
+        assertTrue(isBottleSourceChallenge(WebPageText("Just a moment...", "https://example.com/product", "Security page body", "Firecrawl")))
+        assertFalse(isBottleSourceChallenge(WebPageText("Aperol", "https://example.com/product", "750 mL, 11% ABV. Serve with ice.", "Firecrawl")))
+    }
+
 }

@@ -7,6 +7,7 @@ import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
 
+internal enum class OcrTrigger { UNKNOWN, PHOTO_SAVED, INTAKE_RESTORED, LOOKUP_QUEUED, WEB_LOOKUP_FINISHED, MANUAL_DRAFT_CREATED }
 internal enum class OcrState { QUEUED, RUNNING, COMPLETED, SKIPPED, FAILED, CANCELLED, STALE, INTERRUPTED }
 internal enum class OcrPhase { NONE, RECOGNITION, WAITING_FOR_LABEL_AI, LABEL_AI, VALIDATION, DONE }
 internal enum class OcrReason {
@@ -14,7 +15,7 @@ internal enum class OcrReason {
     REQUEST_STORAGE_FAILED, ENQUEUE_FAILED, WORK_STOPPED, PROCESS_RESTARTED, USER_CANCELLED,
     RECOGNITION_TIMEOUT, RECOGNITION_FAILED, INVALID_IMAGE, NO_TEXT, LOCAL_AI_DISABLED,
     MODEL_MISSING, FOREGROUND_UNAVAILABLE, MODEL_RUNTIME_FAILED, MODEL_RESPONSE_INVALID,
-    EVIDENCE_STORAGE_FAILED, WORKER_FAILED,
+    EVIDENCE_STORAGE_FAILED, WORKER_FAILED, NO_CANDIDATES, NO_ACCEPTED_FIELDS,
 }
 internal data class OcrCorrelation(val draftRef: String, val sessionRef: String, val photoRef: String?, val attemptRef: String?, val contextRef: String) {
     companion object {
@@ -49,6 +50,13 @@ internal data class OcrDiagnosticRecord(
     val owner: String? = null,
     val recognitionState: OcrState? = null,
     val recognitionReason: OcrReason? = null,
+    val trigger: OcrTrigger = OcrTrigger.UNKNOWN,
+    val supersededBy: OcrTrigger? = null,
+    val textCharacterCount: Int? = null,
+    val explicitCandidateCount: Int? = null,
+    val modelCandidateCount: Int? = null,
+    val requestAgeAtStartMs: Long? = null,
+    val labelAiWaitMs: Long? = null,
 )
 /** Finish only active child stages; completed recognition remains useful when later AI stops. */
 internal fun OcrDiagnosticRecord.stopped(state: OcrState, reason: OcrReason) = copy(
@@ -62,12 +70,12 @@ internal interface OcrDiagnosticStorage { fun read(): String?; fun write(value: 
 
 /** Separate bounded journal: no photo, path, barcode, values, quotes, prompts or throwable messages. */
 internal class BottleOcrJournal(private val storage: OcrDiagnosticStorage, private val process: String = PROCESS, private val now: () -> Long = System::currentTimeMillis) {
-    fun begin(correlation: OcrCorrelation, request: String, state: OcrState = OcrState.QUEUED, reason: OcrReason = OcrReason.NONE): Boolean = synchronized(LOCK) {
+    fun begin(correlation: OcrCorrelation, request: String, state: OcrState = OcrState.QUEUED, reason: OcrReason = OcrReason.NONE, trigger: OcrTrigger = OcrTrigger.UNKNOWN): Boolean = synchronized(LOCK) {
         val records = read().map { old ->
             if (old.correlation.draftRef == correlation.draftRef && old.state in PENDING)
-                old.stopped(OcrState.STALE, OcrReason.SUPERSEDED_REQUEST).copy(updatedAt = now()) else old
+                old.stopped(OcrState.STALE, OcrReason.SUPERSEDED_REQUEST).copy(updatedAt = now(), supersededBy = trigger) else old
         }
-        save(records + OcrDiagnosticRecord(correlation, opaque("request", request), state, reason = reason, queuedAt = now(), updatedAt = now()))
+        save(records + OcrDiagnosticRecord(correlation, opaque("request", request), state, reason = reason, queuedAt = now(), updatedAt = now(), trigger = trigger))
     }
     fun update(correlation: OcrCorrelation, request: String, transform: (OcrDiagnosticRecord) -> OcrDiagnosticRecord): Boolean = mutate(correlation, request, false, transform)
     private fun mutate(correlation: OcrCorrelation, request: String, restart: Boolean, transform: (OcrDiagnosticRecord) -> OcrDiagnosticRecord): Boolean = synchronized(LOCK) {
@@ -79,7 +87,8 @@ internal class BottleOcrJournal(private val storage: OcrDiagnosticStorage, priva
     }
     fun start(c: OcrCorrelation, request: String, retry: Int) = mutate(c, request, true) {
         it.copy(state = OcrState.RUNNING, phase = OcrPhase.RECOGNITION, reason = OcrReason.NONE, startedAt = now(), owner = process,
-            recognitionMs = null, workerElapsedMs = null, textFound = null, labelAiState = null, labelAiReason = null, labelAiMs = null,
+            recognitionMs = null, workerElapsedMs = null, textFound = null, textCharacterCount = null, explicitCandidateCount = null, modelCandidateCount = null,
+            requestAgeAtStartMs = (now() - it.queuedAt).coerceIn(0, 86_400_000), labelAiWaitMs = null, labelAiState = null, labelAiReason = null, labelAiMs = null,
             supportedFields = emptySet(), unresolvedFields = emptySet(), conflictingFields = emptySet(), retryCount = retry.coerceIn(0, 100),
             recognitionState = OcrState.RUNNING, recognitionReason = OcrReason.NONE)
     }
@@ -113,6 +122,11 @@ internal class BottleOcrJournal(private val storage: OcrDiagnosticStorage, priva
                 }
                 val json = record.toJson().toMutableMap()
                 json.remove("owner")
+                if (record.state in ACTIVE) {
+                    json["phaseAgeMs"] = JsonPrimitive((now() - record.updatedAt).coerceIn(0, 86_400_000))
+                    if (record.state == OcrState.QUEUED) json["waitingFor"] = JsonPrimitive("WORKMANAGER_START")
+                    else if (record.phase == OcrPhase.WAITING_FOR_LABEL_AI) json["waitingFor"] = JsonPrimitive("LOCAL_EXTRACTION_SLOT")
+                }
                 json["isCurrent"] = if (current == null) JsonNull else JsonPrimitive(isCurrent)
                 json["supportedFieldCount"] = JsonPrimitive(record.supportedFields.size)
                 json["unresolvedFieldCount"] = JsonPrimitive(record.unresolvedFields.size)
@@ -134,7 +148,9 @@ internal class BottleOcrJournal(private val storage: OcrDiagnosticStorage, priva
         val fields = BottleFactField.entries.map { it.wireValue }.toSet()
         fun duration(value: Long?) = value?.coerceIn(0, 86_400_000)
         return r.copy(supportedFields = r.supportedFields.intersect(fields), unresolvedFields = r.unresolvedFields.intersect(fields), conflictingFields = r.conflictingFields.intersect(fields),
-            workerElapsedMs = duration(r.workerElapsedMs), recognitionMs = duration(r.recognitionMs), labelAiMs = duration(r.labelAiMs), retryCount = r.retryCount.coerceIn(0, 100))
+            workerElapsedMs = duration(r.workerElapsedMs), recognitionMs = duration(r.recognitionMs), labelAiMs = duration(r.labelAiMs), retryCount = r.retryCount.coerceIn(0, 100),
+            textCharacterCount = r.textCharacterCount?.coerceIn(0, 8000), explicitCandidateCount = r.explicitCandidateCount?.coerceIn(0, 24),
+            modelCandidateCount = r.modelCandidateCount?.coerceIn(0, 16), requestAgeAtStartMs = duration(r.requestAgeAtStartMs), labelAiWaitMs = duration(r.labelAiWaitMs))
     }
     private fun save(records: List<OcrDiagnosticRecord>): Boolean = storage.write(JsonArray(records.takeLast(12).mapNotNull(::safe).map { it.toJson() }).toString())
     companion object {
@@ -176,6 +192,9 @@ private fun OcrDiagnosticRecord.toJson() = buildJsonObject {
     put("supportedFields", JsonArray(supportedFields.sorted().map(::JsonPrimitive)))
     put("unresolvedFields", JsonArray(unresolvedFields.sorted().map(::JsonPrimitive)))
     put("conflictingFields", JsonArray(conflictingFields.sorted().map(::JsonPrimitive)))
+    put("trigger", trigger.name); supersededBy?.let { put("supersededBy", it.name) }
+    textCharacterCount?.let { put("textCharacterCount", it) }; explicitCandidateCount?.let { put("explicitCandidateCount", it) }
+    modelCandidateCount?.let { put("modelCandidateCount", it) }; requestAgeAtStartMs?.let { put("requestAgeAtStartMs", it) }; labelAiWaitMs?.let { put("labelAiWaitMs", it) }
     put("retryCount", retryCount); owner?.let { put("owner", it) }
     recognitionState?.let { put("recognitionState", it.name) }; recognitionReason?.let { put("recognitionReason", it.name) }
 }
@@ -189,5 +208,8 @@ private fun recordFromJson(r: JsonObject): OcrDiagnosticRecord {
         r["textFound"]?.jsonPrimitive?.booleanOrNull, text("labelAiState")?.let(OcrState::valueOf), text("labelAiReason")?.let(OcrReason::valueOf),
         number("labelAiMs"), fields("supportedFields"), fields("unresolvedFields"), fields("conflictingFields"),
         r["retryCount"]?.jsonPrimitive?.intOrNull ?: 0, text("owner"),
-        text("recognitionState")?.let(OcrState::valueOf), text("recognitionReason")?.let(OcrReason::valueOf))
+        text("recognitionState")?.let(OcrState::valueOf), text("recognitionReason")?.let(OcrReason::valueOf),
+        text("trigger")?.let(OcrTrigger::valueOf) ?: OcrTrigger.UNKNOWN, text("supersededBy")?.let(OcrTrigger::valueOf),
+        r["textCharacterCount"]?.jsonPrimitive?.intOrNull, r["explicitCandidateCount"]?.jsonPrimitive?.intOrNull,
+        r["modelCandidateCount"]?.jsonPrimitive?.intOrNull, number("requestAgeAtStartMs"), number("labelAiWaitMs"))
 }

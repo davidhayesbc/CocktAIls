@@ -52,6 +52,8 @@ internal class LocalBottleDetailExtractor(
         }
         val source = text.take(8_000)
         val candidates = explicitLabelCandidates(source).toMutableList()
+        val explicitCount = candidates.size
+        var modelCount = 0
         val path = modelPath()
         if (path != null && source.isNotBlank()) {
             val started = System.nanoTime()
@@ -67,13 +69,15 @@ internal class LocalBottleDetailExtractor(
                     DEFAULT_LOCAL_MAX_OUTPUT_TOKENS)
                 generated = true
                 val root = Json.parseToJsonElement(output).jsonObject
-                candidates += root["facts"]?.jsonArray.orEmpty().mapNotNull { it as? JsonObject }.take(16)
+                val modelCandidates = root["facts"]?.jsonArray.orEmpty().mapNotNull { it as? JsonObject }.take(16)
+                modelCount = modelCandidates.size
+                candidates += modelCandidates
                 report(OcrState.COMPLETED, OcrReason.NONE, elapsed())
             } catch (cancelled: CancellationException) { report(OcrState.CANCELLED, OcrReason.WORK_STOPPED, elapsed()); throw cancelled }
             catch (_: Exception) { report(OcrState.FAILED, if (generated) OcrReason.MODEL_RESPONSE_INVALID else OcrReason.MODEL_RUNTIME_FAILED, elapsed()) }
             catch (_: LinkageError) { report(OcrState.FAILED, OcrReason.MODEL_RUNTIME_FAILED, elapsed()) }
         } else report(OcrState.SKIPPED, if (source.isBlank()) OcrReason.NO_TEXT else OcrReason.MODEL_MISSING)
-        return independentBottleFacts(source, candidates)
+        return independentBottleFacts(source, candidates).copy(explicitCandidateCount = explicitCount.coerceAtMost(24), modelCandidateCount = modelCount)
     }
 
     override suspend fun extract(page: WebPageText, model: String, requiredBarcode: String?): BottleDetailExtractionResult =
@@ -506,7 +510,7 @@ internal fun mergeVerifiedSourceAndModelFacts(
     )
 }
 
-private fun structuredProductNameFallback(
+internal fun structuredProductNameFallback(
     barcode: String,
     page: WebPageText,
     identity: StructuredBottleIdentity,

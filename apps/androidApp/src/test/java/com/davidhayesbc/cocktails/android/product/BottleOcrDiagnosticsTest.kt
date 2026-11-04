@@ -175,4 +175,51 @@ class BottleOcrDiagnosticsTest {
         try { extract("private/model") { throw CancellationException("secret") }; fail("expected cancellation") } catch (_: CancellationException) { }
         assertEquals(OcrState.CANCELLED to OcrReason.WORK_STOPPED, events.last())
     }
+    @Test fun schedulingOriginsWaitingAndCountsPersistWithoutText() {
+        val memory = Memory(); var now = 100L
+        val journal = BottleOcrJournal(memory, "process", { now })
+        journal.begin(c, "photo", trigger = OcrTrigger.PHOTO_SAVED)
+        now = 300
+        assertEquals("WORKMANAGER_START", records(journal).single()["waitingFor"]!!.jsonPrimitive.content)
+        assertEquals(200, records(journal).single()["phaseAgeMs"]!!.jsonPrimitive.int)
+        journal.start(c, "photo", 0)
+        journal.update(c, "photo") { it.copy(phase = OcrPhase.WAITING_FOR_LABEL_AI, recognitionState = OcrState.COMPLETED,
+            textCharacterCount = 100, explicitCandidateCount = 0, modelCandidateCount = 0) }
+        now = 800
+        val waiting = records(journal).single()
+        assertEquals("LOCAL_EXTRACTION_SLOT", waiting["waitingFor"]!!.jsonPrimitive.content)
+        assertEquals(200, waiting["requestAgeAtStartMs"]!!.jsonPrimitive.int)
+        assertEquals(500, waiting["phaseAgeMs"]!!.jsonPrimitive.int)
+        journal.begin(c, "web", trigger = OcrTrigger.WEB_LOOKUP_FINISHED)
+        val reopened = BottleOcrJournal(memory, "process", { now })
+        val old = records(reopened).first()
+        assertEquals("PHOTO_SAVED", old["trigger"]!!.jsonPrimitive.content)
+        assertEquals("WEB_LOOKUP_FINISHED", old["supersededBy"]!!.jsonPrimitive.content)
+        assertEquals("STALE", old["state"]!!.jsonPrimitive.content)
+        assertFalse(old.containsKey("waitingFor"))
+        assertEquals("WEB_LOOKUP_FINISHED", records(reopened).last()["trigger"]!!.jsonPrimitive.content)
+        reopened.start(c, "web", 0)
+        reopened.update(c, "web") { it.copy(state = OcrState.COMPLETED, reason = OcrReason.NO_CANDIDATES,
+            textCharacterCount = 99999, labelAiWaitMs = -1, explicitCandidateCount = 999, modelCandidateCount = 999) }
+        val completed = records(reopened).last()
+        assertEquals(8000, completed["textCharacterCount"]!!.jsonPrimitive.int)
+        assertEquals(24, completed["explicitCandidateCount"]!!.jsonPrimitive.int)
+        assertEquals(16, completed["modelCandidateCount"]!!.jsonPrimitive.int)
+        assertEquals(0, completed["labelAiWaitMs"]!!.jsonPrimitive.int)
+        assertFalse(completed.containsKey("phaseAgeMs"))
+    }
+
+    @Test fun candidateCountsSeparateAbstentionFromRejectedModelFields() = runBlocking {
+        suspend fun extract(text: String, output: String) = LocalBottleDetailExtractor({ "test-model" }, LocalInferenceRunner { _, _, _, _ -> output })
+            .extractLabelText(text, emptyList())
+        val abstained = extract("Unclear label", "{\"facts\":[]}")
+        assertTrue(abstained.facts.isEmpty())
+        assertEquals(0, abstained.explicitCandidateCount); assertEquals(0, abstained.modelCandidateCount)
+        val rejected = extract("Unclear label", """{"facts":[{"field":"quantity","value":"700 mL","evidence":"not in label"}]}""")
+        assertTrue(rejected.facts.isEmpty()); assertEquals(1, rejected.modelCandidateCount)
+        val scalar = extract("700 mL", "{\"facts\":[]}")
+        assertEquals(1, scalar.explicitCandidateCount); assertEquals(0, scalar.modelCandidateCount)
+        assertEquals(BottleFactField.QUANTITY, scalar.facts.single().field)
+    }
+
 }

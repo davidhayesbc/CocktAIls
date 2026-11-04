@@ -257,7 +257,7 @@ internal class BottleScanEnrichmentWorker(
                 return@withContext Result.success()
             }
             repositories.repository.openBottleIntakeSession()?.drafts?.firstOrNull { it.id == draftId }?.let { latest ->
-                BottleLabelOcrScheduler.enqueue(applicationContext, latest, attemptToken)
+                BottleLabelOcrScheduler.enqueue(applicationContext, latest, attemptToken, OcrTrigger.WEB_LOOKUP_FINISHED)
             }
             detailedCapture?.finish(if (finalStatus == BottleEnrichmentStatus.READY_FOR_REVIEW) "COMPLETE" else "FAILED")
             Result.success()

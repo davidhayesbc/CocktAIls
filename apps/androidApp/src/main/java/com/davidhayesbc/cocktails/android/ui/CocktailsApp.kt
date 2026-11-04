@@ -3,6 +3,7 @@ package com.davidhayesbc.cocktails.android.ui
 import com.davidhayesbc.cocktails.android.product.BottleExtractionRejectionReason
 import com.davidhayesbc.cocktails.android.product.BottleLabelEvidence
 import com.davidhayesbc.cocktails.android.product.BottleLabelEvidenceStore
+import com.davidhayesbc.cocktails.android.product.OcrTrigger
 import com.davidhayesbc.cocktails.android.product.BottleLabelOcrScheduler
 import com.davidhayesbc.cocktails.android.product.belongsTo
 import com.davidhayesbc.cocktails.android.product.mergeLabelAndWebEvidence
@@ -708,7 +709,7 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
             val job = bottleEnrichmentQueue.status(draft.id)
             if (labelEvidenceStore.read(draft) == null && job?.status !in setOf(
                     BottleEnrichmentStatus.PAUSED, BottleEnrichmentStatus.CANCELLED, BottleEnrichmentStatus.REVIEWED,
-                )) BottleLabelOcrScheduler.enqueue(context, draft, job?.attemptToken)
+                )) BottleLabelOcrScheduler.enqueue(context, draft, job?.attemptToken, OcrTrigger.INTAKE_RESTORED)
         }
         while (showBottleIntake && bottleIntakeSession != null) {
             delay(750)
@@ -1323,7 +1324,7 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
             return
         }
         LocalDiagnostics.clearBottleLookupForDraft(draft.id)
-        BottleLabelOcrScheduler.enqueue(context, draft, queued.attemptToken)
+        BottleLabelOcrScheduler.enqueue(context, draft, queued.attemptToken, OcrTrigger.LOOKUP_QUEUED)
         val previous = bottleWebSearchStates[draft.id] ?: BottleWebSearchState(automatedScan = true)
         val resetState = if (reprocess) BottleWebSearchState(userEditedFields = previous.userEditedFields) else previous
         val scheduled = BottleEnrichmentWorkScheduler.enqueue(
@@ -1395,7 +1396,7 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
         bottleIntakeSession = repository.openBottleIntakeSession()
         refreshPendingBottleEnrichmentJobs()
         bottleIntakeSession?.drafts?.firstOrNull { it.id == draftId }?.let { saved ->
-            if (photoWasSaved) BottleLabelOcrScheduler.enqueue(context, saved, bottleEnrichmentQueue.status(draftId)?.attemptToken)
+            if (photoWasSaved) BottleLabelOcrScheduler.enqueue(context, saved, bottleEnrichmentQueue.status(draftId)?.attemptToken, OcrTrigger.PHOTO_SAVED)
         }
         val lookupState = bottleEnrichmentQueue.status(draftId)?.status
         val lookupMessage = when (lookupState) {
@@ -2192,7 +2193,7 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                             bottleLabelCaptureMessage = null
                             bottleIntakeSession = repository.openBottleIntakeSession()
                             bottleIntakeSession?.drafts?.firstOrNull { it.id == draft.id }?.let { saved ->
-                                BottleLabelOcrScheduler.enqueue(context, saved, bottleEnrichmentQueue.status(saved.id)?.attemptToken)
+                                BottleLabelOcrScheduler.enqueue(context, saved, bottleEnrichmentQueue.status(saved.id)?.attemptToken, OcrTrigger.PHOTO_SAVED)
                             }
                         } else {
                             bottleLabelCaptureMessage = "The label photo could not be attached. It is still available here; try again or discard it."
@@ -2281,7 +2282,7 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                     )
                     if (created != null) {
                         bottleIntakeSession = repository.openBottleIntakeSession()
-                        BottleLabelOcrScheduler.enqueue(context, created, null)
+                        BottleLabelOcrScheduler.enqueue(context, created, null, OcrTrigger.MANUAL_DRAFT_CREATED)
                     }
                     created != null
                 },

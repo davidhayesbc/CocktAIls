@@ -183,4 +183,25 @@ class BottleLabelEvidenceTest {
         store.cancel(draft.id)
         assertFalse(store.save("second", label("700 mL")))
     }
+    @Test fun crossSourceConflictSurvivesFailedExtractionPersistenceAndLaterLabelMerge() {
+        val page = WebPageText("Acme Gin", "https://shop.example/item", "# Acme Gin\nUPC: $code\nSize: 750 mL\nABV: 40%", "Fixture")
+        val verified = checkNotNull(labeledBottleSpecifications(page, code))
+        for (original in listOf(verified, BottleDetailExtractionResult.InvalidResponse, BottleDetailExtractionResult.SetupRequired)) {
+            val result = retainSourceConflicts(original, page, code, setOf(BottleFactField.QUANTITY)) as BottleDetailExtractionResult.Found
+            assertFalse(result.suggestions.facts.any { it.field == BottleFactField.QUANTITY })
+            val memory = object : PendingBottleEvidenceStorage {
+                var value: String? = null
+                override fun read(draftId: String) = value
+                override fun write(draftId: String, value: String): Boolean { this.value = value; return true }
+                override fun remove(draftId: String): Boolean { value = null; return true }
+            }
+            assertTrue(PendingBottleEvidenceStore(memory).save(draft.id, result.suggestions))
+            val restored = PendingBottleEvidenceStore(memory).read(draft.id)!!
+            val merged = mergeLabelAndWebEvidence(restored, label("700 mL\n40% ALC/VOL"), draft)!!
+            assertFalse(merged.facts.any { it.field == BottleFactField.QUANTITY })
+            assertTrue(BottleFactField.QUANTITY in merged.unresolvedFields)
+            assertTrue(BottleFactRejection(BottleFactField.QUANTITY, BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES) in restored.fieldRejections)
+        }
+    }
+
 }

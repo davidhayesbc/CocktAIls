@@ -19,7 +19,7 @@ internal fun BottleLabelEvidence.belongsTo(draft: BottleIntakeDraft): Boolean =
     sessionId == draft.sessionId && draftId == draft.id && photoSha256 == draft.photoSha256 &&
         draft.photoData != null && barcode?.let(::normalizeGtinForLookup) == draft.barcode?.let(::normalizeGtinForLookup)
 
-internal data class IndependentBottleFacts(val facts: List<BottleFactEvidence>, val unresolved: Set<BottleFactField>, val conflicts: Set<BottleFactField> = emptySet())
+internal data class IndependentBottleFacts(val facts: List<BottleFactEvidence>, val unresolved: Set<BottleFactField>, val conflicts: Set<BottleFactField> = emptySet(), val explicitCandidateCount: Int = 0, val modelCandidateCount: Int = 0)
 
 /** Validate each field independently; one missing/invalid name cannot discard a supported size. */
 internal fun independentBottleFacts(source: String, candidates: List<JsonObject>): IndependentBottleFacts {
