@@ -730,10 +730,101 @@ class ScannedBottleWorkflowTest {
         }
     }
 
+    @Test fun reportedAperolChainRejectsUntitledMarkdownBotCheckAndKeepsStructuredMatch() = runBlocking {
+        val code = "086785900001"
+        val normalized = "0086785900001"
+        val identity = StructuredBottleIdentity(normalized, "aperol aperitivo liqueur",
+            "Structured product fields: barcode $normalized; product aperol aperitivo liqueur")
+        val pages = listOf(
+            WebPageText(null, "https://buycott.example/item", "UPC $code and UPC 5011333150725", "Fixture"),
+            WebPageText(null, "https://eandata.example/item",
+                "# Bot check... One moment...\n\n![]( )\n\n## EAN: $code\n\nAutomated data access is available through our Data Feed API.", "Fixture"),
+            // No synthetic conflict is attributed to the observed Frootbat page.
+            WebPageText("Aperol Aperitivo Liqueur", "https://frootbat.example/item", "Aperol Aperitivo Liqueur", "Fixture", listOf(identity)),
+        )
+        val hits = pages.map { WebSearchHit("Aperol $code", it.sourceUrl, "$code 750 mL") }
+        val fetched = mutableListOf<String>(); val extracted = mutableListOf<String>(); val events = mutableListOf<BottleLookupDebugEvent>()
+        val result = ScannedBottleEnrichmentCoordinator(
+            lookup = { error("disabled") }, search = { BottleProviderCall(WebSearchResult.Found(hits)) },
+            fetch = { url -> fetched += url; BottleProviderCall(WebPageResult.Found(pages.single { it.sourceUrl == url })) },
+            extract = { page, _, barcode -> extracted += page.sourceUrl; BottleProviderCall(structuredProductNameFallback(barcode, page, identity)) },
+        ).processScannedBarcode(code, ScannedBottlePlan(false, true, AutomaticBottleExtractor.ON_DEVICE), onDebugEvent = events::add)
+        assertEquals(hits.map { it.url }, fetched)
+        assertEquals(hits.last(), result.selectedHit)
+        assertEquals(listOf(hits.last().url), extracted)
+        assertTrue(result.barcodeVerifiedByStructuredProduct)
+        assertEquals("aperol aperitivo liqueur", (result.extraction as BottleDetailExtractionResult.Found).suggestions.facts.single().value)
+        assertTrue(events.any { "BOT_CHALLENGE_PAGE" in it.reasonCodes })
+    }
+
+    @Test fun syntheticScalarConflictsDoNotBlockVerifiedStructuredIdentityUpgrade() = runBlocking {
+        val code = "0086785900001"
+        val identity = StructuredBottleIdentity(code, "Acme Gin", "Structured product fields: barcode $code; product Acme Gin")
+        for (conflictInFirst in listOf(false, true)) for (validIdentity in listOf(false, true)) {
+            val first = WebPageText(null, "https://first.example/item", "UPC: $code." +
+                if (conflictInFirst) "\n750 mL and 700 mL" else "", "Fixture")
+            val second = WebPageText("Acme Gin", "https://second.example/item", "750 mL and 700 mL; ABV: 40% and ABV: 45%", "Fixture",
+                listOf(if (validIdentity) identity else identity.copy(barcode = "5011333150725")))
+            val hits = listOf(first, second).map { WebSearchHit("Product $code", it.sourceUrl, "$code 750 mL") }
+            assertEquals(ScannedBarcodePageDecision.VERIFIED, scannedBarcodePageDecision(code, first.markdown))
+            val fetched = mutableListOf<String>()
+            val result = ScannedBottleEnrichmentCoordinator(
+                lookup = { error("disabled") }, search = { BottleProviderCall(WebSearchResult.Found(hits)) },
+                fetch = { url -> fetched += url; BottleProviderCall(WebPageResult.Found(if (url == first.sourceUrl) first else second)) },
+                extract = { page, _, barcode -> BottleProviderCall(if (page == second) structuredProductNameFallback(barcode, page, identity) else BottleDetailExtractionResult.InvalidResponse) },
+            ).processScannedBarcode(code, ScannedBottlePlan(false, true, AutomaticBottleExtractor.ON_DEVICE))
+            assertEquals(hits.map { it.url }, fetched)
+            assertEquals(if (validIdentity) hits.last() else hits.first(), result.selectedHit)
+            val suggestions = (result.extraction as? BottleDetailExtractionResult.Found)?.suggestions
+            if (validIdentity) {
+                assertTrue(result.barcodeVerifiedByStructuredProduct)
+                assertEquals(listOf(BottleFactField.PRODUCT_NAME), suggestions!!.facts.map { it.field })
+                assertEquals("Acme Gin", suggestions.facts.single().value)
+                for (field in listOf(BottleFactField.QUANTITY, BottleFactField.ABV_PERCENT))
+                    assertTrue(BottleFactRejection(field, BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES) in suggestions.fieldRejections)
+            } else assertFalse(suggestions?.facts?.any { it.field == BottleFactField.PRODUCT_NAME } == true)
+        }
+    }
+
+    @Test fun conflictingVerifiedProductNamesCannotBecomeAnIdentityUpgrade() = runBlocking {
+        val code = "0086785900001"
+        val pages = listOf("Acme Gin", "Different Vodka", "Acme Gin").mapIndexed { index, name ->
+            val identity = StructuredBottleIdentity(code, name, "Structured product fields: barcode $code; product $name")
+            WebPageText(name, "https://shop$index.example/item", "750 mL", "Fixture", listOf(identity))
+        }
+        val hits = pages.map { WebSearchHit("Product", it.sourceUrl, "EAN: $code; 750 mL") }
+        val fetched = mutableListOf<String>()
+        val result = ScannedBottleEnrichmentCoordinator(
+            lookup = { error("disabled") }, search = { BottleProviderCall(WebSearchResult.Found(hits)) },
+            fetch = { url -> fetched += url; BottleProviderCall(WebPageResult.Found(pages.single { it.sourceUrl == url })) },
+            extract = { page, _, barcode -> BottleProviderCall(structuredProductNameFallback(barcode, page, page.structuredBottleIdentities.single())) },
+        ).processScannedBarcode(code, ScannedBottlePlan(false, true, AutomaticBottleExtractor.ON_DEVICE))
+        assertEquals(hits.take(2).map { it.url }, fetched)
+        assertEquals(hits.first(), result.selectedHit)
+        val suggestions = (result.extraction as BottleDetailExtractionResult.Found).suggestions
+        assertTrue(suggestions.facts.isEmpty())
+        assertTrue(BottleFactRejection(BottleFactField.PRODUCT_NAME, BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES) in suggestions.fieldRejections)
+    }
+
+    @Test fun emptyExtractionReportsNoSupportedFieldsInsteadOfCandidatesReady() = runBlocking {
+        val code = "0086785900001"
+        val page = WebPageText(null, "https://shop.example/item", "EAN: $code.", "Fixture")
+        val events = mutableListOf<BottleLookupDebugEvent>()
+        ScannedBottleEnrichmentCoordinator(
+            lookup = { error("disabled") }, search = { BottleProviderCall(WebSearchResult.Found(listOf(WebSearchHit("Product", page.sourceUrl, code)))) },
+            fetch = { BottleProviderCall(WebPageResult.Found(page)) },
+            extract = { _, _, _ -> BottleProviderCall(BottleDetailExtractionResult.Found(BottleDetailSuggestions("Fixture", "Fixture", page.sourceUrl, emptyList()))) },
+        ).processScannedBarcode(code, ScannedBottlePlan(false, true, AutomaticBottleExtractor.ON_DEVICE), onDebugEvent = events::add)
+        assertEquals("NO_SUPPORTED_FIELDS", events.last { it.stage == BottleLookupDebugStage.DETAIL_EXTRACTION }.result)
+        assertFalse(events.any { it.result == "CANDIDATES_READY" })
+    }
+
     @Test fun challengeMarkersRejectInterstitialsButNotOrdinaryProductText() {
-        for (text in listOf("Verify that you are a human", "Checking your browser", "Performing a security verification", "Enable JavaScript and cookies to continue", "Complete the CAPTCHA", "Access denied")) {
+        for (text in listOf("Verify that you are a human", "Checking your browser", "Performing a security verification", "Enable JavaScript and cookies to continue", "Complete the CAPTCHA", "Access denied", "# Bot check... One moment...", "Bot check", "## BOT CHECK… One moment…")) {
             assertTrue(text, isBottleSourceChallenge(WebPageText("Product", "https://example.com/product", text, "Firecrawl")))
         }
+        for (text in listOf("Take one moment to enjoy this gin.", "Our shop uses a bot check for automated requests.", "Botanical gin, 750 mL, 40% ABV."))
+            assertFalse(text, isBottleSourceChallenge(WebPageText("Acme Gin", "https://example.com/product", text, "Fixture")))
         assertTrue(isBottleSourceChallenge(WebPageText("Just a moment...", "https://example.com/product", "Security page body", "Firecrawl")))
         assertFalse(isBottleSourceChallenge(WebPageText("Aperol", "https://example.com/product", "750 mL, 11% ABV. Serve with ice.", "Firecrawl")))
     }

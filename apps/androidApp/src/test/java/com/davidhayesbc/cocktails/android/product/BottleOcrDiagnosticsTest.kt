@@ -20,6 +20,21 @@ class BottleOcrDiagnosticsTest {
     private val c = OcrCorrelation.of(draft, "private-attempt")
     private fun records(journal: BottleOcrJournal, current: List<OcrCorrelation> = listOf(c)) = journal.snapshot(current)["attempts"]!!.jsonArray.map { it.jsonObject }
 
+    @Test fun completedExecutionDoesNotImplySupportedEvidence() {
+        for (fields in listOf(emptySet(), setOf("quantity"), setOf("PRIVATE unsupported text"))) {
+            val memory = Memory()
+            val journal = BottleOcrJournal(memory, "process")
+            journal.begin(c, "request"); journal.start(c, "request", 0)
+            assertFalse(records(journal).single().containsKey("evidenceOutcome"))
+            journal.update(c, "request") { it.copy(state = OcrState.COMPLETED, supportedFields = fields) }
+            val restored = records(BottleOcrJournal(memory, "reopened")).single()
+            assertEquals("COMPLETED", restored["state"]!!.jsonPrimitive.content)
+            assertEquals(if ("quantity" in fields) "SUPPORTED_FIELDS_AVAILABLE" else "NO_SUPPORTED_FIELDS",
+                restored["evidenceOutcome"]!!.jsonPrimitive.content)
+            assertFalse(restored.toString().contains("PRIVATE unsupported text"))
+        }
+    }
+
     @Test fun queuedRunningCompletedPersistAndCombinedExportDoesNotAlterWebTimingOrExposeContent() {
         val memory = Memory(); var now = 100L
         val journal = BottleOcrJournal(memory, "process", { now++ })

@@ -128,6 +128,9 @@ internal class BottleOcrJournal(private val storage: OcrDiagnosticStorage, priva
                     else if (record.phase == OcrPhase.WAITING_FOR_LABEL_AI) json["waitingFor"] = JsonPrimitive("LOCAL_EXTRACTION_SLOT")
                 }
                 json["isCurrent"] = if (current == null) JsonNull else JsonPrimitive(isCurrent)
+                // COMPLETED describes execution, not whether usable bottle facts were obtained.
+                if (record.state == OcrState.COMPLETED) json["evidenceOutcome"] = JsonPrimitive(
+                    if (record.supportedFields.isEmpty()) "NO_SUPPORTED_FIELDS" else "SUPPORTED_FIELDS_AVAILABLE")
                 json["supportedFieldCount"] = JsonPrimitive(record.supportedFields.size)
                 json["unresolvedFieldCount"] = JsonPrimitive(record.unresolvedFields.size)
                 json["rejections"] = buildJsonObject {

@@ -422,7 +422,7 @@ internal const val MAX_AUTOMATIC_SOURCE_FETCHES = 3
 
 /** Challenge pages are unusable evidence. Never try to solve or bypass the challenge. */
 internal fun isBottleSourceChallenge(page: WebPageText): Boolean = Regex(
-    "(?im)verify (?:that )?you(?: are|'re) (?:a )?human|checking your browser|checking (?:if )?(?:the )?site connection|" +
+    "(?im)^[ \t]*(?:#{1,6}[ \t]+)?bot[ \t-]+check(?:[.!…:]|[ \t]*$)|verify (?:that )?you(?: are|'re) (?:a )?human|checking your browser|checking (?:if )?(?:the )?site connection|" +
         "performing (?:a )?security (?:verification|check)|enable javascript and cookies to continue|" +
         "complete (?:the |this )?captcha|please wait while we verify|access denied|^just a moment[.!…]*$",
 ).containsMatchIn((page.title.orEmpty() + "\n" + page.markdown).take(24000))
@@ -898,7 +898,11 @@ internal class ScannedBottleEnrichmentCoordinator(
                 } }.map { it.field }.toSet()
                 if (identityDisagreement) crossSourceConflicts += BottleFactField.entries else crossSourceConflicts += conflictingFields
                 val disagreement = identityDisagreement || conflictingFields.isNotEmpty() || evidence.conflicts.isNotEmpty()
-                val replace = verifiedPage == null || (!disagreement && facts.size > verifiedFacts.size)
+                // Scalar contradictions must not veto independently verified product identity.
+                // Keep their rejection metadata even when selecting this page for its name.
+                val identityUpgrade = previousName == null && nextName != null
+                val replace = verifiedPage == null || (!identityDisagreement &&
+                    (identityUpgrade || (!disagreement && facts.size > verifiedFacts.size)))
                 if (replace) {
                     verifiedPage = candidate
                     verifiedHit = hit
@@ -909,8 +913,9 @@ internal class ScannedBottleEnrichmentCoordinator(
                     if (replace) "VERIFIED_SOURCE_RETAINED" else "VERIFIED_SOURCE_NOT_RICHER",
                     sourceUrls = listOf(page.sourceUrl), factFields = facts.map { it.field.wireValue },
                     reasonCodes = listOf(if (disagreement) "VERIFIED_SOURCE_FACT_CONFLICT" else if (facts.size == 3) "VERIFIED_CORE_FACTS_COMPLETE" else "VERIFIED_SOURCE_INCOMPLETE")))
-                // Do not use a second source to silently resolve explicit contradictions.
-                if (verifiedFacts.size == 3 || disagreement) break
+                // Scalar conflicts remain unresolved, but later candidates may still supply identity.
+                // Contradictory identities stop selection; never choose one product over another.
+                if (identityDisagreement || verifiedFacts.count { it.field !in crossSourceConflicts } == 3) break
             }
         }
         val page = verifiedPage
@@ -955,6 +960,7 @@ internal class ScannedBottleEnrichmentCoordinator(
             provider = if (deterministicExtraction || sourceOnlyPartial) "Deterministic source parser" else extractor.name,
             result = when {
                 crossSourceConflicts.isNotEmpty() -> "SOURCE_CONFLICT_REQUIRES_REVIEW"
+                suggestions != null && suggestions.facts.isEmpty() -> "NO_SUPPORTED_FIELDS"
                 deterministicExtraction -> "DETERMINISTIC_COMPLETE"
                 sourceOnlyPartial -> "DETERMINISTIC_PARTIAL"
                 modelFallback -> "DETERMINISTIC_FALLBACK_AFTER_MODEL"
@@ -1065,7 +1071,7 @@ private fun WebPageResult.toDebugCode(httpStatus: Int?): String = when (this) {
 }
 
 private fun BottleDetailExtractionResult.toDebugCode(httpStatus: Int?): String = when (this) {
-    is BottleDetailExtractionResult.Found -> "CANDIDATES_READY"
+    is BottleDetailExtractionResult.Found -> if (suggestions.facts.isEmpty()) "NO_SUPPORTED_FIELDS" else "CANDIDATES_READY"
     BottleDetailExtractionResult.SetupRequired -> "MISSING_MODEL"
     BottleDetailExtractionResult.InvalidModel -> "MISSING_MODEL"
     BottleDetailExtractionResult.AuthenticationRequired -> "AUTHENTICATION"
