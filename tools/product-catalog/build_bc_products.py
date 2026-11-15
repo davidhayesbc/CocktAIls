@@ -30,7 +30,7 @@ def build():
     source = (ROOT / 'source.csv').read_bytes()
     assert hashlib.sha256(source).hexdigest() == EXPECTED
     metadata_bytes = (ROOT / 'catalogue-package-show.json').read_bytes()
-    assert hashlib.sha256(metadata_bytes).hexdigest() == '031d9b0defeb16cded2fda5e98fb7983ad650a210dbce437d1d5fafce402c654'
+    assert hashlib.sha256(metadata_bytes).hexdigest() == 'e6fc4f6979c170a13357951ace9caab1dd985048a5786348601f63628c158d27'
     metadata = json.loads(metadata_bytes)['result']
     with (ROOT / 'source.csv').open(newline='') as f:
         rows = list(csv.DictReader(f))
