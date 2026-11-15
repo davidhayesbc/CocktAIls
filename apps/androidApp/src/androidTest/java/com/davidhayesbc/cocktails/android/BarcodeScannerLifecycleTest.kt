@@ -1,5 +1,7 @@
 package com.davidhayesbc.cocktails.android
 
+import app.cash.sqldelight.driver.android.AndroidSqliteDriver
+import com.davidhayesbc.cocktails.shared.db.CocktailsDatabase
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Rect
@@ -41,7 +43,8 @@ class BarcodeScannerLifecycleTest {
     fun denialKeepsManualEntryAvailableThenGrantOpensScannerAcrossLifecycle() {
         try {
             assertEquals(PackageManager.PERMISSION_DENIED, composeRule.activity.checkSelfPermission(Manifest.permission.CAMERA))
-            composeRule.onNodeWithText("My Bar").performClick()
+            awaitSeededMainNavigation()
+            composeRule.onNodeWithText("My Bar").assertIsDisplayed().performClick()
             composeRule.onAllNodesWithTag("inventory-add-ingredient").assertCountEquals(0)
             composeRule.onNodeWithTag("start-bottle-intake").performClick()
             composeRule.onNodeWithTag("intake-close").assertIsDisplayed()
@@ -89,7 +92,8 @@ class BarcodeScannerLifecycleTest {
             InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
             composeRule.onNodeWithTag("my-bar-review-queue").assertIsDisplayed()
             composeRule.activityRule.scenario.recreate()
-            composeRule.onNodeWithText("My Bar").performClick()
+            awaitSeededMainNavigation()
+            composeRule.onNodeWithText("My Bar").assertIsDisplayed().performClick()
             composeRule.onNodeWithTag("my-bar-review-queue").performClick()
             composeRule.onNodeWithTag("bottle-intake-scroll").performScrollToNode(hasText("CI Manual Barcode Gin", substring = true))
             composeRule.onAllNodesWithText("CI Manual Barcode Gin", substring = true).assertCountEquals(1)
@@ -111,6 +115,27 @@ class BarcodeScannerLifecycleTest {
             )
         } finally {
             removeIntakeTestDraft("CI Manual Barcode Gin", "036000291452")
+        }
+    }
+
+    /** Compose idle does not await MainActivity's IO dispatcher catalogue transaction. */
+    private fun awaitSeededMainNavigation() {
+        composeRule.waitUntil(timeoutMillis = 30_000) {
+            composeRule.onAllNodesWithText("My Bar").fetchSemanticsNodes().size == 1
+        }
+        composeRule.onNodeWithText("My Bar").assertIsDisplayed()
+        // Waiting for navigation must not hide an import failure's fallback UI. Check the
+        // real persistent database after first launch and again after activity recreation.
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val driver = AndroidSqliteDriver(CocktailsDatabase.Schema, context, "cocktails.db")
+        try {
+            val queries = CocktailsDatabase(driver).referenceProductsQueries
+            val catalog = queries.catalog("bc-liquor-products").executeAsOne()
+            assertEquals("2026-07", catalog.source_date)
+            assertEquals(1L, catalog.revision)
+            assertEquals(8224L, queries.countProducts().executeAsOne())
+        } finally {
+            driver.close()
         }
     }
 
