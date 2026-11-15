@@ -999,11 +999,28 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             )
         }
 
+    fun installReferenceProducts(text: String): Int = ReferenceProductStore(database).install(text)
+
+    fun referenceCatalogueIsAtLeast(sourceId: String, date: String, revision: Long): Boolean {
+        val row = database.referenceProductsQueries.catalog(sourceId).executeAsOneOrNull() ?: return false
+        return row.source_date > date || row.source_date == date && row.revision >= revision
+    }
+
+    /** Comparison only: preserve native short codes and existing stored/scanned representations. */
+    private fun householdBarcodeKey(barcode: String): String? = normalizeGtinForLookup(barcode)?.let {
+        if (it.length == 8) it else it.padStart(14, '0')
+    }
+
     fun localProductForBarcode(barcode: String): LocalProductBarcodeMatch? {
-        val normalized = normalizeGtinForLookup(barcode) ?: return null
+        val normalized = householdBarcodeKey(barcode) ?: return null
         val product = queries.selectProductsForBarcodeLookup().executeAsList().firstOrNull {
-            normalizeGtinForLookup(it.barcode) == normalized
-        } ?: return null
+            householdBarcodeKey(it.barcode) == normalized
+        } ?: return ReferenceProductStore(database).lookup(barcode)?.let { match ->
+            val row = match.product
+            LocalProductBarcodeMatch(null, null, row.sourceClass, if (row.category == "Spirits") "Spirit" else row.category,
+                null, row.name, barcode, row.quantity, row.abv?.let { "$it%" },
+                "BC product reference · ${match.source.sourceDate} · ${match.source.attribution}")
+        }
         return LocalProductBarcodeMatch(
             productId = product.product_id,
             ingredientId = IngredientId(product.ingredient_id),
@@ -1145,10 +1162,10 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         var matchedProductId: String? = null
         val barcode = draft.barcode
         if (barcode != null) {
-            val normalized = normalizeGtinForLookup(barcode)
+            val normalized = householdBarcodeKey(barcode)
                 ?: return@transactionWithResult BottleIntakeCommitResult.Invalid("This bottle barcode is invalid.")
             val stored = queries.selectProductsForBarcodeDeduplication().executeAsList().firstOrNull {
-                it.barcode?.let(::normalizeGtinForLookup) == normalized
+                it.barcode?.let(::householdBarcodeKey) == normalized
             }
             if (stored != null) {
                 val targetIngredient = queries.selectIngredientByNameAndCategory(
@@ -1201,7 +1218,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                 return@transactionWithResult BottleIntakeCommitResult.Invalid("A label photo is invalid. Remove it or capture it again.")
             }
             val barcode = draft.barcode ?: continue
-            val normalized = normalizeGtinForLookup(barcode)
+            val normalized = householdBarcodeKey(barcode)
                 ?: return@transactionWithResult BottleIntakeCommitResult.Invalid("A draft barcode is invalid.")
             val identity = draft.ingredient_name.trim().lowercase() to draft.category.trim().lowercase()
             val earlier = draftBarcodes[normalized]
@@ -1210,7 +1227,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                 return@transactionWithResult BottleIntakeCommitResult.Invalid("The same barcode is assigned to different ingredients. Review the drafts before confirming.")
             }
             val stored = queries.selectProductsForBarcodeDeduplication().executeAsList().firstOrNull {
-                it.barcode?.let(::normalizeGtinForLookup) == normalized
+                it.barcode?.let(::householdBarcodeKey) == normalized
             }
             if (stored != null) {
                 val target = queries.selectIngredientByNameAndCategory(draft.ingredient_name.trim(), draft.category.trim()).executeAsOneOrNull()
@@ -1222,8 +1239,8 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
         val memberId = preferredMemberId() ?: queries.selectFirstMember(householdId).executeAsOne().id
         for (draft in drafts) {
             val product = draft.barcode?.let { barcode ->
-                val normalized = normalizeGtinForLookup(barcode) ?: return@transactionWithResult BottleIntakeCommitResult.Invalid("A draft barcode is invalid.")
-                queries.selectProductsForBarcodeDeduplication().executeAsList().firstOrNull { normalizeGtinForLookup(it.barcode.orEmpty()) == normalized }
+                val normalized = householdBarcodeKey(barcode) ?: return@transactionWithResult BottleIntakeCommitResult.Invalid("A draft barcode is invalid.")
+                queries.selectProductsForBarcodeDeduplication().executeAsList().firstOrNull { householdBarcodeKey(it.barcode.orEmpty()) == normalized }
             }
             if (writeBottleDraft(
                     draft,
@@ -1333,9 +1350,24 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             val product = queries.selectProductById(productId).executeAsOne()
             writeRevision(productId, "PRODUCT", memberId, nowMillis, jsonObject("id" to jsonString(productId), "ingredientId" to jsonString(product.ingredient_id), "brand" to nullableJsonString(product.brand), "productName" to jsonString(product.product_name), "barcode" to (product.barcode?.let(::jsonString) ?: "null"), "photoSha256" to (product.photo_sha256?.let(::jsonString) ?: "null"), "bottleQuantity" to nullableJsonString(product.bottle_quantity), "abvPercent" to nullableJsonString(product.abv_percent), "createdAt" to product.created_at.toString()))
         }
-        if (sourceFacts.isNotEmpty()) {
+        val reference = draft.barcode?.let { ReferenceProductStore(database).lookup(it) }
+        val referenceFacts = reference?.let { match ->
+            listOf("product_name" to draft.product_name, "quantity" to draft.bottle_quantity, "abv_percent" to draft.abv_percent)
+                .filter { (field, value) -> value != null && value == when (field) {
+                    "product_name" -> match.product.name
+                    "quantity" -> match.product.quantity
+                    else -> match.product.abv?.let { "$it%" }
+                } }.map { (field, value) -> ProductFactSourceDraft(
+                    "BC Data Catalogue", "Versioned reference data", match.source.sourceDate,
+                    match.source.sourceUrl, field, value!!,
+                    "SKU ${match.product.recordId}; raw UPC ${match.product.rawUpc}; GTIN ${match.product.gtin14}; ${match.source.sourceDate}; $field: $value; ${match.source.attribution}",
+                    match.source.licenseTitle,
+                ) }
+        }.orEmpty()
+        val acceptedSources = (sourceFacts + referenceFacts).distinct()
+        if (acceptedSources.isNotEmpty()) {
             if (productId == null) return null
-            sourceFacts.forEachIndexed { index, fact ->
+            acceptedSources.forEachIndexed { index, fact ->
                 val sourceId = newUuidV7(nowMillis + draft.position * 100L + index + 1L)
                 queries.insertProductSourceIgnore(
                     sourceId, productId, fact.retrievalProvider, fact.extractionProvider, fact.extractionModel,
@@ -1436,7 +1468,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             } else null
             val matchingProduct = normalizedBarcode?.let { normalized ->
                 queries.selectProductsForBarcodeDeduplication().executeAsList().firstOrNull { product ->
-                    product.barcode?.let(::normalizeGtinForLookup) == normalized
+                    product.barcode?.let(::householdBarcodeKey) == householdBarcodeKey(normalized)
                 }
             }
             val targetIngredientId = exactId ?: sameNameId

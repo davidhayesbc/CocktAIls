@@ -25,6 +25,11 @@ jobs:
       - name: Verify generated recipe catalog
         run: python3 tools/catalog/build_amber_pack.py --check
 
+      - name: Verify BC reference product catalog
+        run: |
+          python3 tools/product-catalog/build_bc_products.py --check
+          python3 -m unittest discover -s tools/product-catalog -p 'test_*.py'
+
       - name: Test preview workflow gate helpers
         run: python3 -m unittest discover -s .github/scripts -p 'test_preview_*.py'
 

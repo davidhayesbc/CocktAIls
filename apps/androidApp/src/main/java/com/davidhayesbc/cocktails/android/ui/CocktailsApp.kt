@@ -4966,11 +4966,11 @@ private fun AddIngredientDialog(
                 if (localProductMatch != null) {
                     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
                         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("Found in your household", style = MaterialTheme.typography.titleSmall)
+                            Text(if (localProductMatch.referenceSource == null) "Found in your household" else "Found in the BC reference catalogue", style = MaterialTheme.typography.titleSmall)
                             Text("${localProductMatch.ingredientName} · ${localProductMatch.category}")
                             localProductMatch.brand?.let { Text("Brand: $it") }
                             Text("Product: ${localProductMatch.productName}")
-                            Text("This match is local. It did not contact Open Food Facts.", style = MaterialTheme.typography.bodySmall)
+                            Text(localProductMatch.referenceSource ?: "This match is local. It did not contact Open Food Facts.", style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }

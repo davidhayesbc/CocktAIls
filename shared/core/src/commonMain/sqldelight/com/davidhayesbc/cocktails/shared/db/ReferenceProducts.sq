@@ -1,0 +1,37 @@
+CREATE TABLE reference_catalog (
+    source_id TEXT NOT NULL PRIMARY KEY,
+    source_date TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    content_hash TEXT NOT NULL,
+    metadata_json TEXT NOT NULL
+);
+
+CREATE TABLE reference_product (
+    source_id TEXT NOT NULL REFERENCES reference_catalog(source_id) ON DELETE CASCADE,
+    record_id TEXT NOT NULL,
+    gtin14 TEXT,
+    lookup_eligible INTEGER NOT NULL,
+    record_json TEXT NOT NULL,
+    PRIMARY KEY (source_id, record_id)
+);
+CREATE INDEX reference_product_gtin ON reference_product(gtin14);
+
+catalog:
+SELECT * FROM reference_catalog WHERE source_id = ?;
+
+deleteProducts:
+DELETE FROM reference_product WHERE source_id = ?;
+
+writeCatalog:
+INSERT OR REPLACE INTO reference_catalog(source_id, source_date, revision, content_hash, metadata_json) VALUES (?, ?, ?, ?, ?);
+
+writeProduct:
+INSERT INTO reference_product(source_id, record_id, gtin14, lookup_eligible, record_json) VALUES (?, ?, ?, ?, ?);
+
+matches:
+SELECT reference_product.record_json, reference_catalog.metadata_json
+FROM reference_product JOIN reference_catalog USING (source_id)
+WHERE gtin14 = ? AND lookup_eligible = 1;
+
+countProducts:
+SELECT count(*) FROM reference_product;

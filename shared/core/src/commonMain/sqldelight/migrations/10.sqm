@@ -1,0 +1,17 @@
+CREATE TABLE reference_catalog (
+    source_id TEXT NOT NULL PRIMARY KEY,
+    source_date TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    content_hash TEXT NOT NULL,
+    metadata_json TEXT NOT NULL
+);
+
+CREATE TABLE reference_product (
+    source_id TEXT NOT NULL REFERENCES reference_catalog(source_id) ON DELETE CASCADE,
+    record_id TEXT NOT NULL,
+    gtin14 TEXT,
+    lookup_eligible INTEGER NOT NULL,
+    record_json TEXT NOT NULL,
+    PRIMARY KEY (source_id, record_id)
+);
+CREATE INDEX reference_product_gtin ON reference_product(gtin14);

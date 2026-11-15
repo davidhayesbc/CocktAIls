@@ -64,8 +64,8 @@ data class PantryEntry(
 )
 
 data class LocalProductBarcodeMatch(
-    val productId: String,
-    val ingredientId: IngredientId,
+    val productId: String?,
+    val ingredientId: IngredientId?,
     val ingredientName: String,
     val category: String,
     val brand: String?,
@@ -73,6 +73,7 @@ data class LocalProductBarcodeMatch(
     val barcode: String,
     val quantity: String? = null,
     val abvPercent: String? = null,
+    val referenceSource: String? = null,
 )
 
 enum class BottleIntakeSessionStatus { OPEN, CONFIRMED }

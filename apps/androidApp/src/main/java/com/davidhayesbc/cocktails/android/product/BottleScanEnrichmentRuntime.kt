@@ -35,6 +35,7 @@ internal class BottleScanEnrichmentRuntime(context: Context) {
     fun openRepository(): RuntimeRepository {
         val driver = AndroidSqliteDriver(CocktailsDatabase.Schema, appContext, "cocktails.db")
         val repository = LocalCocktailRepository(CocktailsDatabase(driver)).also { it.initialize(System.currentTimeMillis()) }
+        BundledReferenceProducts.install(appContext, repository)
         return RuntimeRepository(driver, repository)
     }
 

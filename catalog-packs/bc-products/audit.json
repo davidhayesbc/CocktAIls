@@ -1,0 +1,22 @@
+{
+  "rows": 8224,
+  "categories": {
+    "Wine": 5957,
+    "Spirits": 1581,
+    "Refreshment Beverages": 238,
+    "Beer": 405,
+    "General Merchandise": 43
+  },
+  "validGtinRows": 7567,
+  "uniqueValidGtins": 7566,
+  "eligible": 6988,
+  "eligibleSpirits": 1561,
+  "exclusions": {
+    "MISSING_UPC": 654,
+    "NOT_SINGLE_CONTAINER": 576,
+    "NOT_BEVERAGE": 43,
+    "DUPLICATE_GTIN": 2,
+    "INVALID_GTIN": 3,
+    "AMBIGUOUS_SHORT_UPC": 2
+  }
+}
