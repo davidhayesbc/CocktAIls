@@ -1043,6 +1043,50 @@ class OfflineRecipeSmokeTest {
         }
     }
 
+    @Test
+    fun localMatchReviewRestoresWithoutCaptureOrProviderWork() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val preferences = context.getSharedPreferences("cocktails_local_scan_review", android.content.Context.MODE_PRIVATE)
+        val previousActive = preferences.getString("active_draft_id", null)
+        val queue = BottleEnrichmentQueue(com.davidhayesbc.cocktails.android.product.SharedPreferencesBottleEnrichmentQueueStorage(context))
+        val driver = AndroidSqliteDriver(CocktailsDatabase.Schema, context, "cocktails.db")
+        val repository = LocalCocktailRepository(CocktailsDatabase(driver))
+        repository.initialize(5)
+        val priorSession = repository.openBottleIntakeSession()
+        val session = repository.startBottleIntakeSession(repository.locations().first().id, InventoryLevel.FULL, System.currentTimeMillis())
+        val draft = repository.addBottleIntakeDraft(session.id, "Local verification fixture", "Spirit", session.locationId,
+            InventoryLevel.FULL, System.currentTimeMillis(), barcode = "3035542002004", productName = "Manually edited local name",
+            quantity = "700 mL", abvPercent = "")!!
+        val ready = queue.prepareScannedDraft(session.id, draft.id, true, 1)!!
+        preferences.edit().putString("active_draft_id", draft.id).commit()
+        driver.close()
+        try {
+            repeat(2) {
+                composeRule.activityRule.scenario.recreate()
+                openBottleIntake()
+                composeRule.onNodeWithTag("bottle-intake-route-title").assertTextEquals("Review your bottle")
+                composeRule.onNodeWithTag("bottle-review-card-${draft.id}").assertExists()
+                assertEquals(ready, queue.status(draft.id))
+                keepBottleIntakeForLater()
+            }
+            val checkDriver = AndroidSqliteDriver(CocktailsDatabase.Schema, context, "cocktails.db")
+            try {
+                val saved = LocalCocktailRepository(CocktailsDatabase(checkDriver)).openBottleIntakeSession()!!.drafts.single { it.id == draft.id }
+                assertEquals("Manually edited local name", saved.productName)
+                assertEquals("700 mL", saved.quantity)
+                assertTrue(saved.abvPercent.isNullOrEmpty())
+            } finally { checkDriver.close() }
+        } finally {
+            preferences.edit().putString("active_draft_id", previousActive).commit()
+            queue.remove(ready.id)
+            val cleanupDriver = AndroidSqliteDriver(CocktailsDatabase.Schema, context, "cocktails.db")
+            val cleanup = LocalCocktailRepository(CocktailsDatabase(cleanupDriver))
+            if (priorSession == null) cleanup.cancelBottleIntakeSession(session.id)
+            else cleanup.removeBottleIntakeDraft(session.id, draft.id)
+            cleanupDriver.close()
+        }
+    }
+
     private fun openBottleIntake() {
         composeRule.onNodeWithTag("navigation-my_bar").performClick()
         composeRule.onNodeWithTag("start-bottle-intake").performClick()

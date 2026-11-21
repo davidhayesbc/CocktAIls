@@ -697,7 +697,13 @@ class ScannedBottleWorkflowTest {
             assertEquals(2, fetched.size)
             val expected = if (second == "richer") hits[1] else hits[0]
             assertEquals(expected, result.selectedHit)
-            assertEquals(listOf(expected.url), extracted)
+            assertEquals(if (second in listOf("richer", "conflict")) emptyList<String>() else listOf(expected.url), extracted)
+            if (second == "richer") assertTrue(pipelineHasCoreFacts((result.extraction as BottleDetailExtractionResult.Found).suggestions))
+            if (second == "conflict") {
+                val evidence = (result.extraction as BottleDetailExtractionResult.Found).suggestions
+                assertTrue(evidence.facts.any { it.field == BottleFactField.ABV_PERCENT && it.value == "32%" })
+                assertFalse(evidence.facts.any { it.field == BottleFactField.QUANTITY })
+            }
             assertTrue(result.barcodeVerifiedInPage)
         }
     }
@@ -724,7 +730,8 @@ class ScannedBottleWorkflowTest {
                 extract = { page, _, _ -> extracted += page.sourceUrl; BottleProviderCall(BottleDetailExtractionResult.InvalidResponse) },
             ).processScannedBarcode(code, ScannedBottlePlan(false, true, AutomaticBottleExtractor.ON_DEVICE), onDebugEvent = events::add)
             assertEquals(3, fetched.size)
-            assertEquals(if (validLast) listOf(hits[2].url) else emptyList<String>(), extracted)
+            assertTrue(extracted.isEmpty())
+            if (validLast) assertTrue(pipelineHasCoreFacts((result.extraction as BottleDetailExtractionResult.Found).suggestions))
             assertEquals(validLast, result.barcodeVerifiedInPage)
             assertTrue(events.any { "BOT_CHALLENGE_PAGE" in it.reasonCodes })
         }

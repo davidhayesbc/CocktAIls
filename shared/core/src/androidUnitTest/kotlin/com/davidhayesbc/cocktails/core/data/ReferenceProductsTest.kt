@@ -17,6 +17,119 @@ class ReferenceProductsTest {
         return driver to CocktailsDatabase(driver)
     }
 
+    @Test fun savedBottleCanFillMissingDetailsAfterCatalogueImport() {
+        val (driver, db) = database()
+        try {
+            val repo = LocalCocktailRepository(db).also { it.initialize(1) }
+            val home = repo.locations().single().id
+            val barcode = "003105474011"
+            assertTrue(repo.addIngredient("My tequila", "Spirit", InventoryLevel.HALF, home, 2,
+                barcode, productName = "My bottle name"))
+            val before = repo.pantry(home).single()
+            val productId = assertNotNull(before.productId)
+            val photo = byteArrayOf(1, 2, 3)
+            db.householdQueries.updateProductPhoto("image/jpeg", photo, "a".repeat(64), productId)
+            db.householdQueries.updateProductPackageFacts(null, "38%", productId)
+            assertNull(repo.referenceProductForBarcode(barcode))
+            repo.installReferenceProducts(text)
+            assertNull(repo.referenceProductForBarcode("8000296000380"))
+            val match = assertNotNull(repo.referenceProductForBarcode(barcode))
+            assertNull(repo.pantry(home).single().bottleSize)
+            assertTrue(repo.applyReferenceToSavedBottle(before.inventoryId, match))
+            val updated = repo.pantry(home).single()
+            assertEquals(before.inventoryId, updated.inventoryId)
+            assertEquals(productId, updated.productId)
+            assertEquals("My bottle name", updated.productName)
+            assertEquals("750 mL", updated.bottleSize)
+            assertEquals("38%", updated.abvPercent)
+            assertEquals(barcode, updated.barcode)
+            assertEquals(before.level, updated.level)
+            assertContentEquals(photo, updated.photoData)
+        } finally {
+            driver.close()
+        }
+    }
+
+    @Test fun genericUserDescriptionsAndImageReferencesSurviveAtomicInstall() {
+        val (driver,db)=database()
+        try {
+            val repo=LocalCocktailRepository(db).also {it.initialize(1)}
+            val row=pack.records.first {it.lookupEligible}.copy(referenceDescription="User-supplied plain text",imageSha256="b".repeat(64),imageMediaType="image/png")
+            val custom=pack.copy(sourceId="user-example",sourceUrl="https://example.test/source",licenseTitle="User supplied",attribution="Fixture source",supplementalSourceSha256="a".repeat(64),supplementalNotice=USER_CONTENT_NOTICE,records=listOf(row))
+            val before=repo.exportHouseholdBundle(2)
+            assertEquals(1,repo.installReferenceProducts(ReferenceProductCodec.encode(custom)))
+            assertEquals(row,repo.referenceProductForBarcode(row.gtin14!!)!!.product)
+            assertEquals(before,repo.exportHouseholdBundle(2))
+            assertEquals("User reference catalogue",custom.providerLabel)
+            assertTrue(repo.localProductForBarcode(row.gtin14!!)!!.referenceSource!!.startsWith("User reference catalogue"))
+            val home=repo.locations().single().id
+            val session=repo.startBottleIntakeSession(home,InventoryLevel.FULL,3)
+            val draft=repo.addBottleIntakeDraft(session.id,row.name,"Spirit",home,InventoryLevel.FULL,4,barcode=row.gtin14,productName=row.name)!!
+            assertIs<BottleIntakeCommitResult.Accepted>(repo.acceptBottleIntakeDraft(session.id,draft.id,5))
+            val exported=repo.exportHouseholdBundle(6)
+            assertTrue(exported.contains("User reference catalogue"))
+            assertTrue(exported.contains("https://example.test/source"))
+            assertFalse(exported.contains("BC Data Catalogue"))
+            assertFailsWith<IllegalArgumentException> {repo.validateReferenceProducts(ReferenceProductCodec.encode(custom.copy(records=listOf(row.copy(imageSha256="../escape")))))}
+        } finally {driver.close()}
+    }
+
+    @Test fun ownedPhotoPrioritySurvivesRescanAndRepositoryRecreation() {
+        val (driver,db)=database()
+        try {
+            val repo=LocalCocktailRepository(db).also {it.initialize(1)}
+            val home=repo.locations().single().id
+            assertTrue(repo.addIngredient("Owned gin","Spirit",InventoryLevel.FULL,home,2,"003105474011"))
+            val owned=repo.localProductForBarcode("003105474011")!!
+            assertFalse(owned.hasUserPhoto)
+            // Existing household image metadata; lookup must not copy it into a new OCR draft.
+            val photo=java.io.ByteArrayOutputStream().also { javax.imageio.ImageIO.write(java.awt.image.BufferedImage(2,2,java.awt.image.BufferedImage.TYPE_INT_RGB),"jpg",it) }.toByteArray()
+            val hash=java.security.MessageDigest.getInstance("SHA-256").digest(photo).joinToString("") { "%02x".format(it) }
+            db.householdQueries.updateProductPhoto("image/jpeg",photo,hash,owned.productId!!)
+            val before=repo.exportHouseholdBundle(3)
+            assertTrue(repo.localProductForBarcode("00003105474011")!!.hasUserPhoto)
+            assertTrue(LocalCocktailRepository(db).localProductForBarcode("003105474011")!!.hasUserPhoto)
+            assertEquals(before,repo.exportHouseholdBundle(3))
+            val session=repo.startBottleIntakeSession(home,InventoryLevel.FULL,4)
+            val draft=repo.addBottleIntakeDraft(session.id,"Owned gin","Spirit",home,InventoryLevel.FULL,5,barcode="003105474011")!!
+            assertNull(draft.photoData)
+            assertTrue(repo.localProductForBarcode(draft.barcode!!)!!.hasUserPhoto)
+        } finally {driver.close()}
+    }
+
+    @Test fun importedTimestampRequiresARealCalendarDateAndOffset() {
+        for (value in listOf("00000000000000000000", "2026-02-30T00:00:00Z", "2026-11-15T24:00:00Z", "2026-11-15T00:00:00", "2026-11-15T00:00:00+18:01")) assertFalse(validReferenceTimestamp(value))
+        for (value in listOf("2024-02-29T00:00:00Z", "2026-11-15T18:44:18.083597+00:00", "2026-11-15T00:00:00-08:00")) assertTrue(validReferenceTimestamp(value))
+    }
+
+    @Test fun supplementalConflictsPersistAtomicallyWithoutChangingHousehold() {
+        val (driver, db) = database()
+        try {
+            val repo = LocalCocktailRepository(db).also { it.initialize(10) }
+            repo.installReferenceProducts(text)
+            val before = repo.exportHouseholdBundle(20)
+            val row = pack.records.first { it.lookupEligible && it.abv != null }
+            val changed = row.copy(abv = null, csvAbv = "40", websiteAbv = "41", websiteFetchedAt = "2026-11-15T00:00:00Z")
+            val update = pack.copy(revision = 2, supplementalSourceSha256 = "a".repeat(64), supplementalNotice = "Supplemental website ABV is private user-supplied evidence. The CSV licence attribution does not grant rights to supplemental website content.",
+                records = pack.records.map { if (it.recordId == row.recordId) changed else it })
+            val encoded = ReferenceProductCodec.encode(update)
+            assertEquals(1, repo.validateReferenceProducts(encoded).schemaVersion)
+            assertEquals(before, repo.exportHouseholdBundle(20))
+            assertEquals(8224, repo.installReferenceProducts(encoded))
+            assertEquals(0, repo.installReferenceProducts(encoded))
+            val restored = repo.referenceProductForBarcode(row.gtin14!!)!!.product
+            assertTrue(restored.abvConflict)
+            assertEquals("40", restored.csvAbv)
+            assertEquals("41", restored.websiteAbv)
+            assertNull(repo.localProductForBarcode(row.gtin14)!!.abvPercent)
+            assertTrue(repo.localProductForBarcode(row.gtin14)!!.referenceSource!!.contains("ABV needs verification"))
+            assertEquals(before, repo.exportHouseholdBundle(20))
+            val invalid = update.copy(revision = 3, records = update.records.map { if (it.recordId == row.recordId) it.copy(abv = "41") else it })
+            assertFailsWith<IllegalArgumentException> { repo.installReferenceProducts(ReferenceProductCodec.encode(invalid)) }
+            assertEquals(restored, repo.referenceProductForBarcode(row.gtin14)!!.product)
+        } finally { driver.close() }
+    }
+
     @Test fun exactSnapshotSeedsOnlyReferencesAndSurvivesReopen() {
         val (driver, db) = database()
         val repo = LocalCocktailRepository(db).also { it.initialize(10) }

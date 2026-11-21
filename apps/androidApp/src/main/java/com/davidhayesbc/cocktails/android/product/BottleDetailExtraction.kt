@@ -34,6 +34,7 @@ internal data class BottleFactEvidence(
     /** Retain explicit packaging for identity/conflict checks after display-name normalization. */
     val originalProductName: String? = null,
     val fromLabelPhoto: Boolean = false,
+    val origin: BottleFactOrigin? = null,
 )
 
 internal enum class BottleExtractionMethod {
@@ -176,7 +177,7 @@ internal class OllamaCloudBottleDetailExtractor(
             ?: return BottleProviderCall(BottleDetailExtractionResult.SetupRequired)
         return when (val response = transport.chat(safeModel, key, buildOllamaRequest(
             safeModel,
-            sourceText,
+            pipelinePromptContext(page.priorBottleEvidence) + sourceText,
             structuredIdentity?.productName,
         ))) {
             is OllamaCloudHttpResponse.Failure -> BottleProviderCall(response.status.toExtractionFailure(), response.status.takeIf { it in 100..599 })

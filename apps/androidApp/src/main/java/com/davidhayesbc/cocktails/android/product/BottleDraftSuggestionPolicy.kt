@@ -16,13 +16,14 @@ internal fun mergeBottleSuggestionFields(
     editedFields: Set<BottleDraftField>,
     suggestedQuantity: String = "",
     suggestedAbvPercent: String = "",
+    conflictingFields: Set<BottleFactField> = emptySet(),
 ): BottleDraftSuggestionFields = BottleDraftSuggestionFields(
-    ingredientName = if (
+    ingredientName = if (BottleFactField.PRODUCT_NAME in conflictingFields && BottleDraftField.INGREDIENT_NAME !in editedFields) "Unidentified bottle" else if (
         BottleDraftField.INGREDIENT_NAME !in editedFields &&
         (current.ingredientName.isBlank() || current.ingredientName == "Unidentified bottle")
     ) suggestedName.ifBlank { current.ingredientName } else current.ingredientName,
-    productName = if (BottleDraftField.PRODUCT_NAME !in editedFields) current.productName.ifBlank { suggestedName } else current.productName,
-    brand = if (BottleDraftField.BRAND !in editedFields) current.brand.ifBlank { suggestedBrand } else current.brand,
-    quantity = if (BottleDraftField.QUANTITY !in editedFields) current.quantity.ifBlank { suggestedQuantity } else current.quantity,
-    abvPercent = if (BottleDraftField.ABV_PERCENT !in editedFields) current.abvPercent.ifBlank { suggestedAbvPercent } else current.abvPercent,
+    productName = if (BottleFactField.PRODUCT_NAME in conflictingFields && BottleDraftField.PRODUCT_NAME !in editedFields) "" else if (BottleDraftField.PRODUCT_NAME !in editedFields) current.productName.ifBlank { suggestedName } else current.productName,
+    brand = if (BottleFactField.BRAND in conflictingFields && BottleDraftField.BRAND !in editedFields) "" else if (BottleDraftField.BRAND !in editedFields) current.brand.ifBlank { suggestedBrand } else current.brand,
+    quantity = if (BottleFactField.QUANTITY in conflictingFields && BottleDraftField.QUANTITY !in editedFields) "" else if (BottleDraftField.QUANTITY !in editedFields) current.quantity.ifBlank { suggestedQuantity } else current.quantity,
+    abvPercent = if (BottleFactField.ABV_PERCENT in conflictingFields && BottleDraftField.ABV_PERCENT !in editedFields) "" else if (BottleDraftField.ABV_PERCENT !in editedFields) current.abvPercent.ifBlank { suggestedAbvPercent } else current.abvPercent,
 )

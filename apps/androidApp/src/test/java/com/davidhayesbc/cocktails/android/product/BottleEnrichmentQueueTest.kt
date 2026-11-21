@@ -16,6 +16,40 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 class BottleEnrichmentQueueTest {
+    @Test fun localHitSurvivesRestartAndRepeatedPreparationWithoutProviderWork() {
+        val storage = MemoryStorage()
+        val queue = BottleEnrichmentQueue(storage)
+        val first = queue.prepareScannedDraft("session", "draft", true, 1)!!
+        assertEquals(BottleEnrichmentStatus.READY_FOR_REVIEW, first.status)
+        assertFalse(first.labelCaptureRequired)
+        assertNull(first.attemptToken)
+        assertEquals(BottleProviderOutcome.SKIPPED_DETERMINISTIC, first.webOutcome)
+        assertEquals(BottleProviderOutcome.SKIPPED_DETERMINISTIC, first.aiOutcome)
+        val restored = BottleEnrichmentQueue(storage)
+        assertEquals(listOf(first), restored.recoverInterrupted())
+        assertEquals(first, restored.prepareScannedDraft("session", "draft", true, 2))
+        assertEquals(first, restored.prepareScannedDraft("session", "draft", false, 3))
+        assertNull(restored.prepareScannedDraft("different-session", "draft", true, 4))
+        assertNull(restored.beginQueued("session", "draft", BottleEnrichmentOperation.FIRECRAWL_SEARCH, "not-an-attempt", 5))
+        assertEquals(listOf(first), restored.jobs())
+        // Only an explicit reprocess request can move a local review into provider work.
+        assertEquals(BottleEnrichmentStatus.QUEUED, restored.reprocessIfIdle("session", "draft", 6)!!.status)
+    }
+
+    @Test fun missingLocalMatchKeepsCaptureAndFallbackAttemptAcrossRestart() {
+        val storage = MemoryStorage()
+        val first = BottleEnrichmentQueue(storage).prepareScannedDraft("session", "draft", false, 1)!!
+        assertTrue(first.labelCaptureRequired)
+        assertEquals(BottleEnrichmentStatus.QUEUED, first.status)
+        val restored = BottleEnrichmentQueue(storage)
+        assertEquals(first, restored.prepareScannedDraft("session", "draft", false, 2))
+        assertEquals(listOf(first), restored.recoverInterrupted())
+        assertTrue(restored.completeLabelCapture("draft", 3))
+        assertFalse(restored.status("draft")!!.labelCaptureRequired)
+        assertEquals(first.attemptToken, restored.status("draft")!!.attemptToken)
+        assertTrue(restored.beginQueued("session", "draft", BottleEnrichmentOperation.FIRECRAWL_SEARCH, first.attemptToken!!, 4) != null)
+    }
+
     @Test
     fun concurrentReprocessTapsCreateOnlyOneNewAttemptAndFenceOldResults() {
         val storage = MemoryStorage()

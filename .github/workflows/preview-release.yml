@@ -124,8 +124,17 @@ jobs:
         shell: bash
         run: echo "COCKTAILS_VERSION_NAME=0.1.0-preview.${GITHUB_RUN_NUMBER}+${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
-      - name: Run checks and build the exact commit
-        run: ./gradlew --no-daemon :shared:core:compileCommonMainKotlinMetadata :shared:core:testDebugUnitTest :apps:androidApp:compileDebugAndroidTestKotlin :apps:androidApp:lintDebug :shared:core:lintDebug :apps:androidApp:assembleDebug
+      - name: Run checks on the exact commit
+        run: ./gradlew --no-daemon :shared:core:compileCommonMainKotlinMetadata :shared:core:testDebugUnitTest :apps:androidApp:testDebugUnitTest :apps:androidApp:compileDebugAndroidTestKotlin :apps:androidApp:lintDebug :shared:core:lintDebug
+
+      - name: Build release without barcode catalogue assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_RUN_NUMBER" =~ ^[0-9]+$ && "$GITHUB_RUN_NUMBER" -gt 29 ]]
+          mv catalog-packs/bc-products "$RUNNER_TEMP/bc-products"
+          trap 'mv "$RUNNER_TEMP/bc-products" catalog-packs/bc-products' EXIT
+          ./gradlew --no-daemon :apps:androidApp:assembleRelease
 
       - name: Sign and verify APK with the persistent preview certificate
         shell: bash
@@ -148,8 +157,8 @@ jobs:
           unset COCKTAILS_PREVIEW_KEYSTORE_BASE64
 
           build_tools="$ANDROID_HOME/build-tools/36.0.0"
-          "$build_tools/zipalign" -f -p 4 \
-            apps/androidApp/build/outputs/apk/debug/androidApp-debug.apk "$aligned_apk"
+          "$build_tools/zipalign" -f -P 16 4 \
+            apps/androidApp/build/outputs/apk/release/androidApp-release-unsigned.apk "$aligned_apk"
           "$build_tools/apksigner" sign \
             --ks "$keystore" \
             --ks-type PKCS12 \
@@ -166,11 +175,23 @@ jobs:
             -keystore "$keystore" \
             -storetype PKCS12 \
             -storepass:env COCKTAILS_PREVIEW_KEYSTORE_PASSWORD 2>/dev/null | sha256sum | awk '{print $1}')"
-          if [[ -z "$apk_cert" || "$apk_cert" != "$keystore_cert" ]]; then
+          expected_cert=205fc8cc7711c712e0be3eb5f45b0d3d1398d655821e44098df45c1b2ebf20e3
+          if [[ "$apk_cert" != "$expected_cert" || "$keystore_cert" != "$expected_cert" ]]; then
             echo '::error::The APK signer certificate did not match the configured preview keystore.'
             exit 1
           fi
 
+          "$build_tools/aapt" dump badging "$signed_apk" > "$RUNNER_TEMP/cocktails-release-badging.txt"
+          grep -F "package: name='com.davidhayesbc.cocktails' versionCode='$GITHUB_RUN_NUMBER' " "$RUNNER_TEMP/cocktails-release-badging.txt"
+          if grep -q '^application-debuggable' "$RUNNER_TEMP/cocktails-release-badging.txt"; then
+            echo '::error::Release APK is debuggable.'
+            exit 1
+          fi
+          unzip -Z1 "$signed_apk" > "$RUNNER_TEMP/cocktails-release-files.txt"
+          if grep -Ei '(^assets/.*(bc-products|private-preview|reference-images|user-pack)|[.](p12|jks|keystore)$)' "$RUNNER_TEMP/cocktails-release-files.txt"; then
+            echo '::error::Unexpected catalogue or signing material in release APK.'
+            exit 1
+          fi
           cp "$signed_apk" "$output_dir/CocktAIls-preview.apk"
           sha256sum "$output_dir/CocktAIls-preview.apk" \
             | awk '{print $1 "  CocktAIls-preview.apk"}' > "$output_dir/SHA256SUMS.txt"
@@ -180,7 +201,7 @@ jobs:
             echo "Package: com.davidhayesbc.cocktails"
             echo 'Minimum Android version: API 26 (Android 8.0)'
             echo "Signing certificate SHA-256: $apk_cert"
-            echo 'This is a debug-build preview for sideload testing, not a production or Play Store release.'
+            echo 'This release build is distributed as a sideloadable preview.'
             echo 'Back up or export household data before installing this first persistently signed preview. It must replace an APK installed with a different debug certificate; future previews signed with this same key can update in place.'
           } > "$output_dir/RELEASE_NOTES.md"
 
@@ -260,6 +281,12 @@ jobs:
           mkdir -p "$existing_release"
           release_json="$RUNNER_TEMP/release-verification.json"
           release_error="$RUNNER_TEMP/release-api-error.txt"
+          verify_anonymous_download() {
+            local public_apk
+            public_apk="$(python3 -c 'import json,sys; print(next(a["browser_download_url"] for a in json.load(sys.stdin)["assets"] if a["name"] == "CocktAIls-preview.apk"))' < "$release_json")"
+            curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' "$public_apk" --output "$RUNNER_TEMP/anonymous-preview.apk"
+            cmp "$RUNNER_TEMP/anonymous-preview.apk" "$1"
+          }
           if gh api "$api/releases/tags/$RELEASE_TAG" > "$release_json" 2> "$release_error"; then
             release_state="$(python3 .github/scripts/preview_release_gate.py 200 "$GITHUB_SHA" < "$release_json")"
           elif grep -q 'HTTP 404' "$release_error"; then
@@ -288,6 +315,7 @@ jobs:
               echo '::error::Existing release APK signature or source commit does not match the freshly verified preview.'
               exit 1
             }
+            verify_anonymous_download "$existing_release/CocktAIls-preview.apk"
             echo "Verified existing preview release without replacing assets: $(python3 -c 'import json,sys; print(json.load(sys.stdin)["url"])' <<< "$release_state")"
             exit 0
           fi
@@ -308,6 +336,7 @@ jobs:
             echo '::error::Published release metadata does not match this commit or lacks required assets.'
             exit 1
           }
+          verify_anonymous_download "$RUNNER_TEMP/preview-release/CocktAIls-preview.apk"
           echo "Verified public prerelease URL: $(python3 -c 'import json,sys; print(json.load(sys.stdin)["url"])' <<< "$release_state")"
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             --pattern 'CocktAIls-preview.apk' --pattern 'SHA256SUMS.txt' --pattern 'RELEASE_NOTES.md' \

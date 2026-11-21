@@ -687,7 +687,7 @@ internal class DetailedBottleLookupCaptureStore(
         private val SAFE_GENERATION_FINISH_REASONS = setOf("END_OF_SEQUENCE", "TOKEN_LIMIT", "CANCELLED", "DECODE_ERROR", "UNKNOWN")
         private val LOCK = Any()
         private val PROCESS_SESSION_ID = UUID.randomUUID().toString()
-        private val SAFE_DECISIONS = setOf("NO_USABLE_SOURCE", "SELECTED_EXACT_MATCH", "SELECTED_FALLBACK", "NO_SEARCH_RESULTS")
+        private val SAFE_DECISIONS = setOf("NO_USABLE_SOURCE", "SELECTED_EXACT_MATCH", "SELECTED_FALLBACK", "NO_SEARCH_RESULTS", "VERIFIED_RICHER_SOURCE_SELECTED")
         private val SAFE_BARCODE_DECISIONS = setOf("VERIFIED", "STRUCTURED_PRODUCT_MATCH", "MISSING", "MISMATCH", "AMBIGUOUS", "INVALID_TARGET")
         private val SAFE_IDENTITY_STATUSES = StructuredIdentityStatus.entries.mapTo(mutableSetOf()) { it.debugCode }
         private val SAFE_FINISH_STATES = setOf("COMPLETE", "PARTIAL", "INTERRUPTED", "FAILED", "CANCELLED")
