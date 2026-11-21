@@ -999,6 +999,32 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             )
         }
 
+    fun referenceProductForBarcode(barcode: String): ReferenceProductMatch? = ReferenceProductStore(database).lookup(barcode)
+
+    /** Fill only missing fields after the user reviews a match. Recheck the current row inside the transaction. */
+    fun applyReferenceToSavedBottle(inventoryId: String, reviewed: ReferenceProductMatch): Boolean =
+        database.transactionWithResult {
+            val inventory = queries.selectInventoryById(inventoryId).executeAsOneOrNull()
+                ?: return@transactionWithResult false
+            val productId = inventory.product_id ?: return@transactionWithResult false
+            val product = queries.selectProductById(productId).executeAsOneOrNull()
+                ?: return@transactionWithResult false
+            val barcode = product.barcode ?: return@transactionWithResult false
+            if (referenceProductForBarcode(barcode) != reviewed) return@transactionWithResult false
+            val reference = reviewed.product
+            if (product.product_name.isBlank()) {
+                queries.updateProduct(product.ingredient_id, product.brand, reference.name, barcode, productId)
+            }
+            val quantity = product.bottle_quantity?.takeUnless(String::isBlank) ?: reference.quantity ?: product.bottle_quantity
+            val abv = product.abv_percent?.takeUnless(String::isBlank) ?: reference.abv?.let { "$it%" } ?: product.abv_percent
+            if (quantity != product.bottle_quantity || abv != product.abv_percent) {
+                queries.updateProductPackageFacts(quantity, abv, productId)
+            }
+            true
+        }
+
+    fun validateReferenceProducts(text: String): ReferenceProductPack = ReferenceProductStore(database).validate(text)
+
     fun installReferenceProducts(text: String): Int = ReferenceProductStore(database).install(text)
 
     fun referenceCatalogueIsAtLeast(sourceId: String, date: String, revision: Long): Boolean {
@@ -1019,7 +1045,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             val row = match.product
             LocalProductBarcodeMatch(null, null, row.sourceClass, if (row.category == "Spirits") "Spirit" else row.category,
                 null, row.name, barcode, row.quantity, row.abv?.let { "$it%" },
-                "BC product reference · ${match.source.sourceDate} · ${match.source.attribution}")
+                "${match.source.providerLabel} · ${match.source.sourceDate} · ${match.source.attribution}" + (row.abvReviewNote?.let { " · $it" } ?: ""))
         }
         return LocalProductBarcodeMatch(
             productId = product.product_id,
@@ -1031,6 +1057,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             barcode = product.barcode,
             quantity = product.bottle_quantity,
             abvPercent = product.abv_percent,
+            hasUserPhoto = queries.selectProductById(product.product_id).executeAsOne().photo_data != null,
         )
     }
 
@@ -1358,7 +1385,7 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
                     "quantity" -> match.product.quantity
                     else -> match.product.abv?.let { "$it%" }
                 } }.map { (field, value) -> ProductFactSourceDraft(
-                    "BC Data Catalogue", "Versioned reference data", match.source.sourceDate,
+                    match.source.providerLabel, "Versioned reference data", match.source.sourceDate,
                     match.source.sourceUrl, field, value!!,
                     "SKU ${match.product.recordId}; raw UPC ${match.product.rawUpc}; GTIN ${match.product.gtin14}; ${match.source.sourceDate}; $field: $value; ${match.source.attribution}",
                     match.source.licenseTitle,

@@ -14,6 +14,7 @@ import kotlinx.serialization.json.put
 internal enum class BottleLookupDebugStage {
     QUEUE_WAIT,
     LOCAL_MATCH,
+    REFERENCE_LOOKUP,
     OPEN_FOOD_FACTS,
     FIRECRAWL_SEARCH,
     SOURCE_SELECTION,
@@ -126,6 +127,8 @@ internal class BottleLookupDebugReport(
                 safeEvent.provider in setOf("ON_DEVICE", "OLLAMA_CLOUD", "On-device Qwen3", "Ollama Cloud")
             ) aiProviderWasMeasured = true
         }
+        if (safeEvent.stage in setOf(BottleLookupDebugStage.LOCAL_MODEL_LOADING, BottleLookupDebugStage.LOCAL_PROMPT_SETUP,
+                BottleLookupDebugStage.LOCAL_GENERATION) && safeEvent.durationMillis != null) aiProviderWasMeasured = true
         events += safeEvent
         while (events.size > MAX_EVENTS) events.removeAt(0)
     }
@@ -302,8 +305,10 @@ internal class BottleLookupDebugReport(
             "READY", "COMPLETE", "FAILED", "REJECTED", "TIMEOUT", "INVALID_MODEL", "INVALID_SOURCE_URL",
             "LOCAL_RUNTIME_ERROR", "LOCAL_MODEL_ERROR", "DETERMINISTIC_COMPLETE", "DETERMINISTIC_PARTIAL",
             "MODEL_AND_SOURCE_FACTS_COMPLETE", "DETERMINISTIC_FALLBACK_AFTER_MODEL",
+            "NO_SUPPORTED_FIELDS", "SOURCE_CONFLICT_REQUIRES_REVIEW", "VERIFIED_SOURCE_RETAINED", "VERIFIED_SOURCE_NOT_RICHER", "UNUSABLE_SOURCE",
         )
         private val REASONS = setOf(
+            "BOT_CHALLENGE_PAGE", "VERIFIED_SOURCE_FACT_CONFLICT", "VERIFIED_CORE_FACTS_COMPLETE", "VERIFIED_SOURCE_INCOMPLETE",
             "HIT_TEXT_MISSING_BARCODE", "GENERIC_BARCODE_LOOKUP", "NO_EXACT_CODE_IN_PAGE", "TARGET_BARCODE_MISMATCH",
             "MULTIPLE_BARCODES_IN_PAGE", "IDENTITY_EVIDENCE_MISSING", "PRODUCT_NAME_NOT_TIED_TO_BARCODE",
             "EVIDENCE_NOT_IN_SOURCE", "VALUE_NOT_IN_EVIDENCE", "CONFLICTING_FIELD_VALUES", "INVALID_FACT_SHAPE",

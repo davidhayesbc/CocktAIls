@@ -115,6 +115,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.core.content.FileProvider
+import com.davidhayesbc.cocktails.core.data.ReferenceProductMatch
 import com.davidhayesbc.cocktails.core.data.LocalCocktailRepository
 import com.davidhayesbc.cocktails.core.data.CatalogInstallResult
 import com.davidhayesbc.cocktails.core.matching.HomeLocationArea
@@ -248,6 +249,7 @@ import com.davidhayesbc.cocktails.android.product.PendingBottleEvidenceStore
 import com.davidhayesbc.cocktails.android.product.SharedPreferencesPendingBottleEvidenceStorage
 import com.davidhayesbc.cocktails.android.product.BottleDraftField
 import com.davidhayesbc.cocktails.android.product.BottleDraftSuggestionFields
+import com.davidhayesbc.cocktails.android.product.mayRestoreBottleEvidence
 import com.davidhayesbc.cocktails.android.product.mergeBottleSuggestionFields
 import com.davidhayesbc.cocktails.android.product.preserveEditedBottleFields
 import com.davidhayesbc.cocktails.android.product.isValidOllamaModelIdentifier
@@ -375,6 +377,8 @@ internal data class BottleWebSearchState(
     val extractedSuggestions: BottleDetailSuggestions? = null,
     val openFoodFactsResult: OpenFoodFactsLookupResult? = null,
     val localMatch: Boolean = false,
+    val referenceProduct: com.davidhayesbc.cocktails.core.data.ReferenceProduct? = null,
+    val ownedProductHasPhoto: Boolean = false,
     val automatedScan: Boolean = false,
     val userEditedFields: Set<BottleDraftField> = emptySet(),
     val automaticStage: String? = null,
@@ -662,9 +666,10 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
             session.drafts.forEach { draft ->
                 val draftBarcode = draft.barcode
                 val prior = restored[draft.id]
+                val ownedMatch = draft.barcode?.let(repository::localProductForBarcode)?.productId != null
                 val job = pendingBottleEnrichmentJobs[draft.id]
                 val savedSuggestions = pendingBottleEvidenceStore.read(draft.id)?.takeIf { saved ->
-                    (job == null || job.status == BottleEnrichmentStatus.READY_FOR_REVIEW || job.status == BottleEnrichmentStatus.REVIEWED) &&
+                    mayRestoreBottleEvidence(job) &&
                     saved.targetBarcode?.let { normalizeGtinForLookup(it) } == draftBarcode?.let(::normalizeGtinForLookup) &&
                         draftBarcode != null && saved.identityEvidence?.let { sourceMentionsScannedBarcode(draftBarcode, it) } == true
                 }
@@ -676,9 +681,11 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                         automatedScan = true,
                         userEditedFields = preserveEditedBottleFields(
                             prior?.userEditedFields.orEmpty(),
-                            pendingBottleEvidenceStore.editedFields(draft.id),
+                            pendingBottleEvidenceStore.editedFields(draft.id) + if (ownedMatch) BottleDraftField.entries.toSet() else emptySet(),
                         ),
                         localMatch = draftBarcode?.let { repository.localProductForBarcode(it) } != null,
+                        referenceProduct = draftBarcode?.let { repository.referenceProductForBarcode(it)?.product },
+                        ownedProductHasPhoto = draftBarcode?.let { repository.localProductForBarcode(it)?.hasUserPhoto } == true,
                         labelEvidenceVerified = label != null,
                         barcodeVerifiedInPage = savedSuggestions?.targetBarcode != null || prior?.barcodeVerifiedInPage == true,
                         barcodeVerifiedByStructuredProduct = savedSuggestions?.identityEvidence?.startsWith("Structured product fields:") == true || prior?.barcodeVerifiedByStructuredProduct == true,
@@ -687,6 +694,7 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                         message = when {
                             label != null && label.facts.isEmpty() -> "No supported fields were read from this label. Check the photo and enter details manually, or reprocess a clearer photo."
                             label != null -> "Label text was read on this device. Check each suggestion against the photo; conflicting fields need manual review."
+                            job?.resultCode == "LOCAL_MATCH_REQUIRES_VERIFICATION" -> "Local match: verify these details before adding the bottle. " + repository.localProductForBarcode(draft.barcode.orEmpty())?.referenceSource.orEmpty()
                             savedSuggestions != null -> "Restored the verified source and suggestions for this unaccepted bottle. Review them; no provider request restarted."
                             job?.labelCaptureRequired == true -> "Capture this bottle's label or skip the photo. Lookup runs separately while you do that."
                             job?.status == BottleEnrichmentStatus.CAPTURE_REQUIRED -> "Capture this bottle's label or skip the photo before lookup is queued."
@@ -928,6 +936,10 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
         }
     }
     var stagedBundle by remember { mutableStateOf<HouseholdBundle?>(null) }
+    val referenceAssets = remember(context) { com.davidhayesbc.cocktails.android.product.UserReferencePack(context.cacheDir, File(context.filesDir, "reference-images")) }
+    var stagedReferenceArchive by remember { mutableStateOf<com.davidhayesbc.cocktails.android.product.PreparedReferencePack?>(null) }
+    var stagedReferenceText by remember { mutableStateOf<String?>(null) }
+    var referenceImportSummary by remember { mutableStateOf("") }
     var stagedPreview by remember { mutableStateOf<HouseholdImportPreview?>(null) }
     var stagedRecipeTable by remember { mutableStateOf<RecipeImportTable?>(null) }
     var stagedRecipeFileName by remember { mutableStateOf("") }
@@ -1623,6 +1635,59 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
         }
     }
 
+    fun discardReferencePreview() {
+        val old = stagedReferenceArchive
+        stagedReferenceArchive = null; stagedReferenceText = null
+        coroutineScope.launch(Dispatchers.IO) { old?.discard() }
+    }
+    val referenceImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) coroutineScope.launch {
+            discardReferencePreview()
+            runCatching {
+                val result = withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.buffered()?.use { input ->
+                        input.mark(4); val a=input.read(); val b=input.read(); input.reset()
+                        if (a == 80 && b == 75) {
+                            val prepared = referenceAssets.prepare(input, repository::validateReferenceProducts) { file ->
+                                val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                                BitmapFactory.decodeFile(file.absolutePath, options)
+                                val expected = when(file.extension) { "webp" -> "image/webp"; "jpg" -> "image/jpeg"; else -> "image/png" }
+                                options.outMimeType == expected && options.outWidth in 1..4096 && options.outHeight in 1..4096 && options.outWidth.toLong()*options.outHeight <= 16_000_000
+                            }
+                            Triple(prepared.text, prepared.pack, prepared)
+                        } else {
+                            val output = ByteArrayOutputStream(); val buffer = ByteArray(8192)
+                            while (true) { val n=input.read(buffer); if(n<0) break; require(output.size()+n<=10_000_000); output.write(buffer,0,n) }
+                            val text = output.toByteArray().decodeToString(throwOnInvalidSequence = true)
+                            val pack = repository.validateReferenceProducts(text)
+                            require(pack.records.all { it.imageSha256 == null || referenceAssets.image(it.imageSha256,it.imageMediaType) != null })
+                            Triple(text, pack, null)
+                        }
+                    } ?: error("File unavailable")
+                }
+                val pack = result.second
+                referenceImportSummary = "${pack.records.size} reference products; ${pack.records.count { it.lookupEligible }} eligible matches; ${pack.records.count { it.abvConflict }} ABV disagreements; ${pack.records.count { it.imageSha256 != null }} product images; ${pack.records.count { it.referenceDescription != null }} descriptions. Source ${pack.sourceDate}, revision ${pack.revision}. Only reference data is replaced; your bottles, photos and edits are unchanged. User-provided content is kept on this device; no redistribution rights are asserted."
+                stagedReferenceArchive = result.third; stagedReferenceText = result.first
+            }.onFailure { shareMessage = "Reference import could not be validated. No data changed." }
+        }
+    }
+    if (stagedReferenceText != null) AlertDialog(
+        onDismissRequest = ::discardReferencePreview,
+        title = { Text("Import reference catalogue?") }, text = { Text(referenceImportSummary) },
+        confirmButton = { TextButton(onClick = {
+            val text = stagedReferenceText ?: return@TextButton
+            val archive = stagedReferenceArchive
+            stagedReferenceArchive = null; stagedReferenceText = null
+            coroutineScope.launch {
+                runCatching { withContext(Dispatchers.IO) {
+                    if (archive != null) referenceAssets.install(archive, repository::installReferenceProducts) else referenceAssets.installText(text, repository::installReferenceProducts)
+                } }.onSuccess { shareMessage = if(it==0) "This reference catalogue is already installed." else "Imported $it references. Your bar data is unchanged." }
+                    .onFailure { shareMessage = "Reference import was rejected. Your bar data is unchanged." }
+            }
+        }) { Text("Import references") } },
+        dismissButton = { TextButton(onClick = ::discardReferencePreview) { Text("Cancel") } },
+    )
+
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) {
             shareMessage = "Import canceled. Your data was not changed."
@@ -2054,6 +2119,8 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
         bottleIntakeRoute = when {
             reviewQueue -> BottleIntakeRoute.QUEUE
             pendingBottleLabelDraftId != null -> BottleIntakeRoute.CAPTURE_LABEL
+            session.drafts.any { it.id == activeScannedDraftId &&
+                bottleEnrichmentQueue.status(it.id)?.resultCode == "LOCAL_MATCH_REQUIRES_VERIFICATION" } -> BottleIntakeRoute.REVIEW
             session.drafts.isEmpty() -> BottleIntakeRoute.SETUP
             else -> BottleIntakeRoute.SCANNING
         }
@@ -2474,6 +2541,10 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                     )
                     refreshPantry()
                 },
+                onFindReference = repository::referenceProductForBarcode,
+                onApplyReference = { entry, match ->
+                    repository.applyReferenceToSavedBottle(entry.inventoryId, match).also { if (it) refreshPantry() }
+                },
                 onCategorySaved = { entry, value ->
                     repository.updateBottleDrinkCategory(entry.inventoryId, value, System.currentTimeMillis()).also { if (it) refreshPantry() }
                 },
@@ -2588,6 +2659,7 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                 barExportPending = barExportPending,
                 barExportMessage = barExportMessage,
                 onImport = { importLauncher.launch(arrayOf("application/json", "text/json", "*/*")) },
+                onImportReferences = { referenceImportLauncher.launch(arrayOf("application/json", "application/zip", "application/octet-stream")) },
                 onImportRecipes = { recipeImportLauncher.launch(arrayOf("text/csv", "application/json", "text/*", "*/*")) },
                 shareMessage = shareMessage,
                 onOpenLocationSettings = { showLocationSettings = true },
@@ -2897,7 +2969,28 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                     )
                     showBottleScanner = false
                     bottleIntakeSession = repository.openBottleIntakeSession()
-                    if (draft != null) {
+                    if (draft != null && local != null) {
+                        // Persist reference provenance before exposing editable verification. No work is scheduled.
+                        repository.referenceProductForBarcode(scanned)?.takeIf { local.productId == null }?.let { match ->
+                            pendingBottleEvidenceStore.save(draft.id, com.davidhayesbc.cocktails.android.product.referenceBottleEvidence(match, scanned))
+                        }
+                        val review = bottleEnrichmentQueue.prepareScannedDraft(draft.sessionId, draft.id, true, System.currentTimeMillis())
+                        activeScannedDraftId = draft.id
+                        bottleIntakeRoute = BottleIntakeRoute.REVIEW
+                        context.getSharedPreferences("cocktails_local_scan_review", Context.MODE_PRIVATE)
+                            .edit().putString("active_draft_id", draft.id).apply()
+                        setPendingBottleLabelDraftId(null)
+                        refreshPendingBottleEnrichmentJobs()
+                        bottleWebSearchStates = bottleWebSearchStates + (draft.id to BottleWebSearchState(
+                            automatedScan = true, localMatch = true,
+                            referenceProduct = repository.referenceProductForBarcode(scanned)?.product,
+                            ownedProductHasPhoto = local.hasUserPhoto,
+                            userEditedFields = if (local.productId != null) BottleDraftField.entries.toSet() else emptySet(),
+                            extractedSuggestions = pendingBottleEvidenceStore.read(draft.id),
+                            message = if (review != null) "Local match found. Verify or edit these details before adding the bottle. No online lookup has started. " + local.referenceSource.orEmpty()
+                                else "The bottle draft is saved. Verify its details; the review status could not be saved. No online lookup has started.",
+                        ))
+                    } else if (draft != null) {
                         bottleIntakeRoute = BottleIntakeRoute.CAPTURE_LABEL
                         activeScannedDraftId = null
                         context.getSharedPreferences("cocktails_local_scan_review", Context.MODE_PRIVATE).edit().remove("active_draft_id").apply()
@@ -2905,7 +2998,7 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                         pendingBottleLabelOriginalPhoto = null
                         pendingBottleLabelCropSuggestion = null
                         bottleLabelCaptureMessage = null
-                        val captureQueued = bottleEnrichmentQueue.requireLabel(draft.sessionId, draft.id, System.currentTimeMillis()) != null
+                        val captureQueued = bottleEnrichmentQueue.prepareScannedDraft(draft.sessionId, draft.id, false, System.currentTimeMillis()) != null
                         setPendingBottleLabelDraftId(draft.id)
                         refreshPendingBottleEnrichmentJobs()
                         bottleWebSearchStates = bottleWebSearchStates + (draft.id to BottleWebSearchState(
@@ -4040,6 +4133,7 @@ private fun BottleReviewCard(
                 editedFields = webSearchState.userEditedFields,
                 suggestedQuantity = suggestions.facts.firstOrNull { it.field == BottleFactField.QUANTITY }?.value.orEmpty(),
                 suggestedAbvPercent = suggestions.facts.firstOrNull { it.field == BottleFactField.ABV_PERCENT }?.value.orEmpty(),
+                conflictingFields = suggestions.fieldRejections.filter { it.reason == BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES }.map { it.field }.toSet(),
             )
             val nextName = merged.ingredientName
             val nextProductName = merged.productName
@@ -4141,6 +4235,7 @@ private fun BottleReviewCard(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            com.davidhayesbc.cocktails.android.ui.UserReferenceContent(webSearchState.referenceProduct, draft.photoData != null || webSearchState.ownedProductHasPhoto)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
                 Box(
                     Modifier.width(112.dp).height(144.dp)
@@ -4369,7 +4464,8 @@ private fun BottleReviewCard(
                             }
                             suggestions.facts.forEach { fact ->
                                 Text("${fact.field.label}: ${fact.value}", style = MaterialTheme.typography.bodyMedium)
-                                Text("${if (fact.fromLabelPhoto) "Label photo · on device" else "Web evidence"}: “${fact.quote}”", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("${if (fact.fromLabelPhoto) "Label photo · on device" else fact.origin?.retrievalProvider ?: "Web evidence"}: “${fact.quote}”", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                fact.origin?.let { Text(it.sourceUrl, style = MaterialTheme.typography.bodySmall) }
                                 if (!webSearchState.automatedScan && canApplyManualSuggestions) {
                                     TextButton(
                                         onClick = {
@@ -4479,6 +4575,7 @@ private fun BottleDraftCard(
                 editedFields = webSearchState.userEditedFields,
                 suggestedQuantity = suggestions.facts.firstOrNull { it.field == BottleFactField.QUANTITY }?.value.orEmpty(),
                 suggestedAbvPercent = suggestions.facts.firstOrNull { it.field == BottleFactField.ABV_PERCENT }?.value.orEmpty(),
+                conflictingFields = suggestions.fieldRejections.filter { it.reason == BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES }.map { it.field }.toSet(),
             )
             val nextName = merged.ingredientName
             val nextProductName = merged.productName
@@ -4736,7 +4833,8 @@ private fun BottleDraftCard(
                     }
                     suggestions.facts.forEach { fact ->
                         Text("${fact.field.label}: ${fact.value}", style = MaterialTheme.typography.bodyMedium)
-                        Text("${if (fact.fromLabelPhoto) "Label photo · on device" else "Web evidence"}: “${fact.quote}”", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${if (fact.fromLabelPhoto) "Label photo · on device" else fact.origin?.retrievalProvider ?: "Web evidence"}: “${fact.quote}”", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        fact.origin?.let { Text(it.sourceUrl, style = MaterialTheme.typography.bodySmall) }
                         when (fact.field) {
                             BottleFactField.PRODUCT_NAME -> if (!webSearchState.automatedScan) OutlinedButton(onClick = {
                                 val acceptedName = fact.value.trim()
@@ -4785,6 +4883,8 @@ private fun MyBarScreen(
     onAddLocation: () -> Unit,
     onLevelSelected: (PantryEntry, InventoryLevel) -> Unit,
     onCategorySaved: (PantryEntry, String) -> Boolean,
+    onFindReference: (String) -> ReferenceProductMatch?,
+    onApplyReference: (PantryEntry, ReferenceProductMatch) -> Boolean,
     onOpenShop: () -> Unit,
 ) {
     var locationMenuExpanded by remember { mutableStateOf(false) }
@@ -4828,7 +4928,7 @@ private fun MyBarScreen(
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(pantry, key = { it.inventoryId }) { entry ->
-                    PantryRow(entry, onLevelSelected, onCategorySaved)
+                    PantryRow(entry, onLevelSelected, onCategorySaved, onFindReference, onApplyReference)
                 }
             }
         }
@@ -4836,7 +4936,49 @@ private fun MyBarScreen(
 }
 
 @Composable
-private fun PantryRow(entry: PantryEntry, onLevelSelected: (PantryEntry, InventoryLevel) -> Unit, onCategorySaved: (PantryEntry, String) -> Boolean) {
+private fun PantryRow(
+    entry: PantryEntry,
+    onLevelSelected: (PantryEntry, InventoryLevel) -> Unit,
+    onCategorySaved: (PantryEntry, String) -> Boolean,
+    onFindReference: (String) -> ReferenceProductMatch?,
+    onApplyReference: (PantryEntry, ReferenceProductMatch) -> Boolean,
+) {
+    var showReference by remember(entry.inventoryId, entry.barcode) { mutableStateOf(false) }
+    var reference by remember(entry.inventoryId, entry.barcode) { mutableStateOf<ReferenceProductMatch?>(null) }
+    var referenceError by remember(entry.inventoryId) { mutableStateOf(false) }
+    if (showReference) {
+        val match = reference
+        val candidate = match?.product
+        val canFill = candidate != null && (entry.productName.isNullOrBlank() ||
+            entry.bottleSize.isNullOrBlank() && candidate.quantity != null ||
+            entry.abvPercent.isNullOrBlank() && candidate.abv != null)
+        AlertDialog(
+            onDismissRequest = { showReference = false },
+            title = { Text("Catalogue lookup") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (candidate == null) {
+                        Text("No match in the installed reference catalogue.")
+                    } else {
+                        Text(candidate.name)
+                        candidate.quantity?.let { Text(it) }
+                        candidate.abv?.let { Text("$it% ABV") }
+                        Text(if (canFill) "Apply fills missing product details. Existing values and photos are kept."
+                            else "This bottle has no missing details that this match can fill.")
+                    }
+                    if (referenceError) Text("The match changed. Close this review and look up the barcode again.")
+                }
+            },
+            confirmButton = {
+                if (match != null && canFill) {
+                    TextButton(onClick = {
+                        if (onApplyReference(entry, match)) showReference = false else referenceError = true
+                    }) { Text("Fill missing details") }
+                }
+            },
+            dismissButton = { TextButton(onClick = { showReference = false }) { Text(if (canFill) "Cancel" else "Close") } },
+        )
+    }
     var editCategory by remember { mutableStateOf(false) }
     var category by remember(entry.inventoryId, entry.drinkCategory) { mutableStateOf(entry.drinkCategory) }
     var categoryError by remember { mutableStateOf(false) }
@@ -4874,6 +5016,13 @@ private fun PantryRow(entry: PantryEntry, onLevelSelected: (PantryEntry, Invento
                     Text(entry.name, style = MaterialTheme.typography.titleMedium)
                     entry.brand?.takeIf(String::isNotBlank)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                     entry.productName?.takeIf { it.isNotBlank() && it != entry.name }?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    entry.barcode?.takeIf(String::isNotBlank)?.let { barcode ->
+                        TextButton(onClick = {
+                            reference = onFindReference(barcode)
+                            referenceError = false
+                            showReference = true
+                        }) { Text("Look up in catalogue") }
+                    }
                     TextButton(onClick = { category = entry.drinkCategory; categoryError = false; editCategory = true },
                         modifier = Modifier.testTag("edit-drink-category-${entry.inventoryId}")) {
                         Text(entry.drinkCategory.ifBlank { "Set drink category" })
@@ -5614,6 +5763,7 @@ private fun HouseholdScreen(
     barExportPending: Boolean,
     barExportMessage: String?,
     onImport: () -> Unit,
+    onImportReferences: () -> Unit,
     onImportRecipes: () -> Unit,
     shareMessage: String?,
     installedAppVersion: InstalledAppVersion,
@@ -5788,6 +5938,7 @@ private fun HouseholdScreen(
         barExportMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("bar-export-message")) }
         Button(onClick = onExport, modifier = Modifier.fillMaxWidth()) { Text("Export household backup") }
         OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth()) { Text("Import household backup") }
+        OutlinedButton(onClick = onImportReferences, modifier = Modifier.fillMaxWidth().testTag("import-reference-catalogue")) { Text("Import reference catalogue") }
         OutlinedButton(onClick = onImportRecipes, modifier = Modifier.fillMaxWidth()) { Text("Import recipes from CSV or JSON") }
         OutlinedButton(onClick = onOpenDiagnostics, modifier = Modifier.fillMaxWidth()) { Text("View or export diagnostics") }
         Text("Import previews never change your data. Each phone can share a backup using Nearby Share, Drive, or another file app.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

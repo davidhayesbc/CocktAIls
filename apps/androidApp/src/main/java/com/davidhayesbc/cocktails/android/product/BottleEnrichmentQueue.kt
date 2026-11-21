@@ -191,6 +191,23 @@ internal class BottleEnrichmentQueue(private val storage: BottleEnrichmentQueueS
         begin(sessionId, draftId, operation, sourceUrl, model, nowMillis, attemptToken)
     }
 
+    /** A local hit is a review task, never pending provider work. Re-entry preserves its state. */
+    fun prepareScannedDraft(sessionId: String, draftId: String, localMatch: Boolean, nowMillis: Long): BottleEnrichmentJob? = synchronized(PROCESS_QUEUE_LOCK) {
+        val existing = status(draftId)
+        if (existing != null) return@synchronized existing.takeIf { it.sessionId == sessionId }
+        if (!localMatch) return@synchronized requireLabel(sessionId, draftId, nowMillis)
+        if (!isSafeJobMetadata(sessionId, draftId, BottleEnrichmentOperation.FIRECRAWL_SEARCH, null, null)) return@synchronized null
+        val job = BottleEnrichmentJob(
+            id = UUID.randomUUID().toString(), sessionId = sessionId, draftId = draftId,
+            operation = BottleEnrichmentOperation.FIRECRAWL_SEARCH,
+            status = BottleEnrichmentStatus.READY_FOR_REVIEW, sourceUrl = null, model = null,
+            resultCode = "LOCAL_MATCH_REQUIRES_VERIFICATION", labelCaptureRequired = false,
+            updatedAtMillis = nowMillis, webOutcome = BottleProviderOutcome.SKIPPED_DETERMINISTIC,
+            aiOutcome = BottleProviderOutcome.SKIPPED_DETERMINISTIC,
+        )
+        job.takeIf { write(jobs() + it) }
+    }
+
     fun requireLabel(sessionId: String, draftId: String, nowMillis: Long): BottleEnrichmentJob? = putState(
         sessionId = sessionId,
         draftId = draftId,

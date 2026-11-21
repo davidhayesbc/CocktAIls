@@ -16,6 +16,18 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DetailedBottleLookupCaptureTest {
+    @Test fun richerSourceSelectionRetainsItsAllowlistedDecision() {
+        val root = Files.createTempDirectory("capture-selection").toFile()
+        try {
+            val store = DetailedBottleLookupDebugSessionStore(root)
+            store.enableDebugMode("preview")
+            val recorder = store.claim("draft", "00000000-0000-0000-0000-000000000903", "3035542002004", "preview", 1, "Qwen", allowNextLookup = true)!!
+            recorder.recordSearchSelection(listOf(WebSearchHit("Fixture", "https://example.org/item", null)), 0, "VERIFIED_RICHER_SOURCE_SELECTED")
+            recorder.finish("COMPLETE")
+            assertTrue(store.reportContents("draft").single().contains("VERIFIED_RICHER_SOURCE_SELECTED"))
+        } finally { root.deleteRecursively() }
+    }
+
     @Test
     fun legacyBoundedSessionsMigrateOffAndPreserveSavedReports() {
         val root = Files.createTempDirectory("detailed-capture-legacy-migration").toFile()

@@ -209,7 +209,8 @@ internal class BottleScanEnrichmentWorker(
                         PendingBottleEvidenceStore(SharedPreferencesPendingBottleEvidenceStorage(applicationContext)).save(draftId, it)
                     } == true
                     resultCode = when {
-                        saved -> "CANDIDATES_READY"
+                        saved && candidate?.facts?.isNotEmpty() == true -> "CANDIDATES_READY"
+                        saved -> "NO_SUPPORTED_FIELDS"
                         outcome == null -> "UNEXPECTED_EXCEPTION"
                         outcome.search == WebSearchResult.QuotaExceeded || outcome.page == WebPageResult.QuotaExceeded -> "PROVIDER_QUOTA_EXCEEDED"
                         outcome.search == WebSearchResult.AuthenticationRequired || outcome.page == WebPageResult.AuthenticationRequired -> "PROVIDER_AUTH_REQUIRED"
@@ -219,7 +220,7 @@ internal class BottleScanEnrichmentWorker(
                         !plan.openFoodFactsEnabled && !plan.firecrawlEnabled -> "PROVIDERS_DISABLED"
                         else -> "REVIEW_NEEDED"
                     }
-                    finalStatus = if (saved) BottleEnrichmentStatus.READY_FOR_REVIEW else BottleEnrichmentStatus.NEEDS_ATTENTION
+                    finalStatus = if (saved && candidate?.facts?.isNotEmpty() == true) BottleEnrichmentStatus.READY_FOR_REVIEW else BottleEnrichmentStatus.NEEDS_ATTENTION
                     finalStatus to resultCode
                 },
                 afterPersist = {
@@ -234,7 +235,7 @@ internal class BottleScanEnrichmentWorker(
                         reasonCodes = if (candidate != null && !saved) listOf("OTHER") else emptyList(),
                     ))
                     report.finish(when {
-                        saved -> "SUCCESS"
+                        saved -> bottleLookupEvidenceOutcome(candidate)
                         outcome == null -> "FAILED"
                         resultCode == "NO_SOURCE_FOUND" -> "NOT_FOUND"
                         resultCode == "PROVIDERS_DISABLED" -> "DISABLED"

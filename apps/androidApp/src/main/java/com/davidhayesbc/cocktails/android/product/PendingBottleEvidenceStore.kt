@@ -61,6 +61,13 @@ internal class PendingBottleEvidenceStore(private val storage: PendingBottleEvid
                         put("field", fact.field.wireValue)
                         put("value", fact.value.take(MAX_FACT_VALUE_CHARS))
                         put("quote", fact.quote.take(MAX_EVIDENCE_QUOTE_CHARS))
+                        fact.origin?.let { origin ->
+                            val originUrl = normalizePublicHttpsUrl(origin.sourceUrl) ?: return false
+                            put("origin", buildJsonObject {
+                                put("source_url", originUrl); put("retrieval_provider", origin.retrievalProvider.take(120))
+                                put("provider", origin.provider.take(80)); put("model", origin.model.take(128))
+                            })
+                        }
                     })
                 }
             })
@@ -110,7 +117,15 @@ internal class PendingBottleEvidenceStore(private val storage: PendingBottleEvid
             val field = fact["field"]?.jsonPrimitive?.contentOrNull?.let { wire -> BottleFactField.entries.firstOrNull { it.wireValue == wire } } ?: return@mapNotNull null
             val value = fact["value"]?.jsonPrimitive?.contentOrNull?.takeIf { it.length in 1..MAX_FACT_VALUE_CHARS } ?: return@mapNotNull null
             val quote = fact["quote"]?.jsonPrimitive?.contentOrNull?.takeIf { it.length in 1..MAX_EVIDENCE_QUOTE_CHARS } ?: return@mapNotNull null
-            BottleFactEvidence(field, value, quote)
+            val origin = (fact["origin"] as? JsonObject)?.let { source ->
+                BottleFactOrigin(
+                    source["source_url"]?.jsonPrimitive?.contentOrNull?.let(::normalizePublicHttpsUrl) ?: return null,
+                    source["retrieval_provider"]?.jsonPrimitive?.contentOrNull?.takeIf { it.length <= 120 } ?: return null,
+                    source["provider"]?.jsonPrimitive?.contentOrNull?.takeIf { it.length <= 80 } ?: return null,
+                    source["model"]?.jsonPrimitive?.contentOrNull?.takeIf { it.length <= 128 } ?: return null,
+                )
+            }
+            BottleFactEvidence(field, value, quote, origin = origin)
         } ?: return null
         val unresolved = root["unresolved"]?.jsonArray.orEmpty().mapNotNull { item ->
             item.jsonPrimitive.contentOrNull?.let { wire -> BottleFactField.entries.firstOrNull { it.wireValue == wire } }

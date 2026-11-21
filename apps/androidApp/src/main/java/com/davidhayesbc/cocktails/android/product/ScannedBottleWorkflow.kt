@@ -406,7 +406,7 @@ private fun normalizeProductTitle(value: String): String = value.lowercase()
 
 private val GENERIC_PRODUCT_TITLE_WORDS = setOf(
     "single", "malt", "scotch", "whisky", "whiskey", "bourbon", "gin", "vodka", "rum", "tequila",
-    "liqueur", "spirit", "spirits", "product", "bottle", "shop", "store", "liquor", "canada",
+    "liqueur", "licor", "spirit", "spirits", "product", "bottle", "shop", "store", "liquor", "canada",
 )
 
 internal data class ScannedBottleSearchSelection(
@@ -447,15 +447,16 @@ private data class VerifiedPageCoreEvidence(
 
 /** Keep negative evidence separately from ranking facts, including for pages not selected. */
 private fun verifiedPageCoreEvidence(page: WebPageText, barcode: String): VerifiedPageCoreEvidence {
+    val heading = headingBarcodeEvidence(page, barcode)
     val markdown = barcodeBoundMarkdownProduct(barcode, page.markdown)
     val structured = resolveStructuredBottleIdentityForPage(barcode, page).identity?.let { structuredProductNameFallback(barcode, page, it).suggestions }
     val labeled = labeledBottleSpecifications(page, barcode)?.suggestions
     val partial = barcodeBoundPartialSpecifications(page, barcode)?.suggestions
-    val conflicts = (markdown?.fieldRejections.orEmpty() + structured?.fieldRejections.orEmpty() +
+    val conflicts = (heading?.fieldRejections.orEmpty() + markdown?.fieldRejections.orEmpty() + structured?.fieldRejections.orEmpty() +
         labeled?.fieldRejections.orEmpty() + partial?.fieldRejections.orEmpty())
         .filter { it.reason == BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES }
         .map { it.field }.toSet() + unresolvedBottleSourceFields(page.markdown)
-    val facts = (markdown?.facts.orEmpty() + labeled?.facts.orEmpty() + partial?.facts.orEmpty() + structured?.facts.orEmpty())
+    val facts = (heading?.facts.orEmpty() + markdown?.facts.orEmpty() + labeled?.facts.orEmpty() + partial?.facts.orEmpty() + structured?.facts.orEmpty())
         .filter { it.field in setOf(BottleFactField.PRODUCT_NAME, BottleFactField.QUANTITY, BottleFactField.ABV_PERCENT) && it.field !in conflicts }
         .distinctBy { it.field }
     return VerifiedPageCoreEvidence(facts, conflicts)
@@ -474,13 +475,23 @@ internal fun selectScannedBottleSearchHit(barcode: String, hits: List<WebSearchH
         )
     }
     val ordered = eligible
-        .sortedByDescending { hit -> sourceMentionsScannedBarcode(barcode, "${hit.title} ${hit.snippet.orEmpty()}") }
+        .sortedWith(compareByDescending<WebSearchHit> { hit -> sourceMentionsScannedBarcode(barcode, "${hit.title} ${hit.snippet.orEmpty()}") }
+            .thenBy { hit -> runCatching { java.net.URI(hit.url).host }.getOrNull().orEmpty().let { it == "judge.me" || it.endsWith(".judge.me") } })
         .distinctBy { hit -> normalizePublicHttpsUrl(hit.url)?.substringBefore('#') ?: hit.url }
+    // A conflicting size in a snippet is only a fetch hint. Reserve a bounded slot to
+    // verify it rather than silently selecting the majority size or treating snippets as facts.
+    fun sizeHint(hit: WebSearchHit): String? = explicitLabelCandidates("${hit.title} ${hit.snippet.orEmpty()}")
+        .firstOrNull { it["field"]?.toString() == "\"quantity\"" }?.get("value")?.toString()?.trim('"')?.let { bottleFactFingerprint(BottleFactEvidence(BottleFactField.QUANTITY, it, it)) }
+    val firstSize = ordered.firstOrNull()?.let(::sizeHint)
+    val differingSize = ordered.firstOrNull { sourceMentionsScannedBarcode(barcode, "${it.title} ${it.snippet.orEmpty()}") &&
+        sizeHint(it)?.let { size -> firstSize != null && size != firstSize } == true }
+    val bounded = ordered.take(MAX_AUTOMATIC_SOURCE_FETCHES).toMutableList()
+    if (differingSize != null && differingSize !in bounded && bounded.isNotEmpty()) bounded[bounded.lastIndex] = differingSize
     val exact = ordered.firstOrNull { hit -> sourceMentionsScannedBarcode(barcode, "${hit.title} ${hit.snippet.orEmpty()}") }
     if (exact != null) {
         return ScannedBottleSearchSelection(
             exact,
-            ordered.take(MAX_AUTOMATIC_SOURCE_FETCHES),
+            bounded,
             "SELECTED_EXACT_MATCH",
             hits.mapIndexed { index, hit ->
                 val code = when {
@@ -496,7 +507,7 @@ internal fun selectScannedBottleSearchHit(barcode: String, hits: List<WebSearchH
     val fallback = eligible.first()
     return ScannedBottleSearchSelection(
         fallback,
-        ordered.take(MAX_AUTOMATIC_SOURCE_FETCHES),
+        bounded,
         "SELECTED_FALLBACK",
         hits.mapIndexed { index, hit ->
             val code = when {
@@ -578,10 +589,10 @@ internal fun acceptedProductSourcesForBottle(
         }
         if (!valueWasAccepted) return@mapNotNull null
         ProductFactSourceDraft(
-            retrievalProvider = suggestions.retrievalProvider,
-            extractionProvider = suggestions.provider,
-            extractionModel = suggestions.model,
-            sourceUrl = suggestions.sourceUrl,
+            retrievalProvider = fact.origin?.retrievalProvider ?: suggestions.retrievalProvider,
+            extractionProvider = fact.origin?.provider ?: suggestions.provider,
+            extractionModel = fact.origin?.model ?: suggestions.model,
+            sourceUrl = fact.origin?.sourceUrl ?: suggestions.sourceUrl,
             fieldName = fact.field.wireValue,
             fieldValue = fact.value,
             evidenceQuote = fact.quote,
@@ -642,6 +653,8 @@ internal data class ScannedBottleOutcome(
     val barcodeVerifiedInPage: Boolean = false,
     val barcodeVerifiedByStructuredProduct: Boolean = false,
     val extraction: BottleDetailExtractionResult? = null,
+    val aiExtraction: BottleDetailExtractionResult? = null,
+    val aiSkippedForEvidence: Boolean = false,
 )
 
 /** Converts one completed scan into fixed, resumable Web/AI indicators for that bottle only. */
@@ -684,7 +697,8 @@ internal fun bottleProviderOutcomes(
         else -> BottleProviderOutcome.DISABLED
     }
 
-    val ai = when (val extraction = outcome?.extraction) {
+    val ai = if (outcome?.aiSkippedForEvidence == true) BottleProviderOutcome.SKIPPED_DETERMINISTIC
+    else when (val extraction = outcome?.aiExtraction ?: outcome?.extraction) {
         is BottleDetailExtractionResult.Found -> when (extraction.suggestions.extractionMethod) {
             BottleExtractionMethod.DETERMINISTIC_SOURCE -> BottleProviderOutcome.SKIPPED_DETERMINISTIC
             BottleExtractionMethod.DETERMINISTIC_SOURCE_PARTIAL -> BottleProviderOutcome.NOT_CONFIGURED
@@ -728,6 +742,7 @@ internal class ScannedBottleEnrichmentCoordinator(
     private val search: suspend (String) -> BottleProviderCall<WebSearchResult>,
     private val fetch: suspend (String) -> BottleProviderCall<WebPageResult>,
     private val extract: suspend (WebPageText, AutomaticBottleExtractor, requiredBarcode: String) -> BottleProviderCall<BottleDetailExtractionResult>,
+    private val referenceLookup: suspend (String) -> BottleDetailSuggestions? = { null },
 ) {
     suspend fun processScannedBarcode(
         barcode: String,
@@ -739,6 +754,16 @@ internal class ScannedBottleEnrichmentCoordinator(
         val query = scannedBottleSearchQuery(barcode) ?: run {
             onDebugEvent(BottleLookupDebugEvent(BottleLookupDebugStage.COMPLETE, "APP", "INVALID_BARCODE"))
             return ScannedBottleOutcome(barcode)
+        }
+        val reference = referenceLookup(barcode)?.withFieldOrigins()
+        onDebugEvent(BottleLookupDebugEvent(BottleLookupDebugStage.REFERENCE_LOOKUP, "Local database",
+            if (reference == null) "NO_MATCH" else "FOUND", factFields = reference?.facts?.map { it.field.wireValue }.orEmpty(),
+            sourceUrls = listOfNotNull(reference?.sourceUrl)))
+        var accumulated = reference
+        fun mergeEvidence(next: BottleDetailSuggestions?) { accumulated = mergePipelineEvidence(accumulated, next) }
+        fun completed(value: ScannedBottleOutcome): ScannedBottleOutcome {
+            val combined = mergePipelineEvidence(accumulated, (value.extraction as? BottleDetailExtractionResult.Found)?.suggestions)
+            return if (combined == null) value else value.copy(extraction = BottleDetailExtractionResult.Found(combined))
         }
         var outcome = ScannedBottleOutcome(barcode)
         if (plan.openFoodFactsEnabled) {
@@ -757,13 +782,14 @@ internal class ScannedBottleEnrichmentCoordinator(
                 reasonCodes = result.debugReasonCodes(),
             ))
             outcome = outcome.copy(openFoodFacts = result)
+            (result as? OpenFoodFactsLookupResult.Found)?.let { mergeEvidence(openFoodFactsEvidence(it.suggestion, barcode)) }
         } else {
             onDebugEvent(BottleLookupDebugEvent(BottleLookupDebugStage.OPEN_FOOD_FACTS, "Open Food Facts", "DISABLED"))
         }
         if (!plan.firecrawlEnabled) {
             onDebugEvent(BottleLookupDebugEvent(BottleLookupDebugStage.FIRECRAWL_SEARCH, "Firecrawl", "DISABLED"))
             onDebugEvent(BottleLookupDebugEvent(BottleLookupDebugStage.DETAIL_EXTRACTION, "MODEL", "SKIPPED"))
-            return outcome
+            return completed(outcome)
         }
 
         onStage(ScannedBottleStage.WEB_SEARCH, null, null)
@@ -784,7 +810,7 @@ internal class ScannedBottleEnrichmentCoordinator(
         if (hits.isEmpty()) {
             onDebugEvent(BottleLookupDebugEvent(BottleLookupDebugStage.SOURCE_SELECTION, "APP", "NO_USABLE_SOURCE", reasonCodes = listOf("NO_SEARCH_RESULTS")))
             onDebugEvent(BottleLookupDebugEvent(BottleLookupDebugStage.DETAIL_EXTRACTION, "MODEL", "SKIPPED"))
-            return outcome
+            return completed(outcome)
         }
 
         val selection = selectScannedBottleSearchHit(barcode, hits)
@@ -800,7 +826,7 @@ internal class ScannedBottleEnrichmentCoordinator(
         val candidates = selection.candidates
         val selected = selection.selected ?: run {
             onDebugEvent(BottleLookupDebugEvent(BottleLookupDebugStage.DETAIL_EXTRACTION, "MODEL", "SKIPPED"))
-            return outcome
+            return completed(outcome)
         }
         var lastPageResult: WebPageResult? = null
         var lastHit: WebSearchHit = selected
@@ -844,7 +870,8 @@ internal class ScannedBottleEnrichmentCoordinator(
                 sourceUrls = listOf(hit.url),
                 reasonCodes = listOf("CANDIDATE_${index + 1}_OF_${candidates.size}"),
             ))
-            val page = (fetchCall.result as? WebPageResult.Found)?.page
+            val originalPage = (fetchCall.result as? WebPageResult.Found)?.page
+            val page = originalPage?.let { if (isBottleSourceChallenge(it)) it else scopedBarcodeProductPage(it, barcode) }
             if (page == null) {
                 if (fetchCall.result in setOf(WebPageResult.QuotaExceeded, WebPageResult.RateLimited, WebPageResult.AuthenticationRequired, WebPageResult.SetupRequired)) break
                 continue
@@ -886,6 +913,14 @@ internal class ScannedBottleEnrichmentCoordinator(
             if (decision == ScannedBarcodePageDecision.VERIFIED) {
                 val candidate = if (structuredIdentity == null) page else page.copy(structuredBottleIdentities = listOf(structuredIdentity))
                 val evidence = verifiedPageCoreEvidence(candidate, barcode)
+                val pageSuggestions = headingBarcodeEvidence(candidate, barcode)
+                    ?: barcodeBoundMarkdownProduct(barcode, candidate.markdown)?.toDeterministicExtraction(candidate.sourceUrl, candidate.provider)?.suggestions
+                    ?: labeledBottleSpecifications(candidate, barcode)?.suggestions
+                    ?: structuredBottleIdentityForPage(barcode, candidate)?.let { structuredProductNameFallback(barcode, candidate, it).suggestions }
+                    ?: barcodeBoundPartialSpecifications(candidate, barcode)?.suggestions
+                mergeEvidence(pageSuggestions?.copy(fieldRejections = (pageSuggestions.fieldRejections + evidence.conflicts.map {
+                    BottleFactRejection(it, BottleExtractionRejectionReason.CONFLICTING_FIELD_VALUES)
+                }).distinct()))
                 val facts = evidence.facts
                 crossSourceConflicts += evidence.conflicts
                 val previousName = verifiedFacts.firstOrNull { it.field == BottleFactField.PRODUCT_NAME }?.value ?: verifiedFacts.firstNotNullOfOrNull { it.barcodeBoundProductName }
@@ -915,7 +950,7 @@ internal class ScannedBottleEnrichmentCoordinator(
                     reasonCodes = listOf(if (disagreement) "VERIFIED_SOURCE_FACT_CONFLICT" else if (facts.size == 3) "VERIFIED_CORE_FACTS_COMPLETE" else "VERIFIED_SOURCE_INCOMPLETE")))
                 // Scalar conflicts remain unresolved, but later candidates may still supply identity.
                 // Contradictory identities stop selection; never choose one product over another.
-                if (identityDisagreement || verifiedFacts.count { it.field !in crossSourceConflicts } == 3) break
+                if (identityDisagreement || reference == null && verifiedFacts.count { it.field !in crossSourceConflicts } == 3) break
             }
         }
         val page = verifiedPage
@@ -931,22 +966,27 @@ internal class ScannedBottleEnrichmentCoordinator(
                     else -> "NO_EXACT_CODE_IN_PAGE"
                 }),
             ))
-            return outcome
+            return completed(outcome)
         }
         outcome = outcome.copy(selectedHit = verifiedHit, page = WebPageResult.Found(page), barcodeVerifiedInPage = true)
         if (verifiedHit != selected) detailedCapture?.recordSearchSelection(hits, verifiedHit?.let(hits::indexOf), "VERIFIED_RICHER_SOURCE_SELECTED")
+        if (accumulated != null && !pipelineNeedsAi(accumulated)) {
+            onDebugEvent(BottleLookupDebugEvent(BottleLookupDebugStage.DETAIL_EXTRACTION, "MODEL", "SKIPPED",
+                reasonCodes = listOf("MODEL_NOT_NEEDED_FOR_EXPLICIT_CORE_FACTS")))
+            return completed(outcome.copy(aiSkippedForEvidence = true))
+        }
         val extractor = plan.extractor
         if (extractor == null) {
             onDebugEvent(BottleLookupDebugEvent(BottleLookupDebugStage.DETAIL_EXTRACTION, "MODEL", "SKIPPED", reasonCodes = listOfNotNull(
                 "MODEL_NOT_CONFIGURED",
             )))
-            return if (crossSourceConflicts.isEmpty()) outcome else outcome.copy(extraction =
-                retainSourceConflicts(BottleDetailExtractionResult.SetupRequired, page, barcode, crossSourceConflicts))
+            return completed(if (crossSourceConflicts.isEmpty()) outcome else outcome.copy(extraction =
+                retainSourceConflicts(BottleDetailExtractionResult.SetupRequired, page, barcode, crossSourceConflicts)))
         }
 
         onStage(ScannedBottleStage.DETAIL_EXTRACTION, page.sourceUrl, null)
         val extractionCall = measured(BottleLookupDebugStage.DETAIL_EXTRACTION, extractor.name, onDebugEvent) {
-            extract(page, extractor, barcode)
+            extract(page.copy(priorBottleEvidence = accumulated), extractor, barcode)
         }
         val extraction = retainSourceConflicts(extractionCall.result, page, barcode, crossSourceConflicts)
         val suggestions = (extraction as? BottleDetailExtractionResult.Found)?.suggestions
@@ -967,7 +1007,7 @@ internal class ScannedBottleEnrichmentCoordinator(
                 modelWithSourceFacts -> "MODEL_AND_SOURCE_FACTS_COMPLETE"
                 else -> extraction.toDebugCode(extractionCall.httpStatus)
             },
-            durationMillis = extractionCall.durationMillis.takeUnless { deterministicExtraction || sourceOnlyPartial },
+            durationMillis = extractionCall.durationMillis,
             httpStatus = extractionCall.httpStatus,
             sourceUrls = listOf(page.sourceUrl),
             factFields = suggestions?.facts?.map { it.field.wireValue }.orEmpty(),
@@ -991,7 +1031,7 @@ internal class ScannedBottleEnrichmentCoordinator(
                 if (modelWithSourceFacts) add("MODEL_FACTS_MERGED_WITH_VERIFIED_SOURCE_FACTS")
             },
         ))
-        return outcome.copy(extraction = extraction)
+        return completed(outcome.copy(extraction = extraction, aiExtraction = extraction))
     }
 
     private suspend fun <T> measured(

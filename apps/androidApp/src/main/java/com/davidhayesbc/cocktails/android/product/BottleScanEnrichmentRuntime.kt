@@ -112,6 +112,7 @@ internal class BottleScanEnrichmentRuntime(context: Context) {
         val firecrawl = FirecrawlSearchProvider({ firecrawlCredentials.readApiKey() })
         val ollama = OllamaCloudBottleDetailExtractor({ ollamaCredentials.readApiKey() })
         val coordinator = ScannedBottleEnrichmentCoordinator(
+            referenceLookup = { code -> openRepository().use { it.repository.referenceProductForBarcode(code)?.let { match -> referenceBottleEvidence(match, code) } } },
             lookup = { code ->
                 var status: Int? = null
                 val value = offClient.lookup(code, appVersion.name) { status = it }

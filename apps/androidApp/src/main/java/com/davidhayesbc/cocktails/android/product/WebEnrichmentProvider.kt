@@ -50,6 +50,7 @@ internal data class WebPageText(
     val provider: String,
     /** Parsed barcode/name pairs only; raw HTML is never retained beyond the bounded parser. */
     val structuredBottleIdentities: List<StructuredBottleIdentity> = emptyList(),
+    val priorBottleEvidence: BottleDetailSuggestions? = null,
 )
 
 internal data class StructuredBottleIdentity(
