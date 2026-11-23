@@ -1043,9 +1043,20 @@ class LocalCocktailRepository(private val database: CocktailsDatabase) {
             householdBarcodeKey(it.barcode) == normalized
         } ?: return ReferenceProductStore(database).lookup(barcode)?.let { match ->
             val row = match.product
-            LocalProductBarcodeMatch(null, null, row.sourceClass, if (row.category == "Spirits") "Spirit" else row.category,
-                null, row.name, barcode, row.quantity, row.abv?.let { "$it%" },
-                "${match.source.providerLabel} · ${match.source.sourceDate} · ${match.source.attribution}" + (row.abvReviewNote?.let { " · $it" } ?: ""))
+            LocalProductBarcodeMatch(
+                productId = null,
+                ingredientId = null,
+                ingredientName = row.name,
+                category = if (row.category == "Spirits") "Spirit" else row.category,
+                brand = null,
+                productName = row.name,
+                barcode = barcode,
+                quantity = row.quantity,
+                abvPercent = row.abv?.let { "$it%" },
+                referenceSource = "${match.source.providerLabel} · ${match.source.sourceDate} · ${match.source.attribution}" +
+                    row.abvReviewNote?.let { " · $it" }.orEmpty(),
+                drinkCategory = row.sourceClass.ifBlank { row.subcategory },
+            )
         }
         return LocalProductBarcodeMatch(
             productId = product.product_id,

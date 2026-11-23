@@ -75,6 +75,7 @@ data class LocalProductBarcodeMatch(
     val abvPercent: String? = null,
     val referenceSource: String? = null,
     val hasUserPhoto: Boolean = false,
+    val drinkCategory: String = "",
 )
 
 enum class BottleIntakeSessionStatus { OPEN, CONFIRMED }
