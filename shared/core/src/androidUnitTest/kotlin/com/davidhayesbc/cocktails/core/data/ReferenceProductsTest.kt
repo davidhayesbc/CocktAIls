@@ -153,6 +153,22 @@ class ReferenceProductsTest {
         assertFalse(pack.metadataIsOpen)
     }
 
+    @Test fun threeWoodBarcodeUsesTheProductNameAndDrinkCategoryFromTheCatalogue() {
+        val (driver, db) = database()
+        try {
+            val repo = LocalCocktailRepository(db).also { it.initialize(1) }
+            repo.installReferenceProducts(text)
+
+            val match = assertNotNull(repo.localProductForBarcode("5011333150725"))
+            assertEquals("AUCHENTOSHAN - THREE WOOD", match.ingredientName)
+            assertEquals(match.ingredientName, match.productName)
+            assertEquals("Single Malt Scotch Whisky", match.drinkCategory)
+            assertEquals("Spirit", match.category)
+        } finally {
+            driver.close()
+        }
+    }
+
     @Test fun shortCodesPackagingCollisionsAndInvalidDigitsCannotMatch() {
         val (_, db) = database(); val store = ReferenceProductStore(db); store.install(text)
         assertEquals("00003105474011", recoverNumericCatalogueGtin("3105474011"))

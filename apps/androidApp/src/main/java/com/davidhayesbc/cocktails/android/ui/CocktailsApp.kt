@@ -2966,6 +2966,7 @@ fun CocktailsApp(repository: LocalCocktailRepository, onExitApp: () -> Unit = {}
                         productName = local?.productName,
                         quantity = local?.quantity,
                         abvPercent = local?.abvPercent,
+                        drinkCategory = local?.drinkCategory.orEmpty(),
                     )
                     showBottleScanner = false
                     bottleIntakeSession = repository.openBottleIntakeSession()
