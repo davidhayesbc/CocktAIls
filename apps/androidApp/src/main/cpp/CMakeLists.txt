@@ -34,6 +34,22 @@ set(LLAMA_SRC "${CMAKE_CURRENT_LIST_DIR}/../../../../../third_party/llama.cpp")
 if(NOT EXISTS "${LLAMA_SRC}/CMakeLists.txt")
     message(FATAL_ERROR "Pinned llama.cpp source is missing. Initialize the third_party/llama.cpp submodule.")
 endif()
+if(GGML_CPU_KLEIDIAI)
+    # Populate before entering llama.cpp so CMake 3.31 handles the verified download
+    # directly, instead of letting the subproject start a separate populate build.
+    # Keep the archive version in sync with the pinned llama.cpp submodule.
+    include(FetchContent)
+    FetchContent_Declare(kleidiai
+        URL "https://github.com/ARM-software/kleidiai/releases/download/v1.32.0/kleidiai-v1.32.0-src.tar.gz"
+        URL_HASH SHA256=a48d373e7c5d721a0aecbf5ddaf0bdf245bc8064e6b84086f13db0e102b553a6
+        TLS_VERIFY TRUE
+        DOWNLOAD_NO_PROGRESS TRUE
+        # llama.cpp adds the actual KleidiAI target via its own wrapper below.
+        SOURCE_SUBDIR _cocktails_populate_only
+    )
+    FetchContent_MakeAvailable(kleidiai)
+endif()
+
 add_subdirectory("${LLAMA_SRC}" llama-build)
 
 add_library(ai-chat SHARED ai_chat.cpp)
